@@ -136,6 +136,28 @@ const FASCIA_WORDS = [
 /** Street name blades. */
 const STREET_NAMES = ['PARK ROAD', 'MILL LANE', 'HIGH STREET', 'QUEEN ST'];
 
+/* What the street says in neon.
+ *
+ * A separate range appended after the others rather than folded into
+ * FASCIA_WORDS, and the reason is that the fascia rows are chosen by hashing
+ * into `SGN_FASCIAN`: adding a word to that list would renumber the draw and
+ * repaint every signwritten board on the street. Appending leaves fascia0,
+ * name0 and plate0 where they are and every existing row at the same absolute
+ * pixel, so the only thing that changes about System 3's signage is that the
+ * atlas is six rows taller.
+ *
+ * OPEN is close enough to the fascia list's OPEN 24 HRS to look like a
+ * duplicate and is a separate row for the same reason: a neon row must not be
+ * reachable by the fascia hash. It is also set on its own because a hanging
+ * neon in a shop window is four large letters, not a line of small ones — at
+ * 0.17 m caps the trading hours would be 40 mm and unreadable at every
+ * distance the sign is ever seen from.
+ */
+const NEON_WORDS = ['OPEN', 'BAR', 'COLD BEER'];
+
+/** Indices into the neon range, for whoever is placing a sign. */
+export const NEON = { OPEN: 0, BAR: 1, BEER: 2 } as const;
+
 /** Regulatory plates, as the two lines they are actually set in. */
 const PLATE_LINES = [
   'NO PARKING', 'AT ANY TIME',
@@ -169,6 +191,7 @@ export type SignAtlas = {
   fascia0: number; fasciaN: number;
   name0: number; nameN: number;
   plate0: number; plateN: number;
+  neon0: number; neonN: number;
 };
 
 function measure(text: string): number {
@@ -203,7 +226,7 @@ let cached: SignAtlas | null = null;
 export function signAtlas(): SignAtlas {
   if (cached) return cached;
 
-  const rows = [...FASCIA_WORDS, ...STREET_NAMES, ...PLATE_LINES];
+  const rows = [...FASCIA_WORDS, ...STREET_NAMES, ...PLATE_LINES, ...NEON_WORDS];
   const H = rows.length * SIGN_ROW;
   const W = SIGN_ATLAS_W;
   const data = new Uint8Array(W * H);
@@ -281,6 +304,8 @@ export function signAtlas(): SignAtlas {
     fascia0: 0, fasciaN: FASCIA_WORDS.length,
     name0: FASCIA_WORDS.length, nameN: STREET_NAMES.length,
     plate0: FASCIA_WORDS.length + STREET_NAMES.length, plateN: PLATE_LINES.length,
+    neon0: FASCIA_WORDS.length + STREET_NAMES.length + PLATE_LINES.length,
+    neonN: NEON_WORDS.length,
   };
   return cached;
 }
@@ -303,6 +328,7 @@ const int SGN_FASCIAN = ${a.fasciaN};
 const int SGN_NAME0 = ${a.name0};
 const int SGN_NAMEN = ${a.nameN};
 const int SGN_PLATE0 = ${a.plate0};
+const int SGN_NEON0 = ${a.neon0};
 
 /* The aspect of a row: its set width divided by its cap height. The caller
  * needs this before it can lay the sign out, because a name is set at the size

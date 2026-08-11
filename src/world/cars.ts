@@ -80,6 +80,19 @@ export const CAR = {
    * shader decides bumper, lamp, grille or paint per pixel. */
   CAP_R: 9,
   CAP_F: 10,
+  /* The scuttle: the band of matte black between the back of the bonnet and
+   * the bottom of the windscreen, with the wiper trough in it.
+   *
+   * It is fifty millimetres of plastic and it is here because the critic could
+   * not find the base of the windscreen on any car in the near field. The step
+   * at the cowl — painted metal, then a hard edge, then a much darker and much
+   * glossier plane — is the single most recognisable thing about a car seen
+   * from the footway, and with the bonnet lofting continuously into the screen
+   * there was nothing to mark it but the glass being a different material,
+   * which failed the moment the glass was too bright. A dark matte strip
+   * between the two states the edge in albedo as well, so it survives whatever
+   * the light is doing. */
+  SCUTTLE: 11,
 } as const;
 
 /** Branches in the glazing shader. */
@@ -238,6 +251,16 @@ type Shape = {
  * viewport. The windscreen rake follows from where the roof curve leaves the
  * deck curve and where it arrives — 1.1 m of run for 0.54 m of rise is 64
  * degrees off vertical, which is a current windscreen; a 1970s one is 45.
+ *
+ * The deck curves are a second pass. The first ones left the greenhouse at 36
+ * per cent of the height with a beltline that ran level from the A-pillar to
+ * the tail, and the critic read the result as a 1985 estate: a greenhouse to
+ * body ratio of about 1:2 with no waistline kick in it. They now rise 80 to 90
+ * millimetres between the cowl and the C-pillar, which puts the greenhouse at
+ * 29 to 30 per cent and — the part that actually reads at this sun angle —
+ * makes the beltline a line that climbs rather than a level datum. The roof
+ * curves are untouched, so the windscreen rake and the roofline are the ones
+ * that were signed off; all that has moved is where the glass starts.
  */
 const SHAPES: Record<CarKind, Shape> = {
   hatch: {
@@ -245,7 +268,7 @@ const SHAPES: Record<CarKind, Shape> = {
     frontOh: 0.85, wheelbase: 2.60,
     wheelR: 0.318, rimR: 0.205, tyreW: 0.205, trackHalf: 0.755, rocker: 0.155,
     deck: [[0, 0.700], [0.04, 0.755], [0.12, 0.838], [0.22, 0.878], [0.32, 0.915],
-      [0.50, 0.955], [0.70, 0.985], [0.86, 1.000], [0.95, 0.990], [1, 0.930]],
+      [0.50, 0.998], [0.70, 1.036], [0.86, 1.056], [0.95, 1.044], [1, 0.985]],
     roof: [[0, 0.700], [0.04, 0.755], [0.12, 0.838], [0.22, 0.878], [0.32, 0.915],
       [0.38, 1.075], [0.46, 1.300], [0.53, 1.415], [0.60, 1.455], [0.80, 1.460],
       [0.86, 1.452], [0.90, 1.400], [0.95, 1.180], [1, 0.950]],
@@ -265,7 +288,7 @@ const SHAPES: Record<CarKind, Shape> = {
     frontOh: 0.78, wheelbase: 2.45,
     wheelR: 0.300, rimR: 0.190, tyreW: 0.185, trackHalf: 0.730, rocker: 0.150,
     deck: [[0, 0.700], [0.04, 0.760], [0.12, 0.845], [0.22, 0.888], [0.32, 0.925],
-      [0.50, 0.965], [0.70, 0.995], [0.86, 1.010], [0.95, 1.000], [1, 0.940]],
+      [0.50, 1.004], [0.70, 1.042], [0.86, 1.060], [0.95, 1.048], [1, 0.990]],
     roof: [[0, 0.700], [0.04, 0.760], [0.12, 0.845], [0.22, 0.888], [0.31, 0.925],
       [0.37, 1.090], [0.45, 1.320], [0.52, 1.435], [0.59, 1.468], [0.79, 1.470],
       [0.85, 1.460], [0.89, 1.405], [0.95, 1.190], [1, 0.960]],
@@ -285,7 +308,7 @@ const SHAPES: Record<CarKind, Shape> = {
     frontOh: 0.88, wheelbase: 2.68,
     wheelR: 0.322, rimR: 0.210, tyreW: 0.210, trackHalf: 0.770, rocker: 0.155,
     deck: [[0, 0.705], [0.04, 0.762], [0.12, 0.845], [0.22, 0.885], [0.31, 0.922],
-      [0.50, 0.962], [0.70, 0.992], [0.86, 1.008], [0.95, 1.000], [1, 0.955]],
+      [0.50, 1.002], [0.70, 1.046], [0.86, 1.068], [0.95, 1.060], [1, 1.010]],
     roof: [[0, 0.705], [0.04, 0.762], [0.12, 0.845], [0.22, 0.885], [0.31, 0.922],
       [0.37, 1.090], [0.45, 1.330], [0.52, 1.450], [0.58, 1.492], [0.90, 1.500],
       [0.945, 1.470], [0.975, 1.330], [1, 1.060]],
@@ -305,8 +328,8 @@ const SHAPES: Record<CarKind, Shape> = {
     frontOh: 0.92, wheelbase: 2.79,
     wheelR: 0.328, rimR: 0.216, tyreW: 0.215, trackHalf: 0.775, rocker: 0.150,
     deck: [[0, 0.700], [0.04, 0.760], [0.12, 0.848], [0.22, 0.890], [0.32, 0.928],
-      [0.50, 0.968], [0.68, 0.998], [0.80, 1.022], [0.88, 1.048], [0.96, 1.052],
-      [1, 0.995]],
+      [0.50, 1.008], [0.68, 1.046], [0.80, 1.066], [0.88, 1.082], [0.96, 1.082],
+      [1, 1.030]],
     roof: [[0, 0.700], [0.04, 0.760], [0.12, 0.848], [0.22, 0.890], [0.31, 0.925],
       [0.37, 1.075], [0.45, 1.305], [0.52, 1.412], [0.585, 1.446], [0.705, 1.450],
       [0.765, 1.400], [0.825, 1.222], [0.875, 1.075], [0.91, 1.050], [1, 0.995]],
@@ -366,8 +389,58 @@ const SHAPES: Record<CarKind, Shape> = {
  *
  * Mirror of point j is at index 28 - j. Cell j runs between point j and j+1.
  */
-const NSEC = 28;
+/* The section is authored at 28 points and emitted at 56.
+ *
+ * The critic found fore-aft banding across every roof and hard facet steps
+ * down the C-pillars, in diffuse as well as specular, which I had recorded as
+ * faint and specular-only. It is neither, and the cause was not the station
+ * count: there are sixty stations along a four-metre car and the banding runs
+ * *along* the car, so what is coarse is the ring. Four points carried a roof
+ * from cant rail to centreline, and interpolating a normal linearly across
+ * 350 mm of crown gives exactly the Mach banding that showed up — the normal
+ * is continuous and its derivative is not, and a clearcoat lobe differentiates
+ * whatever you give it.
+ *
+ * So the authored ring is subdivided once with the interpolating four-point
+ * scheme before anything sees it. The control points stay where they are, so
+ * every proportion that was signed off is untouched; the inserted points carry
+ * the curvature the normals need. The cost is one extra triangle per cell,
+ * about 30k over the nine cars.
+ *
+ * Everything below indexes the *emitted* ring, so an authored index a is at
+ * 2a and the cell that used to be a is now the pair 2a, 2a+1. The role
+ * classifier is written in those doubled ranges, and CELL below names them.
+ */
+const NSEC = 56;
 const HALF = 15;
+
+/** Authored point index to emitted point index. */
+const PT = (a: number) => a * 2;
+/** Authored cell index to the emitted cell range it became, inclusive. */
+const CELL = (a: number, b: number) => [a * 2, b * 2 + 1] as const;
+
+/**
+ * One round of interpolating four-point subdivision on a closed ring.
+ *
+ * -1, 9, 9, -1 over 16. It passes through every input point, which is what
+ * keeps the authored section authoritative, and it is C1 with bounded
+ * curvature, which is what kills the banding. A midpoint average would also
+ * double the count and would not: it leaves the same corners in the same
+ * places with twice as many vertices agreeing about them.
+ */
+function refine(p: readonly [number, number][]): [number, number][] {
+  const n = p.length;
+  const out: [number, number][] = new Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const a = p[(i + n - 1) % n], b = p[i], c = p[(i + 1) % n], d = p[(i + 2) % n];
+    out[i * 2] = b;
+    out[i * 2 + 1] = [
+      (-a[0] + 9 * b[0] + 9 * c[0] - d[0]) / 16,
+      (-a[1] + 9 * b[1] + 9 * c[1] - d[1]) / 16,
+    ];
+  }
+  return out;
+}
 
 type Station = {
   u: number;                 // fraction of the length
@@ -385,20 +458,42 @@ function station(s: Shape, u: number): Station {
   const wG = wB * 0.955;
   const wR = wB * s.roofW;
 
-  /* Where the arch is cut into the bottom edge. The radius is 1.19 tyre radii,
-   * which is where a real arch sits: enough to clear suspension travel, and
-   * the gap it leaves is the crescent of shadow that says the car has weight
-   * on its springs. */
-  const arch = (axleU: number) => {
-    const r = s.wheelR * 1.19;
+  /* Where the arch is cut into the bottom edge.
+   *
+   * The first version struck a circle of 1.19 tyre radii about the axle and
+   * took the max of it and the sill, and that is the square-cut notch the
+   * critic found. A circle centred on the axle is at axle height where it ends
+   * — 306 mm up — so at each end of the arc the bottom edge of the skin jumped
+   * 130 mm vertically in one station. Two hard corners and a segment of arc
+   * between them is a notch cut in a sheet, not an arch, and the step also
+   * left the apparent opening reading two to three times its real depth.
+   *
+   * A real arch is a lip that comes down past the axle at both ends and meets
+   * the sill, so the opening is more than a semicircle and its ends are steep
+   * rather than square. That is one expression: a bump of half-width slightly
+   * wider than the tyre, springing from the sill line and rising to a fixed
+   * clearance over the top of the tread. The apex sits 70 mm over the tyre,
+   * which is what a parked road car shows; the previous 1.19 r worked out at
+   * 56 mm and was never the problem.
+   */
+  const arch = (axleU: number, sillY: number) => {
+    const apex = s.wheelR * 2 - 0.008 + 0.070;
+    const w = s.wheelR * 1.24;
     const d = (u - axleU) * s.len;
-    return Math.abs(d) >= r ? -1 : s.wheelR - 0.012 + Math.sqrt(r * r - d * d);
+    if (Math.abs(d) >= w) return -1;
+    const t = d / w;
+    /* Slightly flatter than a circle over the crown and steeper at the ends,
+     * which is the shape of a pressed arch lip and also keeps the apex from
+     * being the only station that clears the tyre. */
+    const c = Math.pow(Math.max(0, 1 - t * t), 0.62);
+    return sillY + (apex - sillY) * c;
   };
   const uF = s.frontOh / s.len;
   const uR = (s.frontOh + s.wheelbase) / s.len;
-  const aY = Math.max(arch(uF), arch(uR));
-  const yb = Math.max(at(s.sill, u), aY);
-  const inArch = aY > at(s.sill, u) + 0.004;
+  const ySill = at(s.sill, u);
+  const aY = Math.max(arch(uF, ySill), arch(uR, ySill));
+  const yb = Math.max(ySill, aY);
+  const inArch = aY > ySill + 0.004;
 
   const yPan = s.rocker + 0.145;
   const wPan = Math.max(0.12, wS - 0.145);
@@ -415,8 +510,13 @@ function station(s: Shape, u: number): Station {
     [0, yPan],
     [wPan, yPan],
     [wPan, Math.max(yb - 0.010, yPan + 0.020)],
-    [wS * 0.985, yb + 0.004],
-    [wS, yb + (inArch ? 0.018 : 0.030)],
+    [wS * (inArch ? 0.972 : 0.985), yb + 0.004],
+    /* The arch lip. A pressed arch is not a cut edge: the skin turns out by ten
+     * or fifteen millimetres before it turns under to the liner, and that lip
+     * is a hard little convexity that runs the whole arc and catches a line of
+     * light along the top of it at any sun angle. Without it the opening is a
+     * hole in a sheet and the tyre reads as pasted behind it. */
+    [wS * (inArch ? 1.022 : 1.000), yb + (inArch ? 0.024 : 0.030)],
     [wB * 0.968, yb + (ySh - yb) * 0.55],
     [wB, ySh],
     [wB * 0.988, yD - (yD - ySh) * 0.34],
@@ -429,11 +529,11 @@ function station(s: Shape, u: number): Station {
     [0, mix(yD + 0.030, yR + 0.014)],
   ];
 
-  const pt: [number, number][] = new Array(NSEC);
-  for (let j = 0; j < HALF; j++) pt[j] = H[j];
-  for (let j = 1; j <= 13; j++) pt[NSEC - j] = [-H[j][0], H[j][1]];
+  const base: [number, number][] = new Array(28);
+  for (let j = 0; j < HALF; j++) base[j] = H[j];
+  for (let j = 1; j <= 13; j++) base[28 - j] = [-H[j][0], H[j][1]];
 
-  return { u, z: u * s.len, pt, gh };
+  return { u, z: u * s.len, pt: refine(base), gh };
 }
 
 /** Stations: a base rhythm, refined where the surface actually turns. */
@@ -450,11 +550,14 @@ function stations(s: Shape, detail: number): number[] {
   // The arches: the bottom edge is a circle here and a straight line either
   // side of it, and a coarse arch is the first thing a critic sees.
   for (const axle of [s.frontOh, s.frontOh + s.wheelbase]) {
-    const r = (s.wheelR * 1.19) / s.len;
+    const r = (s.wheelR * 1.24) / s.len;
     const c = axle / s.len;
-    const n = Math.max(6, Math.round(9 * detail));
-    for (let i = 0; i <= n; i++) add(c - r + (2 * r * i) / n);
+    const n = Math.max(10, Math.round(14 * detail));
+    // Cosine spacing, so the stations bunch where the lip turns hardest.
+    for (let i = 0; i <= n; i++) add(c - r * Math.cos((Math.PI * i) / n));
   }
+  // The cowl, both edges of it, or the scuttle band smears over the bonnet.
+  add(s.screen[0] - COWL / s.len); add(s.screen[0] - 0.004);
   // Pillars, so a B-pillar is not a smeared gradient across two stations.
   for (const [pu, pw] of s.pillars) { add(pu - pw / 2); add(pu + pw / 2); }
   add(s.dlo[0]); add(s.dlo[1]);
@@ -465,8 +568,11 @@ function stations(s: Shape, detail: number): number[] {
 /* ── Cell roles ─────────────────────────────────────────────────────────── */
 
 const R_PAINT = 0, R_TRIM = 1, R_ARCH = 2, R_UNDER = 3, R_LAMP_R = 4,
-  R_LAMP_F = 5, R_PLATE = 7, R_GRILLE = 8,
+  R_LAMP_F = 5, R_PLATE = 7, R_GRILLE = 8, R_SCUTTLE = 11,
   R_GLASS_S = 20, R_GLASS_W = 21, R_GLASS_B = 22;
+
+/** How far ahead of the windscreen the scuttle band runs. */
+const COWL = 0.050;
 
 function inAny(u: number, ranges: readonly (readonly [number, number])[]): boolean {
   return ranges.some(([a, b]) => u >= a && u <= b);
@@ -474,26 +580,32 @@ function inAny(u: number, ranges: readonly (readonly [number, number])[]): boole
 
 /** What a grid cell is, from the station it spans and the section band it is in. */
 function cellRole(s: Shape, u: number, j: number, yMid: number, arched: boolean): number {
-  const roofBand = j >= 12 && j <= 16;      // cant rail to cant rail over the top
-  const glassBand = (j >= 8 && j <= 9) || (j >= 18 && j <= 19);
+  const band = ([a, b]: readonly [number, number]) => j >= a && j <= b;
+  const roofBand = band(CELL(12, 16));      // cant rail to cant rail over the top
+  const glassBand = band(CELL(8, 9)) || band(CELL(18, 19));
 
   if (u >= s.screen[0] && u <= s.screen[1] && roofBand) return R_GLASS_W;
+  /* The scuttle, wrapping a little wider than the screen itself: on a real car
+   * the black band runs out past the A-pillar feet to the top of each wing. */
+  if (u >= s.screen[0] - COWL / s.len && u < s.screen[0] && band(CELL(10, 18))) {
+    return R_SCUTTLE;
+  }
   if (u >= s.rear[0] && u <= s.rear[1] && roofBand) return R_GLASS_B;
   if (glassBand && u >= s.dlo[0] && u <= s.dlo[1]
       && !inAny(u, s.pillars.map(([pu, pw]) => [pu - pw / 2, pu + pw / 2] as const))) {
     return R_GLASS_S;
   }
 
-  if (j <= 1 || j >= 26) return R_UNDER;
-  if (j === 2 || j === 3 || j === 24 || j === 25) return arched ? R_ARCH : R_TRIM;
+  if (j <= CELL(0, 1)[1] || j >= CELL(26, 27)[0]) return R_UNDER;
+  if (band(CELL(2, 3)) || band(CELL(24, 25))) return arched ? R_ARCH : R_TRIM;
 
-  const flank = (j >= 4 && j <= 7) || (j >= 20 && j <= 23);
+  const flank = band(CELL(4, 7)) || band(CELL(20, 23));
   if (u >= s.lampU && flank && yMid > s.lampY[0] && yMid < s.lampY[1]) return R_LAMP_R;
   if (u <= s.headU && flank && yMid > s.headY[0] && yMid < s.headY[1]) return R_LAMP_F;
   if (u <= 0.030 && flank && yMid > 0.46 && yMid <= s.headY[0]) return R_GRILLE;
   // Bumpers, front and rear, and the rocker under the doors.
   if ((u < 0.055 || u > 0.945) && yMid < 0.60) return R_TRIM;
-  if (j === 4 || j === 24) return R_TRIM;
+  if (band(CELL(4, 4)) || band(CELL(24, 24))) return R_TRIM;
   return R_PAINT;
 }
 
@@ -644,7 +756,26 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
      * of the car the cell is at. */
     const front = part === CAR.LAMP_F || part === CAR.CAP_F || part === CAR.GRILLE;
     const band = front ? s.headY : s.lampY;
-    c.B.attr('aCarB', u * s.len, band[0], band[1], s.len);
+    /* The first slot used to repeat the along-car distance that uv.x already
+     * carries, and nothing read it. It now carries the beltline — the deck
+     * curve at this station, in metres above the road — because that is the
+     * datum the shoulder crease, the waist moulding and the second specular
+     * lobe are all measured down from, and it moves 90 mm between the cowl and
+     * the C-pillar on every one of these bodies. A crease drawn at a constant
+     * height would run out through the door tops at one end of the car and
+     * through the middle of the door at the other. */
+    /* The fourth slot is the body length everywhere except on the two end
+     * panels, where it is the half-width of the section that closes the loft.
+     * The cap shader has no other way to know how wide the panel it is
+     * shading actually is, and it needs to: a lamp cluster is anchored at the
+     * corner of the car, so its inboard edge is measured in from the edge of
+     * the panel and not out from the centreline. With a fixed inboard edge the
+     * van — whose tail panel is 1.5 m across where a hatchback's is 0.7 —
+     * came out with a 400 mm wide cluster on each side. Length is unused on a
+     * cap: the along-car coordinate there is 0 or 1 by construction. */
+    const cap = part === CAR.CAP_F || part === CAR.CAP_R;
+    c.B.attr('aCarB', at(s.deck, u), band[0], band[1],
+      cap ? at(s.hw, part === CAR.CAP_F ? 0 : 1) : s.len);
     c.B.attr('aCarC', dA * s.len, dB * s.len, spec.age, lit);
     void y; void side;
   };
@@ -654,8 +785,8 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
   for (let i = 0; i < NS - 1; i++) {
     const u0 = St[i].u, u1 = St[i + 1].u;
     const uM = (u0 + u1) * 0.5;
-    const arched = St[i].pt[2][1] > St[i].pt[1][1] + 0.06
-                || St[i + 1].pt[2][1] > St[i + 1].pt[1][1] + 0.06;
+    const arched = St[i].pt[PT(2)][1] > St[i].pt[PT(1)][1] + 0.06
+                || St[i + 1].pt[PT(2)][1] > St[i + 1].pt[PT(1)][1] + 0.06;
     for (let j = 0; j < NSEC; j++) {
       const jb = (j + 1) % NSEC;
       const yMid = (St[i].pt[j][1] + St[i].pt[jb][1] + St[i + 1].pt[j][1] + St[i + 1].pt[jb][1]) * 0.25;
@@ -686,9 +817,17 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
         const span = kind === PANE.SCREEN ? s.screen : kind === PANE.REAR ? s.rear : s.dlo;
         const px0 = (u0 - span[0]) / Math.max(0.02, span[1] - span[0]);
         const px1 = (u1 - span[0]) / Math.max(0.02, span[1] - span[0]);
-        // Across the pane: 0 at the beltline or the cant rail, 1 at the top.
+        /* Across the pane. For side glass that is beltline to cant rail; for a
+         * screen it is left to right, and the previous version folded it about
+         * the centreline with an abs(). That fold is the chevron the critic
+         * found in every rear window in the set: a screen's coordinate ran
+         * 0.5 down one side, through 0 on the centreline and back to 0.5, so
+         * the demister lines, the grime band and the curvature bow all met
+         * themselves coming back and drew a hard V. The band j runs 12 to 16
+         * over the roof with 14 on the centreline, so the signed form needs no
+         * folding at all. */
         const py = (k: number) => (kind === PANE.SIDE ? (k === j ? 0 : 1)
-          : Math.abs(((k <= 14 ? k : NSEC - k) - 12) / 4));
+          : (k - PT(14)) / (PT(16) - PT(12)) + 0.5);
         c.G.attr('aGl', seed, kind, spec.dirt, kind === PANE.SCREEN ? 0.055 : 0.030);
         c.G.attr('aGlUV', px0, py(j), spec.age, side);
         const gq: [V3, V3][] = [
@@ -713,7 +852,7 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
   for (const end of [0, NS - 1]) {
     const nose = end === 0;
     const st = St[end];
-    const cy = (st.pt[0][1] + st.pt[HALF - 1][1]) * 0.5;
+    const cy = (st.pt[PT(0)][1] + st.pt[PT(HALF - 1)][1]) * 0.5;
     const cen: V3 = fr.p(0, cy, st.z);
     setB(nose ? CAR.CAP_F : CAR.CAP_R, nose ? 0 : 1, cy, 0);
     for (let j = 0; j < NSEC; j++) {
@@ -850,7 +989,7 @@ function emitWheel(
    * blacks is the last 55 mm of sidewall above the road, which is inside the
    * tyre's own shadow and has no business being lit either way. */
   const down = (i: number, k: number): boolean =>
-    yc + Math.sin((i / sides) * Math.PI * 2) * R * ring[k][0] < flat + 0.055;
+    yc + Math.sin((i / sides) * Math.PI * 2) * R * ring[k][0] < flat + 0.038;
   const nrm = (i: number, k: number): V3 => {
     const a = (i / sides) * Math.PI * 2;
     const [rf, wf] = ring[k];
@@ -1002,8 +1141,8 @@ declare global {
 }
 
 /** Mirrors LENS_RED_LIT in scene/carMaterials.ts; the two must not drift. */
-const LIT_TAIL: [number, number, number] = [0.330, 0.026, 0.012];
-const LIT_NOSE: [number, number, number] = [0.300, 0.240, 0.150];
+const LIT_TAIL: [number, number, number] = [0.900, 0.062, 0.028];
+const LIT_NOSE: [number, number, number] = [0.620, 0.500, 0.315];
 
 /* ── Where the cars are ─────────────────────────────────────────────────── */
 
@@ -1034,6 +1173,16 @@ const LIT_NOSE: [number, number, number] = [0.300, 0.240, 0.150];
  * their tails, and cars against the +X kerb face +Z and show their fronts.
  * One is parked the wrong way round, because on a street like this one always
  * is.
+ *
+ * The colours are a second pass, and the first one failed on the arithmetic
+ * rather than on the palette: six of these nine read pale and not one read
+ * black, in a street where a real kerbside parc is about a quarter white, a
+ * fifth black, a fifth grey, a sixth silver and then blue and red. What it is
+ * now, in order: deep blue, black, dark green, light grey metallic, red,
+ * white van, graphite, black, silver. Two of them are genuinely low albedo and
+ * one of those two — I, on the far kerb at -76.3 — is the only car in the
+ * street that stands in direct sun, which makes it the one place this scene
+ * can show what raking light does to black paint.
  */
 
 /** Kerb face to the nearest body panel. 300-500 mm is what people manage. */
@@ -1047,7 +1196,7 @@ export const PARKED: readonly CarSpec[] = [
      * a scale, and a saloon at 10 m is 150 px of unmistakable reference.
      * Parked facing the traffic, which is the one every street has. */
     kind: 'saloon', x: kerbX(-1, 0.42, 1.80), z: -8.60, yaw: Math.PI - 0.021,
-    colour: 0.30, dirt: 0.45, age: 0.5, seed: 11.7,
+    colour: 0.72, dirt: 0.45, age: 0.5, seed: 11.7,
     note: 'A: near kerb, wrong way round, stop 1',
   },
   {
@@ -1055,7 +1204,7 @@ export const PARKED: readonly CarSpec[] = [
      * Black, because a quarter of the cars in any city are and because a black
      * car is the hardest test of whether the glass is carrying the frame. */
     kind: 'saloon', x: kerbX(+1, 0.36, 1.80), z: -13.00, yaw: 0.014,
-    colour: 0.86, dirt: 0.30, age: 0.35, seed: 3.1,
+    colour: 0.55, dirt: 0.30, age: 0.35, seed: 3.1,
     note: 'F: far kerb, stop 1 right',
   },
   {
@@ -1074,7 +1223,7 @@ export const PARKED: readonly CarSpec[] = [
      * and onto the base of the sunlit frontage, which is most of what a car
      * contributes to a frame at this hour. */
     kind: 'estate', x: kerbX(-1, 0.38, 1.79), z: -42.60, yaw: 0.017,
-    colour: 0.15, dirt: 0.22, age: 0.2, seed: 5.9,
+    colour: 0.25, dirt: 0.30, age: 0.2, seed: 5.9,
     note: 'C: near kerb, hero, stop 3',
   },
   {
@@ -1082,7 +1231,7 @@ export const PARKED: readonly CarSpec[] = [
      * row of cars evenly spaced is a car park and a real kerb is packed at one
      * end and empty at the other. Old, filthy, and the one saturated colour. */
     kind: 'supermini', x: kerbX(-1, 0.30, 1.70), z: -47.55, yaw: -0.038,
-    colour: 0.44, dirt: 0.88, age: 0.9, seed: 19.1,
+    colour: 0.44, dirt: 0.58, age: 0.9, seed: 19.1,
     note: 'L: near kerb, tight behind the hero',
   },
   {
@@ -1098,7 +1247,7 @@ export const PARKED: readonly CarSpec[] = [
      * front of stop four. Behind the split framings, so it cannot intrude on
      * them. */
     kind: 'hatch', x: kerbX(+1, 0.40, 1.75), z: -70.00, yaw: 0.011,
-    colour: 0.72, dirt: 0.55, age: 0.6, seed: 8.8, detail: 0.85,
+    colour: 0.93, dirt: 0.55, age: 0.6, seed: 8.8, detail: 0.85,
     note: 'J: far kerb, stop 4 middle distance',
   },
   {
@@ -1108,7 +1257,7 @@ export const PARKED: readonly CarSpec[] = [
      * nose. Its tail is 1.9 m up-street of the `lit/86` sightline, which is
      * what keeps it out of System 3's frame. */
     kind: 'hatch', x: kerbX(+1, 0.35, 1.75), z: -76.30, yaw: -0.024,
-    colour: 0.02, dirt: 0.38, age: 0.45, seed: 33.7, detail: 0.85,
+    colour: 0.55, dirt: 0.38, age: 0.45, seed: 33.7, detail: 0.85,
     note: 'I: far kerb, sunlit, stop 5',
   },
   {
@@ -1117,7 +1266,7 @@ export const PARKED: readonly CarSpec[] = [
      * nothing else — which is the point: the last frame needs something with a
      * known size in it to read as a hundred metres of street. */
     kind: 'saloon', x: kerbX(-1, 0.37, 1.80), z: -96.40, yaw: 0.032,
-    colour: 0.93, dirt: 0.66, age: 0.8, seed: 61.9, detail: 0.7,
+    colour: 0.15, dirt: 0.66, age: 0.8, seed: 61.9, detail: 0.7,
     note: 'M: near kerb, closing stop',
   },
 ];

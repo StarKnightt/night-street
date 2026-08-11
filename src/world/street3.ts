@@ -1325,6 +1325,32 @@ declare global {
   }
 }
 
+/**
+ * A lit unit with enough of its host building to hang something on.
+ *
+ * `ShopLight` deliberately publishes an aperture and nothing else, because the
+ * spill only needs a rectangle. System 5 also has to *mount* things — an OPEN
+ * sign behind the glass, a projecting sign over the fascia — and that needs the
+ * frame, the fascia line and the facade offset as well.
+ *
+ * Exposed as a separate accessor rather than widened into `ShopLight` so that
+ * the published interface stays the one thing it promises. `litUnits()` is pure
+ * and does no geometry work, so calling it a second time is cheap and returns
+ * the identical answer; that is the same contract `layoutBlock` already offers
+ * and the reason this file recomputes the layout rather than being handed it.
+ */
+export type LitUnit = {
+  light: ShopLight;
+  frame: Frame;
+  /** The unit's extent along the frontage, and its glazing recess. */
+  u0: number; u1: number; rec: number;
+  /** Footway level at the facade, the facade plane offset, the fascia band. */
+  base: number; d0: number; fasciaY0: number; fasciaY1: number;
+  east: boolean;
+  /** Whether there is fabric out over the footway in front of this unit. */
+  awning: boolean;
+};
+
 /* The linear radiance the lit interiors are authored at, shared with the
  * shader so the two cannot drift. Warm, and well under what a real fluorescent
  * shop ceiling would be, because the sun is still up: at this hour a lit shop
@@ -1354,24 +1380,17 @@ export type StreetLevel = {
   dispose(): void;
 };
 
-export function buildStreetLevel(): StreetLevel {
-  const S = new Emit({ aShop: 4, aShop2: 4 });
-  const G = new Emit({ aGlass: 4 });
-  const R = new Emit({ aShut: 4 });
-  const A = new Emit({ aAwn: 4 });
-  const F = new Emit({ aKind: 2, aRect: 4 });
-
-  /* The layout is recomputed rather than handed over.
-   *
-   * `layoutBlock` is a pure function of two fixed seeds and `walkHeight`, so
-   * calling it a second time returns the same block down to the last
-   * millimetre, and every dimension System 3 needs from a building comes out
-   * of `groundLevels` and `groundOpenings`, which System 2 now uses as well.
-   * Threading the layout through the component tree instead would couple this
-   * file to Buildings.tsx for no benefit; sharing the two accessors is what
-   * actually prevents drift. */
+/* The layout is recomputed rather than handed over.
+ *
+ * `layoutBlock` is a pure function of two fixed seeds and `walkHeight`, so
+ * calling it a second time returns the same block down to the last millimetre,
+ * and every dimension System 3 needs from a building comes out of
+ * `groundLevels` and `groundOpenings`, which System 2 now uses as well.
+ * Threading the layout through the component tree instead would couple this
+ * file to Buildings.tsx for no benefit; sharing the two accessors is what
+ * actually prevents drift. */
+function streetUnits(): Unit[] {
   const { bldgs } = layoutBlock((x, z) => walkHeight(x, z));
-
   const units: Unit[] = [];
   for (const b of bldgs) {
     if (!b.street) continue;
@@ -1383,6 +1402,61 @@ export function buildStreetLevel(): StreetLevel {
   }
   units.sort((a, z) => z.z - a.z);
   assignTypes(units);
+  return units;
+}
+
+/** The aperture record for a lit unit — the published System 5 interface. */
+function apertureOf(un: Unit): ShopLight {
+  const b = un.b;
+  const { plinthTop, openTop } = groundLevels(b);
+  const uA = un.bays[0].u0, uB = un.bays[un.bays.length - 1].u1;
+  const uc = (uA + uB) * 0.5;
+  const { ox, oz, ux, uz, nx, nz } = b.frame;
+  const dI = b.d0 - un.bays[0].rec;
+  const y0 = plinthTop + 0.5, y1 = openTop - 0.15;
+  const bar = un.east;
+  return {
+    kind: bar ? 'bar' : 'store',
+    pos: [ox + ux * uc + nx * dI, (y0 + y1) * 0.5, oz + uz * uc + nz * dI],
+    dir: [nx, 0, nz],
+    width: uB - uA, height: Math.max(0.6, y1 - y0),
+    depth: 2.1,
+    colour: bar ? LIT_BAR : LIT_STORE,
+  };
+}
+
+/** The lit units, with what System 5 needs to mount signage on them. */
+export function litUnits(): LitUnit[] {
+  const out: LitUnit[] = [];
+  for (const un of streetUnits()) {
+    if (un.type !== UnitType.LIT) continue;
+    const b = un.b;
+    const { openTop } = groundLevels(b);
+    out.push({
+      light: apertureOf(un),
+      frame: b.frame,
+      u0: un.bays[0].u0, u1: un.bays[un.bays.length - 1].u1,
+      rec: un.bays[0].rec,
+      base: b.base, d0: b.d0,
+      // Kept identical to emitFascia; a sign mounted off a board that is not
+      // where this says it is would float.
+      fasciaY0: openTop + 0.01,
+      fasciaY1: Math.min(b.base + b.gh - 0.20, openTop + 0.55),
+      east: un.east,
+      awning: !!un.awning,
+    });
+  }
+  return out;
+}
+
+export function buildStreetLevel(): StreetLevel {
+  const S = new Emit({ aShop: 4, aShop2: 4 });
+  const G = new Emit({ aGlass: 4 });
+  const R = new Emit({ aShut: 4 });
+  const A = new Emit({ aAwn: 4 });
+  const F = new Emit({ aKind: 2, aRect: 4 });
+
+  const units = streetUnits();
 
   const lights: ShopLight[] = [];
   for (const un of units) {
@@ -1393,24 +1467,7 @@ export function buildStreetLevel(): StreetLevel {
       baseY: un.b.base, nx: un.b.frame.nx,
     };
     emitShopfront(c, un);
-
-    if (un.type !== UnitType.LIT) continue;
-    const b = un.b;
-    const { plinthTop, openTop } = groundLevels(b);
-    const uA = un.bays[0].u0, uB = un.bays[un.bays.length - 1].u1;
-    const uc = (uA + uB) * 0.5;
-    const { ox, oz, ux, uz, nx, nz } = b.frame;
-    const dI = b.d0 - un.bays[0].rec;
-    const y0 = plinthTop + 0.5, y1 = openTop - 0.15;
-    const bar = un.east;
-    lights.push({
-      kind: bar ? 'bar' : 'store',
-      pos: [ox + ux * uc + nx * dI, (y0 + y1) * 0.5, oz + uz * uc + nz * dI],
-      dir: [nx, 0, nz],
-      width: uB - uA, height: Math.max(0.6, y1 - y0),
-      depth: 2.1,
-      colour: bar ? LIT_BAR : LIT_STORE,
-    });
+    if (un.type === UnitType.LIT) lights.push(apertureOf(un));
   }
 
   /* ── Things standing on the paving ────────────────────────────────────

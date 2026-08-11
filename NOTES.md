@@ -44,3 +44,32 @@ the three.
 - Voronoi crack distribution.
 - Stucco spall relief.
 - Shopfront glazing depth.
+
+## The display response does not hold in the emissive path
+
+`display = 0.284 * L^0.4545` is the curve every level in the project is
+authored against, and System 5 found the edge of it. Inverting a target through
+it works for a surface being lit. It does not work for a surface that *is* the
+light, above about L = 1, because that is where the AgX shoulder starts and a
+power law is the wrong shape for a shoulder.
+
+Three points measured off `sys5a`, all emissive, all read as the median of the
+lit face:
+
+| authored L (peak channel) | curve predicts | measured |
+|---|---|---|
+| 1.22  | 132 | 184 |
+| 3.75  | 132 | 223 |
+| 10.85 | 214 | 234 |
+
+The consequence is that emissives authored anywhere above L ≈ 1 all arrive
+within about fifty 8-bit values of each other, and a level meant to be dull
+arrives bright. It cost this system one capture round: the warming street lamps
+were authored at 3.75 and came off disk as bright as the working ones, with the
+right hue and the wrong level. `scene/lights.ts` now carries a measured
+correction on that one constant and says so.
+
+Anyone authoring a new emissive: put it in, shoot it, read the pixel, and
+invert against the table above rather than against the formula. Two iterations
+is normal; one is not enough, because the local slope up there is about 0.16
+and not 0.45.

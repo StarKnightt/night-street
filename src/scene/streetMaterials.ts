@@ -28,6 +28,7 @@ import { signGLSL, signUniforms } from './signs';
 import {
   FACADE_VARYINGS, FACADE_VERTEX, FACADE_NORMAL,
 } from './buildingMaterials';
+import { ARTIFICIAL, artificialAdd, artificialUniforms } from './lights';
 
 /* ── Shared ─────────────────────────────────────────────────────────────── */
 
@@ -81,6 +82,20 @@ reflectedLight.indirectDiffuse =
   reflectedLight.indirectDiffuse +=
     vec3(0.190, 0.104, 0.043) * across * ${bounce.toFixed(2)} * gAO * diffuseColor.rgb;
 }
+/* System 5, and this is where most of it lands.
+ *
+ * The four street-level materials are what the artificial sources are actually
+ * mounted on and closest to: the fascia the bar's neon is bolted to, the render
+ * behind the pharmacy cross, the pilaster beside the store's window, the
+ * shutter under a lamp. Every one of those receives a source at under two
+ * metres, which is the range where an inverse square is a strong gradient
+ * rather than a wash — and a wash is what a source further away than the sun's
+ * own scale delivers.
+ *
+ * Added after the canyon and bounce terms rather than before, so nothing about
+ * the signed-off System 3 appearance moves. vWN rather than the perturbed
+ * normal for the reason given in scene/lights.ts. */
+${artificialAdd('vWN')}
 `;
 
 const STREET_EMISSIVE = /* glsl */ `
@@ -581,7 +596,7 @@ export function makeShopMaterial(): THREE.MeshStandardMaterial {
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
     shader.uniforms.uLitGain = LIT_GAIN;
-    Object.assign(shader.uniforms, signUniforms());
+    Object.assign(shader.uniforms, signUniforms(), artificialUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}
@@ -607,7 +622,7 @@ vBase = aShop.z;
  * here rather than in the fragment shader because it is exactly linear. */
 vDepth = (aShop2.x - vWPos.x) * aShop2.y;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${STREET_PARS}\nvarying vec4 vShop;\nvarying vec4 vShop2;\nvarying float vBase;\nvarying float vDepth;\nuniform float uLitGain;\n${CANYON}\n${SHOP_DECL}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${STREET_PARS}\nvarying vec4 vShop;\nvarying vec4 vShop2;\nvarying float vBase;\nvarying float vDepth;\nuniform float uLitGain;\n${CANYON}\n${ARTIFICIAL}\n${SHOP_DECL}\nvoid main() {`)
       .replace(HOOK, `${HOOK}\n${SHOP_BODY}`)
       .replace('#include <normal_fragment_maps>', FACADE_NORMAL)
       .replace('#include <emissivemap_fragment>', STREET_EMISSIVE)
@@ -1274,6 +1289,7 @@ export function makeShutterMaterial(): THREE.MeshStandardMaterial {
   });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
+    Object.assign(shader.uniforms, artificialUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}
@@ -1291,7 +1307,7 @@ vShutP = aShut;
 // out evenly weathered end to end, which reads as paint.
 vBaseS = aShut.z;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${STREET_PARS}\n${SHUT_DECL}\nvarying float vBaseS;\n${CANYON}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${STREET_PARS}\n${SHUT_DECL}\nvarying float vBaseS;\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)
       .replace(HOOK, `${HOOK}\n${SHUTTER_BODY}`)
       .replace('#include <normal_fragment_maps>', FACADE_NORMAL)
       .replace('#include <lights_fragment_end>', streetEnd(2.9, 0.85));
@@ -1438,6 +1454,7 @@ export function makeAwningMaterial(): THREE.MeshStandardMaterial {
   });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
+    Object.assign(shader.uniforms, artificialUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}
@@ -1447,7 +1464,7 @@ attribute vec4 aAwn;
 void main() {`)
       .replace('#include <begin_vertex>', `${FACADE_VERTEX}\nvFuv = uv;\nvAwnP = aAwn;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${STREET_PARS}\n${AWN_DECL}\n${CANYON}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${STREET_PARS}\n${AWN_DECL}\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)
       .replace(HOOK, `${HOOK}\n${AWNING_BODY}`)
       .replace('#include <normal_fragment_maps>', FACADE_NORMAL)
       .replace('#include <lights_fragment_end>', streetEnd(3.0, 1.1));
@@ -1744,7 +1761,7 @@ export function makeFurnitureMaterial(): THREE.MeshStandardMaterial {
   });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
-    Object.assign(shader.uniforms, signUniforms());
+    Object.assign(shader.uniforms, signUniforms(), artificialUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}
@@ -1759,7 +1776,7 @@ vFuv = uv;
 vKind = aKind;
 vRect = aRect;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${STREET_PARS}\n${FURN_DECL}\n${CANYON}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${STREET_PARS}\n${FURN_DECL}\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)
       .replace(HOOK, `${HOOK}\n${FURN_BODY}`)
       .replace('#include <normal_fragment_maps>', FACADE_NORMAL)
       .replace('#include <lights_fragment_end>', streetEnd(2.9, 0.95));

@@ -42,3 +42,6 @@ next-env.d.ts
 
 # capture harness output (645MB of PNGs, regenerable via npm run shoot)
 /shots/
+
+# Scratch build for tools/sys5.ts, a CPU-only census.
+.sys5/

@@ -120,6 +120,40 @@ export function pierCentres(b: Bldg): number[] {
   return out;
 }
 
+/**
+ * Every upper-storey window opening on a building, in facade coordinates.
+ *
+ * Restates the lattice the emitter walks in `emitBuilding` — the same origin,
+ * the same bay centres, the same 5.5 per cent chance of a blank bay — so that
+ * something outside System 2 can find a *specific* window rather than a
+ * plausible one. System 5 needs exactly that: the television has to be in one
+ * room and it has to be a room that exists, and a hashed selection in the
+ * fragment shader can only deliver "about one", which is zero often enough to
+ * matter and two often enough to look wrong.
+ *
+ * Restating rather than sharing is a drift risk and the alternative was worse:
+ * the emitter interleaves the lattice with band emission, reveal geometry and
+ * four separate attribute streams, and factoring a generator out of it would
+ * be a change to signed-off System 2 code for one caller's benefit.
+ */
+export function upperWindows(b: Bldg): {
+  floor: number; u0: number; u1: number; y0: number; y1: number;
+}[] {
+  const out: { floor: number; u0: number; u1: number; y0: number; y1: number }[] = [];
+  const originY = b.base + b.gh;
+  for (let f = 0; f < b.nUp; f++) {
+    const fb = originY + f * b.fh;
+    const y0 = fb + b.sill;
+    const y1 = Math.min(y0 + b.winH, fb + b.fh - 0.42);
+    for (let i = 0; i < b.bays; i++) {
+      if (h2(b.seed * 61 + f * 5.7, i * 3.3) < 0.055) continue;
+      const uc = 0.25 + (i + 0.5) * b.bayW;
+      out.push({ floor: f, u0: uc - b.winW * 0.5, u1: uc + b.winW * 0.5, y0, y1 });
+    }
+  }
+  return out;
+}
+
 /** Snap a wall-furniture position to the nearest pier centre. */
 function onPier(b: Bldg, u: number): number {
   const piers = pierCentres(b);

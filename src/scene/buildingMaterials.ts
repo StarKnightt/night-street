@@ -27,6 +27,9 @@ import * as THREE from 'three';
 import { NOISE, CANYON } from '@/world/glsl';
 import { SUN_DIR } from './env';
 import { BUILD_LINE } from '@/world/block';
+import {
+  ARTIFICIAL, artificialAdd, artificialUniforms, SYS5_TIME, forDisplay,
+} from './lights';
 
 /* ── Shared plumbing ────────────────────────────────────────────────────── */
 
@@ -153,6 +156,11 @@ float faceAcross = max(-vWN.x, 0.0);
 float bounceH = 0.10 + 0.90 * smoothstep(1.5, 12.0, vWPos.y);
 reflectedLight.indirectDiffuse +=
   vec3(0.190, 0.104, 0.043) * faceAcross * bounceH * gAO * diffuseColor.rgb;
+/* System 5. The masonry receives it for one source in particular: the
+ * pharmacy cross stands 600 mm off this wall and is the only thing in the
+ * scene mounted a hand's width from what it lights. Everything else in the
+ * array is far enough away to be culled on most of this surface. */
+${artificialAdd('vWN')}
 `;
 
 /** Perturb the shading normal by an analytic height gradient, in metres. */
@@ -1003,6 +1011,7 @@ export function makeWallMaterial(): THREE.MeshStandardMaterial {
   });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
+    Object.assign(shader.uniforms, artificialUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}
@@ -1020,7 +1029,7 @@ void main() {`)
 vFuv = uv;
 vGrid = aGrid; vWinP = aWin; vBldgP = aBldg; vRoleF = aRole;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${MASONRY_PARS}\n${CANYON}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${MASONRY_PARS}\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${MASONRY_BODY}`)
       .replace('#include <normal_fragment_maps>', FACADE_NORMAL)
       .replace('#include <lights_fragment_end>', MASONRY_END);
@@ -1031,12 +1040,65 @@ vGrid = aGrid; vWinP = aWin; vBldgP = aBldg; vRoleF = aRole;`);
 
 /* ── Glass ──────────────────────────────────────────────────────────────── */
 
+/* System 5 owns what is behind the glass, and both levels below are inverted
+ * through the measured display response rather than picked.
+ *
+ * A LIT ROOM. The value this replaces was 0.0295 in red, which through
+ * display = 0.284*L^0.4545 lands at 15 counts — a lit window that was
+ * invisible in every frame, and correctly so at the time: System 2's note says
+ * in as many words that it exists only to stop the block reading as derelict
+ * and that System 5 owns the real thing.
+ *
+ * The real thing is bracketed by two things already in the scene rather than
+ * by taste. A sunlit brick wall in this frame measures about 195, which
+ * inverts to L = 8.8. A lit shop interior — System 3's emissive ceiling at
+ * LIT_STORE * 1.55 * 1.35 = 1.674 — lands at 92. A first-floor room behind a
+ * dirty net-curtained sash must sit under the shop, which is a fluorescent
+ * ceiling seen directly through plate glass, and well under the sunlit wall.
+ * 58 counts is 63 per cent of the shop and 30 per cent of the wall, and it
+ * inverts to 0.614. Twenty-one times the old value, and it should be: the old
+ * one was a placeholder that said so.
+ *
+ * Chromaticity is unchanged from System 2's (1.00, 0.583, 0.251) — tungsten,
+ * and warm enough that it lands on screen at (58, 43, 27).
+ *
+ * THE TELEVISION. Authored at 62 in blue rather than in red, which is the
+ * whole point of it: it is the only cool artificial source in the scene apart
+ * from the pharmacy cross, and a street where every window is the same
+ * temperature reads as one rig with a gel on it. Slightly over the tungsten
+ * rooms because a screen-lit ceiling has a higher peak than a shaded bulb
+ * does, and heavily modulated below that by the shot cycle.
+ */
+const LIT_ROOM: [number, number, number] = (() => {
+  const L = forDisplay(58);
+  return [L, L * 0.583, L * 0.251];
+})();
+
+const TV_COLOUR: [number, number, number] = (() => {
+  const L = forDisplay(62);
+  return [L * 0.72, L * 0.86, L];
+})();
+
+/**
+ * Where the television is, set by System 5 once the layout is known.
+ *
+ * A shared uniform object rather than a constructor argument, so that
+ * Buildings.tsx does not have to know System 5 exists and so that there is
+ * exactly one copy of the value. w is zero until it is placed, which switches
+ * the branch off entirely rather than putting a set at the origin.
+ */
+export const TV_AT = { value: new THREE.Vector4(0, -1000, 0, 0) };
+
 const GLASS_PARS = /* glsl */ `
 ${FACADE_VARYINGS}
 varying vec4 vPaneP;   // key, pane columns, blind seed, lit seed
 varying vec2 vGuv;
 uniform vec3 uSun;
 uniform float uBuildLine;
+uniform vec3 uLitRoom;
+uniform vec4 uTv;
+uniform vec3 uTvC;
+uniform float uSysTime;
 vec2 gSlope = vec2(0.0);
 vec3 gLit = vec3(0.0);
 float gRefl = 1.0;
@@ -1090,7 +1152,7 @@ const GLASS_BODY = /* glsl */ `
    * lamp. The full window-lighting rig is System 5; this only stops the block
    * reading as derelict. */
   float lit = step(0.88, fract(vPaneP.w * 9.7)) * step(0.35, fract(key * 2.7));
-  gLit = vec3(0.0295, 0.0172, 0.0074) * lit * (0.5 + 0.9 * fract(key * 5.1));
+  gLit = uLitRoom * lit * (0.5 + 0.9 * fract(key * 5.1));
   // Behind a blind, most of it is blocked; through bare glass you see the room.
   gLit *= mix(1.0, 0.35, blind);
   /* A lit room is not a light box, and rendering it as one is why these read
@@ -1100,6 +1162,46 @@ const GLASS_BODY = /* glsl */ `
   gLit *= mix(0.30, 1.30, smoothstep(0.05, 0.78, uv.y));
   gLit *= 1.0 - 0.60 * smoothstep(0.55, 0.95,
             unit(wfbm(uv * vec2(3.4, 2.2) + key * 4.0, 2)));
+
+  /* ── The television ──────────────────────────────────────────────────
+   *
+   * One room, and it is a *specific* room: uTv carries the world centre of an
+   * opening found on the CPU from the same lattice the emitter walks, so it is
+   * a window that certainly exists rather than one a hash hoped for. The test
+   * is a world-space box because it has to match a single sash and nothing
+   * near it.
+   *
+   * What a television does to a room, seen from a street, is not a flickering
+   * rectangle. The screen faces away from the window in almost every room ever
+   * built, so what reaches the glass is the *ceiling and the far wall* lit by
+   * it — a soft cold field with no edges, an order of magnitude below the
+   * screen itself, filling the top of the window and falling away downward,
+   * which is the same falloff a room light has and for the same reason.
+   *
+   * The modulation is two-rate and both rates are real. Broadcast material
+   * cuts every two to six seconds and mean picture level jumps at every cut;
+   * within a shot it drifts with motion. There is no 50 Hz flicker here on
+   * purpose: at any plausible shutter speed that is either invisible or a
+   * rolling band, and a per-frame random is the tell that separates a rendered
+   * television from a filmed one.
+   */
+  if (uTv.w > 0.5
+      && abs(vWPos.x - uTv.x) < 0.90
+      && abs(vWPos.y - uTv.y) < 1.05
+      && abs(vWPos.z - uTv.z) < 0.90){
+    float shot = floor(uSysTime * 0.29);
+    float level = 0.40 + 0.60 * hash21(vec2(shot, 3.1));
+    // Within the shot: camera movement and the picture changing under it.
+    level *= 0.84 + 0.16 * sin(uSysTime * 6.7 + shot * 2.3);
+    // And the occasional cut to something much brighter, which is what makes
+    // the pattern read as a screen rather than as a fault.
+    level += 0.55 * step(0.93, hash21(vec2(shot, 8.7)));
+    vec3 tv = uTvC * level;
+    // The same room falloff as a lit window, plus more of it: a television is
+    // a low source and it throws most of what it has at the ceiling.
+    tv *= mix(0.18, 1.35, smoothstep(0.02, 0.72, uv.y));
+    gLit = tv * mix(1.0, 0.42, blind);
+  }
 
   /* Dirt. Nobody has cleaned these since the eighties. Rain streaks running
    * down from the top rail, a dusty band along the bottom of each pane where
@@ -1269,6 +1371,10 @@ export function makeGlassMaterial(): THREE.MeshStandardMaterial {
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
     shader.uniforms.uBuildLine = { value: BUILD_LINE };
+    shader.uniforms.uLitRoom = { value: new THREE.Vector3(...LIT_ROOM) };
+    shader.uniforms.uTvC = { value: new THREE.Vector3(...TV_COLOUR) };
+    shader.uniforms.uTv = TV_AT;
+    shader.uniforms.uSysTime = SYS5_TIME;
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}

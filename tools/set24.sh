@@ -39,3 +39,32 @@ $S "$T-walk"  --t 0.4 --yaw 1.15 --pitch -0.3 --noTilt --name 40
 # glass. Both stand off the walk line for the same reason the shop stops do.
 $S "$T-car"   --t 0.4 --yaw 0.30 --pitch -0.13 --fov 55 --name hero  --noTilt --js "$(AT 0.9 -38.6)"
 $S "$T-car"   --t 0.4 --yaw 0.62 --pitch 0.02  --fov 34 --name glass --noTilt --keep --js "$(AT 1.4 -43.5)"
+
+# System 5's four stops. Every position below is derived rather than found:
+# tools/sys5.ts runs the same pure layout the scene does and prints where the
+# lanterns, the neon and the lit apertures actually are, so these frame the
+# work without a discovery batch first.
+#
+#   lamp    lantern 3 (z -45, west, working) against the sky at 41 degrees up,
+#           which is the hardest test in the set — an emissive bowl has to beat
+#           a bright sky, and it is also how a street lamp at this hour is
+#           actually seen: as a source with a corona, not as a pool.
+#   cross   the pharmacy cross at (-5.24, 3.55, -52), the one cool source on
+#           the shaded row, at the range its wash on the render is legible.
+#   neon    the bar's projecting sign at (5.16, 3.95, -65.26) and the traffic
+#           signal at z -61.6 in one frame, with lamp 4 — the warming one —
+#           between them. The clock is pinned so the aspect is green rather
+#           than whatever the settle time happened to leave it on.
+#   spill   the pool from the store's aperture on the footway outside it, with
+#           the kerb and the OPEN sign in the same frame. Pitched down, because
+#           the spill is on the ground and the -shop stops both look up.
+$S "$T-lamp"  --t 0.4 --yaw 0.372  --pitch 0.600 --fov 34 --name head  --noTilt --js "$(AT -1.0 -39.5)"
+$S "$T-cross" --t 0.4 --yaw 0.585  --pitch 0.280 --fov 40 --name 52    --noTilt --js "$(AT -1.6 -46.5)"
+$S "$T-neon"  --t 0.4 --yaw -0.188 --pitch 0.162 --fov 40 --name bar   --noTilt \
+   --js "$(AT 3.0 -53.0); if(window.__sys5) window.__sys5.freeze(26)"
+# And the signal from the lane it is addressed to, because a hooded aspect seen
+# off its own axis is a crescent and there is no framing that reads both it and
+# the bar sign, which faces across the road rather than along it.
+$S "$T-neon"  --t 0.4 --yaw -0.042 --pitch 0.129 --fov 16 --name sig   --noTilt --keep \
+   --js "$(AT 4.5 -52.0); if(window.__sys5) window.__sys5.freeze(26)"
+$S "$T-spill" --t 0.4 --yaw 0.553  --pitch -0.223 --fov 55 --name store --noTilt --js "$(AT -2.6 -20.5)"

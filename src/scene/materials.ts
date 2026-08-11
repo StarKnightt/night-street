@@ -22,6 +22,24 @@ import { NOISE, CANYON } from '@/world/glsl';
 import type { SurfaceSet } from '@/world/bake';
 import { SUN_DIR } from './env';
 import { DIMS } from '@/world/dims';
+import { ARTIFICIAL, artificialAdd, artificialUniforms } from './lights';
+
+/* System 5 arrives on the paving here.
+ *
+ * The three ground materials are the principal receivers of everything
+ * artificial in the street — the lamp pools, the two shopfront spills, the
+ * car's sidelights — and they receive it as an analytic term rather than from
+ * a `Light`, for the reason set out at the top of scene/lights.ts. Appended
+ * after each material's own lighting hook so that none of the signed-off
+ * behaviour above moves: the sun, the sky and the bounce terms all resolve
+ * exactly as they did, and this adds to the result.
+ *
+ * The geometric normal is used rather than the shaded one. At 4.2 degrees the
+ * aggregate and screed normals swing N.L sevenfold between adjacent pixels,
+ * and a source at a few per cent of the sun modulated by that reads as
+ * speckle; the pools are metre-scale features and want a metre-scale normal.
+ */
+const ARTIFICIAL_ADD = artificialAdd('vWNormal');
 
 function tile(set: SurfaceSet, metresPerTile = set.patch) {
   const r = 1 / metresPerTile;
@@ -1731,6 +1749,7 @@ export function makeRoadMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
   }
 
   m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, artificialUniforms());
     shader.uniforms.uRoadHalf = { value: DIMS.roadHalf };
     // Sun azimuth on the ground plane, so each chip knows which of its own
     // flanks is facing the light.
@@ -1741,10 +1760,10 @@ export function makeRoadMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
       .replace('void main() {', `${WORLD_VARYINGS}\nvarying float vSettle;\nattribute float aSettle;\nvoid main() {`)
       .replace('#include <begin_vertex>', `${VERTEX_HOOK}\nvSettle = aSettle;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${ROAD_FRAG_HEAD}\n${CANYON}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${ROAD_FRAG_HEAD}\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${ROAD_FRAG_BODY}`)
       .replace('#include <normal_fragment_maps>', ROAD_NORMAL_HOOK)
-      .replace('#include <lights_fragment_end>', ROAD_RETRO);
+      .replace('#include <lights_fragment_end>', ROAD_RETRO + ARTIFICIAL_ADD);
   };
   m.customProgramCacheKey = () => 'night-street-road';
   return m;
@@ -2391,6 +2410,7 @@ export function makeWalkMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
   });
   applySet(m, set);
   m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, artificialUniforms());
     shader.uniforms.uSlab = { value: DIMS.slab };
     shader.uniforms.uJoint = { value: DIMS.slabJoint };
     shader.uniforms.uBuildLine = {
@@ -2405,10 +2425,10 @@ export function makeWalkMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
       .replace('void main() {', `${WORLD_VARYINGS}\nvoid main() {`)
       .replace('#include <begin_vertex>', VERTEX_HOOK);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${WALK_SCREED}\n${WALK_FRAG_HEAD}\n${CANYON}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${WALK_SCREED}\n${WALK_FRAG_HEAD}\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${WALK_FRAG_BODY}`)
       .replace('#include <normal_fragment_maps>', WALK_NORMAL_HOOK)
-      .replace('#include <lights_fragment_end>', WALK_WALL_AO);
+      .replace('#include <lights_fragment_end>', WALK_WALL_AO + ARTIFICIAL_ADD);
   };
   m.customProgramCacheKey = () => 'night-street-walk';
   return m;
@@ -2630,6 +2650,7 @@ export function makeKerbMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
   });
   applySet(m, set);
   m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, artificialUniforms());
     shader.uniforms.uKerbBlock = { value: DIMS.kerbBlock };
     shader.uniforms.uKerbH = { value: DIMS.kerbHeight };
     shader.uniforms.uCham = { value: DIMS.kerbChamfer };
@@ -2641,10 +2662,10 @@ export function makeKerbMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
       .replace('void main() {', `${WORLD_VARYINGS}\nvarying float vProf;\nvoid main() {`)
       .replace('#include <begin_vertex>', `${VERTEX_HOOK}\nvProf = uv.x;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('void main() {', `${NOISE}\n${KERB_FRAG_HEAD}\nvoid main() {`)
+      .replace('void main() {', `${NOISE}\n${KERB_FRAG_HEAD}\n${ARTIFICIAL}\nvoid main() {`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${KERB_FRAG_BODY}`)
       .replace('#include <lights_fragment_end>',
-        `#include <lights_fragment_end>\n${KERB_RETRO}`);
+        `#include <lights_fragment_end>\n${KERB_RETRO}${ARTIFICIAL_ADD}`);
   };
   m.customProgramCacheKey = () => 'night-street-kerb';
   return m;

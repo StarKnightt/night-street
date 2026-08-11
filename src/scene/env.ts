@@ -200,74 +200,23 @@ function skyRadiance(theta: number, phi: number, out: [number, number, number], 
   out[0] = col[0]; out[1] = col[1]; out[2] = col[2];
 }
 
-/* TEMP: replaced in System 5.
+/* makeLampCookie() stood here and is deleted rather than ported.
  *
- * A projected cookie for the stand-in luminaires.
+ * It was a 128 x 256 projected photometric distribution for the fourteen
+ * stand-in SpotLights: an elongated pool with a reflector cut-off on the house
+ * side, a core offset forward of the pole, and sixty years of dirt on the
+ * bowl. The reasoning behind it was sound and the technique is the right one —
+ * projecting a measured distribution is how luminaire photometry is actually
+ * handled — and it is still the wrong thing to keep, for a reason that has
+ * nothing to do with its quality.
  *
- * A bare SpotLight throws a perfectly circular pool with a perfectly smooth
- * radial falloff, and six frames of that at six different places along a
- * street look like six photographs of the same airbrush. A real luminaire
- * throws nothing of the sort: its distribution is a long asymmetric ellipse
- * reaching down the street, with a visible cut-off on the house side where the
- * reflector stops, a brighter core offset from the pole, and enough dirt and
- * pitting on the bowl to break the edge up.
- *
- * Projecting that as a texture is not a hack around the lack of lamp geometry
- * — it is how photometric distributions are actually handled — and it costs
- * one 128 x 256 sample per light.
+ * The lights it fed were measured contributing 0.0 per cent to the shaded
+ * frontage and 0.10 per cent to the carriageway, and the texture unit this
+ * cost in every material program in the street is why three paving materials
+ * were running without their baked occlusion maps. System 5 keeps the one part
+ * of it that was doing visible work — the asymmetric cut-off — as a cosine
+ * power in the analytic loop in scene/lights.ts, for one pow and no texture.
  */
-export function makeLampCookie(): THREE.DataTexture {
-  const w = 128, h = 256;
-  const data = new Uint8Array(w * h * 4);
-  // Cheap value noise; this is a 32 kB texture and nothing about it needs to
-  // be better than smooth-ish.
-  const hash = (x: number, y: number) => {
-    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    return s - Math.floor(s);
-  };
-  const vnoise = (x: number, y: number) => {
-    const xi = Math.floor(x), yi = Math.floor(y);
-    const xf = x - xi, yf = y - yi;
-    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-    const a = hash(xi, yi), b = hash(xi + 1, yi);
-    const c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
-    return (a + (b - a) * u) + ((c - a) + (a - b + d - c) * u) * v;
-  };
-
-  for (let y = 0; y < h; y++) {
-    // v runs down the street; the distribution is long in this axis.
-    const fy = (y + 0.5) / h * 2 - 1;
-    for (let x = 0; x < w; x++) {
-      const fx = (x + 0.5) / w * 2 - 1;
-
-      // Elongated, and offset forward so the core is not under the pole.
-      const ex = fx / 0.86;
-      const ey = (fy - 0.10) / 1.00;
-      let r = Math.sqrt(ex * ex + ey * ey);
-      // The reflector cut-off: sharper on one side than the other.
-      r *= 1 + Math.max(0, -fx) * 0.42;
-      // Ragged edge from a bowl that has not been cleaned since 1998.
-      r += (vnoise(fx * 3.4 + 5, fy * 3.4 + 9) - 0.5) * 0.16;
-
-      let v = Math.max(0, 1 - r);
-      v = v * v * (3 - 2 * v);
-      // Structure inside the pool: dirt shadows and the lamp's own image.
-      v *= 0.74 + 0.34 * vnoise(fx * 2.1 + 21, fy * 1.5 + 3);
-      v = Math.min(1, Math.max(0, v));
-
-      const k = (y * w + x) * 4;
-      const b = Math.round(v * 255);
-      data[k] = b; data[k + 1] = b; data[k + 2] = b; data[k + 3] = 255;
-    }
-  }
-  const t = new THREE.DataTexture(data, w, h, THREE.RGBAFormat);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.minFilter = THREE.LinearFilter;
-  t.magFilter = THREE.LinearFilter;
-  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
-  t.needsUpdate = true;
-  return t;
-}
 
 export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
   const data = new Float32Array(W * H * 4);   // light probe, no disc

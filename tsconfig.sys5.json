@@ -1,0 +1,16 @@
+{
+  "//": "Scratch config for tools/sys5.ts, which is a CPU-only census run under bare node. Not part of the build; .sys5 is gitignored.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".sys5",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": false,
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["tools/sys5.ts", "src/world/**/*.ts", "src/scene/env.ts", "src/scene/haze.ts"]
+}

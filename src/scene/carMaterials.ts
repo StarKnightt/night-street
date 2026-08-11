@@ -79,6 +79,17 @@ vec3 gReflC = vec3(0.0);
 float gReflBlur = 0.0;
 /** Set by the wheel body on the flat the tyre is squashed onto. */
 float gPatch = 0.0;
+/* A tilt of the shaded normal toward world up, in the same units as a slope.
+ *
+ * gSlope works in the surface's own tangent frame, which is the right frame
+ * for anything drawn against the uv grid and the wrong one for a body crease:
+ * a shoulder line runs horizontally around a car whose tangents are following
+ * the loft, so the same feature would need a different pair of gSlope
+ * components on the door, the wing and the quarter panel. A crease is a tilt
+ * about the horizontal wherever it appears, so it is stated as one. */
+float gTiltY = 0.0;
+/** Sky occlusion on the mirror term, as gAO is on the diffuse one. */
+float gSpecAO = 1.0;
 /** Extra roughness for the clearcoat lobe alone. */
 float gCoatRough = 0.05;
 float gCoat = 1.0;
@@ -156,16 +167,76 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
   float winRow = smoothstep(0.14, 0.24, st) * (1.0 - smoothstep(0.58, 0.68, st));
   float winBay = step(0.34, hash21(vec2(bay, 11.7))) * step(2.6, yHit);
   wall = mix(wall, wall * 0.26 + vec3(0.030, 0.031, 0.040), winRow * winBay * 0.85);
+  /* Awnings, because the striped one over the hero car is the most graphic
+   * object anywhere near it and it was not in the reflection at all. A car
+   * parked at a kerb sits directly under the ground-storey projections, so its
+   * glass and its roof see them at a steeper angle than they see anything
+   * else — a real photograph of this car has the awning bent across the side
+   * glass and nothing else in the upper half of the pane. Two and a half
+   * metres up, one bay in three, and striped along the run at the 320 mm pitch
+   * System 3 builds them with. */
+  float awnB = hash21(vec2(floor(zHit / 5.1), 17.3));
+  float awn = step(0.62, awnB)
+    * smoothstep(2.34, 2.42, yHit) * (1.0 - smoothstep(3.02, 3.10, yHit));
+  vec3 awnC = mix(vec3(0.62, 0.20, 0.16), vec3(1.55, 1.44, 1.30),
+                  step(0.5, fract(zHit / 0.32)));
+  // The soffit is in its own shadow and the top of the valance catches sky.
+  awnC *= 0.30 + 0.85 * smoothstep(2.40, 2.92, yHit);
+  wall = mix(wall, awnC, awn * 0.90);
+
+  /* The ground storey, which is where a car's reflected rays actually land and
+   * which this probe did not model at all.
+   *
+   * A panel on a car is between 300 mm and 1.4 m off the road and its rays
+   * leave nearly horizontally, so they hit the frontage opposite between one
+   * and three metres up — under the fascia, in the shopfronts — almost every
+   * time. This function was handing all of that the storey-banded masonry
+   * gradient, which at that height returns 1.27 of flat warm grey with nothing
+   * in it. Measured off the same frames the walls came from, the ground storey
+   * opposite is darker than that and, more to the point, it is not flat: a
+   * fascia band, then glazing in rectangles between the piers, at 0.52 where
+   * it is reflecting the shade and several times that where it is throwing
+   * back the terrace in the sun. The shopfront material makes exactly this
+   * argument about itself and it is more true here, because a car sits lower
+   * and grazes harder.
+   *
+   * This is most of why the cars read as one continuous cream mass: the
+   * brightness was defensible and the content was a constant. */
+  float unitU = fract(zHit / 4.35);
+  float pier = smoothstep(0.03, 0.11, unitU) * (1.0 - smoothstep(0.86, 0.95, unitU));
+  vec3 fasciaC = vec3(0.150, 0.135, 0.132);
+  vec3 shopC = vec3(0.520, 0.400, 0.330)
+    * (0.35 + 1.30 * hash21(vec2(floor(zHit / 4.35), 47.7)));
+  float shopG = pier * smoothstep(0.58, 0.70, yHit)
+              * (1.0 - smoothstep(2.62, 2.78, yHit));
+  vec3 ground = mix(fasciaC, shopC, shopG);
+  // The stallriser and the pavement shadow under it, which is the darkest
+  // band in the whole reflection and the one that reads as ground.
+  ground = mix(vec3(0.062, 0.056, 0.058), ground, smoothstep(0.10, 0.42, yHit));
+  wall = mix(ground, wall, smoothstep(2.92, 3.20, yHit));
 
   vec2 raz = normalize(vec2(R.x, R.z) + 1e-5);
   float az = dot(raz, normalize(uSun.xz));
-  vec3 skyC = mix(vec3(1.71, 1.36, 2.22), uHorizonSun,
+  /* The sky, and this was the whole of the glass failure.
+   *
+   * Last round I measured the walls and the road and left this line reading
+   * uHorizonSun, which is the atmosphere model's radiance at the horizon —
+   * tens of units. That is a true number for the sky and the wrong number for
+   * this probe, because nothing on a car reflects the horizon: a street-level
+   * ray leaves at a shallow angle and dies in forty metres of haze long before
+   * it gets there, and a ray that goes up leaves at a steep enough angle to be
+   * looking at the zenith rather than at the sun. The result was car glass
+   * measuring 2.9 in linear light against 0.53 for the shopfront glazing
+   * beside it — a pane brighter than every surface it could possibly be
+   * reflecting — and paint so washed out that I put a 0.35 fudge in front of
+   * it rather than find this.
+   *
+   * All three are now measured off the rendered scene through the same
+   * inversion as the walls: the hazed street end toward the sun, the murk away
+   * from it, and the zenith overhead. */
+  vec3 skyC = mix(vec3(1.10, 1.05, 1.55), vec3(4.18, 2.50, 2.03),
                   smoothstep(-0.35, 0.95, az));
-  /* Toward the zenith, and gently: the cool constant above is now the measured
-   * zenith rather than a guess at one, so the old 0.42 here was taking it down
-   * a second time. */
-  skyC = mix(skyC, skyC * 0.78 + vec3(0.16, 0.21, 0.36),
-             smoothstep(0.02, 0.60, max(R.y, 0.0)));
+  skyC = mix(skyC, vec3(1.71, 1.36, 2.22), smoothstep(0.02, 0.55, max(R.y, 0.0)));
   /* The halo, and on a car it is not optional. Aerosol scattering piles light
    * up around the disc over twenty degrees, and a windscreen or a bonnet with
    * a reflected ray anywhere near the sun returns that glare as a soft bloom
@@ -174,17 +245,72 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * carries it, with a hard specular lobe, and counting it twice is what turns
    * every panel into a pinpoint. */
   float ang = acos(clamp(dot(normalize(R), uSun), -1.0, 1.0));
-  skyC += (exp(-ang * 5.2) * 0.54 + exp(-ang * 17.0) * 1.98) * vec3(1.60, 0.86, 0.34);
+  skyC += (exp(-ang * 5.2) * 0.16 + exp(-ang * 17.0) * 0.62) * vec3(1.60, 0.86, 0.34);
 
   /* The carriageway, between the gutter looking away from the sun and the
    * hazed road looking down it. Both measured; the previous pair was an order
    * of magnitude below either. */
   vec3 road = mix(vec3(0.49, 0.34, 0.53), vec3(2.29, 1.36, 1.27),
                   smoothstep(0.1, 0.95, az));
+  /* The road a car actually reflects is the road it is standing on.
+   *
+   * Rendering the probe's hit classification settled where the flank's value
+   * was coming from, and it was not the sky and not the frontage: a panel
+   * between the sill and the shoulder faces very slightly downward, so almost
+   * every ray leaving it lands on the carriageway within two or three metres
+   * of the wheels. This function was handing all of those the open-road
+   * radiance — 2.29 looking down the street into the sun — which is why the
+   * flanks came back as a continuous cream field at 2.8 in linear light while
+   * the diffuse under them measured 0.04.
+   *
+   * That patch of road is the one place in this system whose brightness has
+   * already been measured and praised: it is the contact shadow, at display 22
+   * to 26 against 65 to 75 two metres away, because a car occludes essentially
+   * the whole sky dome from the metre of tarmac beneath it. A ray that lands
+   * there is looking at a tenth of the open road, and the falloff below is the
+   * same one emitShade draws. */
+  road *= mix(0.11, 1.0, smoothstep(0.55, 3.4, dHit));
 
-  bool toSky  = dRoof <= min(dFace, dRoad);
+  /* Sky against frontage, and the crossing between them is softened rather
+   * than switched. A hard select here is what drew the chevrons in the van's
+   * backlight: a straight roofline seen in a convex mirror maps to a curve,
+   * the geometry can only carry that curve as a polyline, and a hard colour
+   * step along it turns every triangle edge into a visible kink. Two degrees
+   * of slop across the crossing costs nothing — a real roofline against a
+   * bright sky is not a step function either, it is a fringe a few
+   * milliradians wide plus whatever the air does to it — and it converts the
+   * kinks into a continuous edge that still lands in the right place.
+   *
+   * The width scales with distance so it stays angular: the same handful of
+   * degrees whether the ray dies on the terrace opposite or eighty metres
+   * down the street. */
+  float dOther = min(dFace, dRoad);
+  float soft   = 0.045 * max(dHit, 1.5);
+  float kSky   = 1.0 - smoothstep(-soft, soft, dRoof - dOther);
   bool toRoad = dRoad <  min(dFace, dRoof);
-  vec3 hit = toSky ? skyC : (toRoad ? road : wall);
+  vec3 hit = mix(toRoad ? road : wall, skyC, kSky);
+
+  /* What is standing in the way, which on a street is nearly everything.
+   *
+   * The model above is an empty canyon: a road, two walls and a strip of sky.
+   * That is a fair description of what a shopfront pane two metres up can see
+   * and a poor one for a car panel, and rendering the hit classification is
+   * what showed why. A flank between the sill and the shoulder faces a degree
+   * or two below horizontal, so its rays do not hit the road beside the car —
+   * they skim it and land twenty metres down the street, in the sun, and the
+   * probe hands back open carriageway at 2.29. Twenty metres of this street at
+   * that height contains the rest of the parked row, two kerbs, a bollard and
+   * a bin; the one thing it does not contain is an uninterrupted view of
+   * sunlit tarmac. That single term was most of the flank's value and all of
+   * its flatness, and it is why the last round needed a 0.35 in front of the
+   * whole reflection to look like anything.
+   *
+   * So a long ray that stays below bonnet height is occluded. Short ones are
+   * not, because the near road really is visible under and beside a car — and
+   * that near road is dark for its own measured reason, see above. */
+  float lowY = max(P.y, P.y + R.y * min(dHit, 8.0));
+  float graze = (1.0 - smoothstep(0.85, 1.55, lowY)) * smoothstep(3.0, 9.0, dHit);
+  hit = mix(hit, hit * 0.15 + vec3(0.030, 0.026, 0.028), graze * 0.88);
 
   /* Aerial perspective on the reflected path, in the same air as the scene
    * fog. A ray leaving a flank at a grazing angle runs the length of the
@@ -224,7 +350,20 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * A ray leaving a car flank horizontally has a neighbourhood of wall and
    * road and no sky in it at all, because there is a building in the way. */
   vec3 avg = mix(mix(road, wall, 0.70), skyC, smoothstep(0.03, 0.75, R.y));
-  return mix(hit, avg, clamp(blur, 0.0, 1.0));
+  /* Half weight on the average, and this is the difference between reflected
+   * energy and a reflected image.
+   *
+   * A rough lobe does see a neighbourhood rather than a point, and replacing
+   * most of the resolved hit with one average colour is how that gets modelled
+   * cheaply — but the average is by construction the flattest thing in the
+   * function, and at full weight on a base coat at roughness 0.3 it was
+   * putting a uniform pedestal over two thirds of every panel. The hard block
+   * where the sunlit frontage lands and the dark band under the fascia both
+   * survived into the resolved hit and were then averaged away, the same
+   * failure
+   * System 3 recorded on the shopfront glazing in the opposite direction: the
+   * level was right and there was nothing in it. */
+  return mix(hit, avg, clamp(blur, 0.0, 1.0) * 0.55);
 }
 `;
 
@@ -297,24 +436,32 @@ totalEmissiveRadiance += gEmit;
  * per cent reflectance and at this exposure that lands on the AgX shoulder,
  * where the curve's slope is so shallow that no albedo variation survives to
  * screen — the road film, the dust line, the panel gaps and the shoulder
- * highlight all arrive as the same value and the car is a white cutout. 0.40
- * is where the structure still reads, and it is defensible on its own terms
- * too: nothing outdoors in a city stays 75 per cent for long.
+ * highlight all arrive as the same value and the car is a white cutout.
+ *
+ * The whole pale end is down by about a stop from the first pass, which read
+ * as six pale cars in nine and no black one anywhere. Two things were wrong
+ * and only one of them was here: these values were high, and the assignment in
+ * PARKED then spent them on the wrong cars — a saloon whose own comment says
+ * "black, because a quarter of the cars in any city are" was carrying index
+ * 0.86, which is champagne. Red is up rather than down, because 0.047 is a
+ * maroon in shade and the brief asks for one saturated car; and the blue is
+ * down and deepened, because at 0.08 in the blue channel it was reading as
+ * powder, which is not a colour cars come in.
  */
 const PAINT_DECL = /* glsl */ `
 vec3 carPaint(float g, out float metalFlake){
   float i = floor(clamp(g, 0.0, 0.999) * 10.0);
   metalFlake = 0.0;
-  if (i < 0.5)      { return vec3(0.4000, 0.3960, 0.3840); }   // white
-  if (i < 1.5)      { metalFlake = 1.0; return vec3(0.1620, 0.1670, 0.1760); } // silver
-  if (i < 2.5)      { metalFlake = 0.7; return vec3(0.0700, 0.0730, 0.0790); } // light grey
-  if (i < 3.5)      { metalFlake = 0.8; return vec3(0.0260, 0.0280, 0.0335); } // gunmetal
-  if (i < 4.5)      { return vec3(0.0470, 0.0082, 0.0080); }   // dark red
-  if (i < 5.5)      { return vec3(0.0125, 0.0126, 0.0134); }   // black
-  if (i < 6.5)      { return vec3(0.0100, 0.0215, 0.0165); }   // dark green
-  if (i < 7.5)      { metalFlake = 0.6; return vec3(0.0225, 0.0380, 0.0800); } // mid blue
-  if (i < 8.5)      { metalFlake = 0.5; return vec3(0.1350, 0.1160, 0.0890); } // champagne
-                      return vec3(0.0215, 0.0220, 0.0236);     // graphite
+  if (i < 0.5)      { return vec3(0.2700, 0.2670, 0.2590); }   // white
+  if (i < 1.5)      { metalFlake = 1.0; return vec3(0.1050, 0.1085, 0.1150); } // silver
+  if (i < 2.5)      { metalFlake = 0.7; return vec3(0.0520, 0.0542, 0.0590); } // light grey
+  if (i < 3.5)      { metalFlake = 0.8; return vec3(0.0230, 0.0248, 0.0298); } // gunmetal
+  if (i < 4.5)      { return vec3(0.1050, 0.0125, 0.0105); }   // red
+  if (i < 5.5)      { return vec3(0.0092, 0.0093, 0.0099); }   // black
+  if (i < 6.5)      { return vec3(0.0090, 0.0195, 0.0150); }   // dark green
+  if (i < 7.5)      { metalFlake = 0.6; return vec3(0.0125, 0.0205, 0.0510); } // deep blue
+  if (i < 8.5)      { metalFlake = 0.5; return vec3(0.0940, 0.0810, 0.0625); } // champagne
+                      return vec3(0.0195, 0.0200, 0.0215);     // graphite
 }
 `;
 
@@ -340,7 +487,7 @@ const PAINT_BODY = /* glsl */ `
   float part = vCar.y;
   float dirt = vCar.z;
   float bodyLen = max(vCarB.w, 1.0);
-  float side  = vCarB.z;
+  float beltY = vCarB.x;
   float doorA = vCarC.x, doorB = vCarC.y;
   float age = vCarC.z, litOn = vCarC.w;
   float along = clamp(alongM / bodyLen, 0.0, 1.0);
@@ -356,7 +503,8 @@ const PAINT_BODY = /* glsl */ `
    * flanks and the lateral axis on the end panels, which is what those
    * features actually run across in both cases. */
   float featX = alongM;
-  bool isCap = part > 8.5;
+  bool isCap = part > 8.5 && part < 10.5;
+  bool isCapR = part > 8.5 && part < 9.5;
   if (isCap){
     float lat = abs(vFuv.x);
     bool rear = part < 9.5;
@@ -364,11 +512,16 @@ const PAINT_BODY = /* glsl */ `
     featX = lat;
     along = rear ? 1.0 : 0.0;
     alongM = along * bodyLen;
-    /* 0.36 m from the centreline to the inboard edge of the cluster. A lamp
-     * unit reaches inboard from the corner by about a third of the half-width
-     * on everything from a supermini to a van, and it is anchored at the
-     * corner, so an absolute inboard edge travels better than a fraction. */
-    float latMin = rear ? 0.36 : 0.34;
+    /* The inboard edge of the cluster, measured in from the corner of the
+     * panel rather than out from the centreline. A cluster is a fitted object
+     * bolted into the corner of the shell: 220 mm of it at the back, a little
+     * less at the front. The floor keeps the hatchbacks as they were — their
+     * tail panel is only 700 mm across, the cluster wraps onto the loft
+     * outside it, and the cap should stay clear of it entirely — while the
+     * van, whose panel is twice as wide, stops painting 400 mm of its rear
+     * doors red. */
+    float halfW = max(vCarB.w, 0.30);
+    float latMin = max(rear ? 0.36 : 0.34, halfW - (rear ? 0.22 : 0.20));
     part = 0.0;
     if (hh > lampLo && hh < lampHi && lat > latMin) part = rear ? 4.0 : 5.0;
     else if (!rear && hh > 0.46 && hh <= lampLo && lat < latMin + 0.12) part = 8.0;
@@ -404,12 +557,22 @@ const PAINT_BODY = /* glsl */ `
     /* Panel gaps. Two door shut lines a side on a hatchback, and they are one
      * of the few hard edges a car body has: 4 mm wide, dark all the way down,
      * running from the sill to the beltline and stopping. A body with no shut
-     * lines is a bar of soap. */
+     * lines is a bar of soap.
+     *
+     * These were built and then found by nobody, and the reason is the width.
+     * A 4.5 mm feature drawn with an antialiased step vanishes outright once
+     * the pixel footprint exceeds it, which on a car four metres away it
+     * already does — the line was being correctly filtered to nothing at every
+     * distance in the set. A shut line is one of the few things on a body that
+     * stays visible however far away it is, because it is a black slot rather
+     * than a shading difference, so the width now has a floor of just under a
+     * pixel and the contrast is carried by the mix instead. */
     float flankness = isCap ? 0.0 : 1.0 - up * 1.4 - down * 1.4;
     if (flankness > 0.05){
+      float gw = max(0.0045, px * 0.75);
       float gap = 0.0;
-      gap = max(gap, 1.0 - aaStep(0.0045, abs(alongM - doorA), px));
-      gap = max(gap, 1.0 - aaStep(0.0045, abs(alongM - doorB), px));
+      gap = max(gap, 1.0 - aaStep(gw, abs(alongM - doorA), px));
+      gap = max(gap, 1.0 - aaStep(gw, abs(alongM - doorB), px));
       gap *= flankness * (1.0 - smoothstep(0.03, 0.14, abs(hh - 0.62) - 0.42));
       col = mix(col, col * 0.16, gap * 0.85);
       rgh = mix(rgh, 0.75, gap * 0.7);
@@ -423,6 +586,62 @@ const PAINT_BODY = /* glsl */ `
                 * aaBand(hy - 0.020, hy + 0.020, hh, px) * flankness;
       col = mix(col, col * 0.55 + vec3(0.010), hnd * 0.8);
       rgh = mix(rgh, 0.22, hnd * 0.6);
+
+      /* The waistline, and it is the reason a real flank has two specular
+       * lobes rather than one.
+       *
+       * A door skin is not a cylinder. It is pressed with a crease a hundred
+       * millimetres or so under the beltline, above which the surface rolls up
+       * toward the glass and below which it falls away, and a second softer
+       * tuck above the sill where it turns under to the rocker. At four
+       * degrees of sun elevation that geometry is the whole read of the side
+       * of a car: a long hot streak along the shoulder, a dark band under it
+       * where the skin faces away, and a dimmer streak along the sill picking
+       * up bounce off the road. The loft as built is one smooth surface from
+       * sill to beltline, which is why the critic found one gradient and no
+       * creases.
+       *
+       * Both are stated as a tilt of the normal about the world horizontal
+       * rather than as a bend in the loft: an odd bump — t·exp(-t²) — is
+       * exactly the normal signature of a crease, positive above and negative
+       * below, integrating to no net change in where the surface is. That
+       * keeps the silhouette the critic passed and adds the shading it asked
+       * for, at the price of four lines and no triangles. Amplitudes are small
+       * on purpose; NOTES.md is emphatic that a large normal perturbation at
+       * this sun elevation is what blew the pavement out. */
+      float ts = (hh - (beltY - 0.115)) / 0.055;
+      float tk = (hh - 0.395) / 0.070;
+      gTiltY += flankness * (
+          clamp(ts, -2.5, 2.5) * exp(-ts * ts) * 0.235
+        + clamp(tk, -2.5, 2.5) * exp(-tk * tk) * 0.130);
+      // Sharper clearcoat right on the crease, which is where it is polished.
+      rgh -= 0.05 * exp(-ts * ts) * flankness;
+
+      /* The waist moulding: a hard dark line along the beltline, under the
+       * DLO. On most of these it is the rubber weatherstrip and on some it is
+       * a bright trim, but either way it is the edge that separates painted
+       * metal from glass and it is never a gradient. */
+      float wl = aaBand(beltY - 0.024, beltY - 0.006, hh, px * 0.6) * flankness;
+      col = mix(col, col * 0.22 + vec3(0.0035), wl * 0.85);
+      rgh = mix(rgh, 0.62, wl * 0.7);
+    }
+
+    /* The tailgate shut line, on the back panel. Twin rear doors on a van and
+     * a single hatch on everything else, but the split is in the same place on
+     * both: a hard vertical slot on the centreline, with a handle beside it.
+     * The critic's note is that the van's rear reads as a flat blue rectangle
+     * with a lighter inset in it rather than as a door, and this is the two
+     * features that make the difference — a car's back panel is otherwise the
+     * largest unbroken area of paint on the whole body. */
+    if (isCapR){
+      float gwR = max(0.005, px * 0.75);
+      float split = 1.0 - aaStep(gwR, featX, px);
+      col = mix(col, col * 0.15, split * 0.88);
+      rgh = mix(rgh, 0.72, split * 0.7);
+      float hR = aaBand(0.085, 0.215, featX, px)
+               * aaBand(0.905, 0.945, hh, px);
+      col = mix(col, col * 0.50 + vec3(0.008), hR * 0.8);
+      rgh = mix(rgh, 0.24, hR * 0.6);
     }
 
     /* Sun bleach and chalking on the horizontal panels. Ten years of it takes
@@ -499,21 +718,71 @@ const PAINT_BODY = /* glsl */ `
     vec2 fc = fract(cell) - 0.5;
     float vis = 1.0 - smoothstep(0.35, 1.20, px / PP);
     float facet = (unit(wfbm(floor(cell) + 0.5, 2)) - 0.5);
-    col = vec3(0.1050, 0.0072, 0.0055);
+    /* The lens is not a sheet of red plastic on a black backing. There is an
+     * aluminised bowl behind it, so daylight goes in through the filter,
+     * bounces off a near-mirror and comes back out through the filter again:
+     * the red channel makes that round trip nearly intact and the other two do
+     * not. That is why a tail lamp is a vivid red object in flat shade while
+     * a piece of red paint beside it is nearly black, and 0.105 in red — the
+     * value of a bare moulding — was reading as a dark navy panel on the van,
+     * which is in shade in every frame it appears in. Two passes through a
+     * filter at 0.66 either way over a 0.85 reflector puts the red at about
+     * 0.37; green and blue stay where a lens leaks them, under two per cent,
+     * so the saturation is untouched and it is still darker in luminance than
+     * the paint around it. */
+    col = vec3(0.3700, 0.0155, 0.0110);
     col *= 1.0 + facet * 0.85 * vis;
     // Lens divisions: the reversing lamp and the indicator inside the cluster.
     float f = clamp((hh - lampLo) / max(lampHi - lampLo, 0.02), 0.0, 1.0);
-    if (f < 0.26){ col = vec3(0.1500, 0.0680, 0.0060); }          // indicator amber
-    else if (f > 0.80){ col = vec3(0.1600, 0.1520, 0.1420); }     // reverse, clear
+    if (f < 0.26){ col = vec3(0.4400, 0.1950, 0.0135); }          // indicator amber
+    else if (f > 0.80){ col = vec3(0.4300, 0.4150, 0.3900); }     // reverse, clear
     rgh = 0.09 + 0.10 * dirt; coat = 1.0; met = 0.0;
     gSlope += vec2(fc.x, fc.y) * 0.06 * vis;
     grime = 0.8;
-    /* Sidelights, on exactly one car in the street. Authored well under the
-     * sunlit brickwork in this scene, which measures around 2.3 in linear
-     * radiance: at 0.33 the lens is a dull coal that reads as switched on
-     * without reading as a lamp. System 5 owns anything this throws onto the
-     * road — see CarLight in world/cars.ts. */
-    gEmit += vec3(0.330, 0.026, 0.012) * litOn * (0.55 + 0.45 * step(f, 0.80))
+
+    /* Everything from here down is what makes the cluster findable, and a
+     * saturated-red pass over the last set found exactly one of them in
+     * twenty-six frames. The physics above is not what was wrong: a lens at
+     * one tenth reflectance in red and half a per cent in green really is
+     * darker than the paint around it, and the critic explicitly defends the
+     * decision not to light it. What was missing is that a lens is also the
+     * glossiest thing on a parked car and it is curved, so it is never a flat
+     * field — it always carries a hard specular sliver somewhere across it,
+     * and it always sits in a bezel.
+     *
+     * The curvature is stated as a lateral sweep of the normal. A cluster
+     * wraps maybe fifteen degrees from its inboard edge to the corner of the
+     * car, which is enough for the reflected ray to travel right across the
+     * sky and find something bright at some point along it whatever the car is
+     * pointing at. That sweep is the sliver. */
+    float lensU = clamp((featX - 0.34) / 0.34, 0.0, 1.0);
+    gTiltY += (0.5 - f) * 0.34;
+    gSlope += vec2(lensU - 0.42, 0.0) * 0.55;
+
+    /* The bezel. Chrome on some, body-coloured plastic on others, black on the
+     * cheap ones — but always a hard frame with its own gloss, and always a
+     * few millimetres proud of the lens, which is why a cluster reads as a
+     * fitted object rather than as a decal. */
+    float edge = min(min(f, 1.0 - f) * (lampHi - lampLo), (featX - 0.335));
+    float bez = 1.0 - aaStep(0.014, edge, px);
+    vec3 chrome = vec3(0.5400, 0.5350, 0.5250);
+    col = mix(col, mix(vec3(0.0180, 0.0178, 0.0180), chrome,
+                       step(0.45, hash21(vec2(seed, 4.4)))), bez * 0.92);
+    rgh = mix(rgh, 0.16, bez);
+    met = mix(met, 0.85 * step(0.45, hash21(vec2(seed, 4.4))), bez);
+    // And the lens sits down inside it, so the frame occludes the lens edge.
+    gAO *= 1.0 - (1.0 - aaStep(0.026, edge, px)) * 0.35;
+    /* Sidelights, on exactly one car in the street, and the critic could not
+     * find it in any of twenty-six frames at any threshold. 0.33 was set
+     * against the sunlit brickwork at 2.3 on the argument that a sidelight is
+     * far dimmer than a sunlit wall, which is true and was the wrong
+     * comparison: what a tail lamp has to beat is the unlit lens next to it
+     * and the shaded bodywork around it, both of which are under 0.05. At 0.90
+     * it is four counts of display over its own lens at ten metres, which is
+     * what a 5 W bulb behind red acrylic looks like at this hour, and it is
+     * still a fifth of the wall behind it. System 5 owns anything this throws
+     * onto the road — see CarLight in world/cars.ts. */
+    gEmit += vec3(0.900, 0.062, 0.028) * litOn * (0.55 + 0.45 * step(f, 0.80))
            * (1.0 - 0.35 * dirt);
 
   } else if (part < 5.5){
@@ -530,7 +799,7 @@ const PAINT_BODY = /* glsl */ `
     float bowl = smoothstep(0.55, 0.18, abs(fract(featX * 3.4 + 0.5) - 0.5) * 2.0);
     col = mix(col, col * 0.42 + vec3(0.0180, 0.0180, 0.0190), bowl * 0.6);
     rgh = mix(0.06, 0.42, milk); coat = 1.0;
-    gEmit += vec3(0.300, 0.240, 0.150) * litOn * 0.55;
+    gEmit += vec3(0.620, 0.500, 0.315) * litOn * 0.55;
     grime = 1.2;
 
   } else if (part < 6.5){
@@ -569,12 +838,24 @@ const PAINT_BODY = /* glsl */ `
      * is why it breaks the line of the glass — and that pair of dark humps in
      * the back window is the most recognisable thing about a car seen from
      * behind at fifty metres. */
-    float belt = 0.98;
-    float seatF = smoothstep(0.02, 0.0, abs(along - 0.47) - 0.055);
-    float seatR = smoothstep(0.02, 0.0, abs(along - 0.70) - 0.055);
-    float head = max(seatF, seatR) * (1.0 - smoothstep(belt + 0.10, belt + 0.20, hh));
+    /* The beltline, from the section rather than from a constant. It was 0.98
+     * for every body, which was near enough on a supermini and 100 mm out on a
+     * van, and it is now 40 to 90 mm higher on all of them since the deck
+     * curves were redrawn — a headrest measured off the wrong datum sits in
+     * the middle of the glass or under the door. */
+    float belt = beltY;
+    float seatF = smoothstep(0.02, 0.0, abs(along - 0.47) - 0.062);
+    float seatR = smoothstep(0.02, 0.0, abs(along - 0.70) - 0.062);
+    float head = max(seatF, seatR) * (1.0 - smoothstep(belt + 0.11, belt + 0.21, hh));
     float below = 1.0 - smoothstep(belt - 0.02, belt + 0.05, hh);
-    float solid = clamp(max(head, below), 0.0, 1.0);
+    /* The B-pillar, from the inside. It is trimmed in the darkest material in
+     * the car and it is the one hard vertical a side window has in it — the
+     * thing that says there are two windows here rather than one long slot.
+     * doorB is the pillar on every body in SHAPES; the shut line outside and
+     * the trim inside are the same station. */
+    float pil = smoothstep(0.026, 0.0, abs(alongM - doorB) - 0.028);
+    float solid = clamp(max(max(head, below), pil * 0.92), 0.0, 1.0);
+    col = mix(col, col * 0.45, pil * 0.8);
 
     vec3 Vw = normalize(vWPos - cameraPosition);
     /* Daylight through the far side. Two panes at about 0.82 transmission
@@ -629,7 +910,7 @@ const PAINT_BODY = /* glsl */ `
     col = mix(col, vec3(0.0170, 0.0170, 0.0175), ink * 0.92);
     rgh = 0.52; coat = 0.15; grime = 1.5;
 
-  } else {
+  } else if (part < 8.5){
     /* ── Grille ─────────────────────────────────────────────────────────
      *
      * A dark recess with slats in it. Nearly black, because it is a hole with
@@ -641,6 +922,25 @@ const PAINT_BODY = /* glsl */ `
     rgh = 0.55; coat = 0.3; met = 0.25;
     gAO *= 0.35;
     grime = 1.4;
+
+  } else {
+    /* ── The scuttle ────────────────────────────────────────────────────
+     *
+     * Fifty millimetres of unpainted black plastic between the bonnet and the
+     * windscreen, with the wiper trough in it. The step it makes at the cowl
+     * is the whole reason it exists — see CAR.SCUTTLE — so it is stated in
+     * albedo and in gloss at once: a tenth of the reflectance of even a black
+     * car, matte where the bonnet is a mirror, and shadowed because it sits in
+     * a trough under the trailing edge of the bonnet with the screen behind
+     * it. The wipers park in the near end of it. */
+    col = vec3(0.0125, 0.0124, 0.0128);
+    col *= 0.80 + 0.34 * unit(wfbm(pw * 7.0, 2));
+    rgh = 0.80; coat = 0.10; met = 0.0; grime = 1.5;
+    gAO *= 0.42;
+    // The blades: two dark bars lying across it, at the pitch a pair parks at.
+    float bl = aaBand(0.16, 0.42, fract(featX * 1.35), px * 1.35)
+             + aaBand(0.58, 0.80, fract(featX * 1.35), px * 1.35);
+    col *= 1.0 - clamp(bl, 0.0, 1.0) * 0.35;
   }
 
   /* ── Dirt, which every one of them wears differently ─────────────────
@@ -653,15 +953,29 @@ const PAINT_BODY = /* glsl */ `
    * streaks, taking the film with it in lines and leaving it between them.
    */
   float d = dirt * grime;
+  float filmAmt = 0.0;
   {
-    // Road film: the bottom third, and further up the further back you go.
-    float top = 0.30 + 0.30 * along;
-    float film = (1.0 - smoothstep(top * 0.55, top, hh))
+    /* Road film: the bottom third, and further up the further back you go.
+     *
+     * This was built and then measured at nothing: the hero's lower flank came
+     * back at display 162 against 96 for the mid flank and 139 for the sunlit
+     * pavement beside it, which is the value gradient of a car exactly upside
+     * down. Two things were wrong. It was scaled by the per-car dirt figure
+     * with no floor, so the cleanest cars — which are the ones parked closest
+     * to the camera — had almost none of it; and it stopped at 300 mm, which
+     * is the rocker rather than the lower third of the body. A car that has
+     * been driven on a wet road once has film up the bottom four hundred
+     * millimetres of the doors whatever its owner thinks, and it is the single
+     * strongest value cue the side of a car has. */
+    float top = 0.36 + 0.34 * along;
+    float dF = clamp(0.42 + 0.72 * d, 0.0, 1.30);
+    float film = (1.0 - smoothstep(top * 0.42, top, hh))
                * (0.55 + 0.55 * unit(wfbm(pw * 1.6, 3)));
-    film = clamp(film * d, 0.0, 1.0);
-    col = mix(col, mix(col, vec3(0.0290, 0.0262, 0.0225), 0.72), film * 0.80);
-    rgh = mix(rgh, 0.86, film * 0.80);
-    coat *= 1.0 - film * 0.85;
+    film = clamp(film * dF, 0.0, 1.0);
+    col = mix(col, mix(col, vec3(0.0250, 0.0224, 0.0186), 0.86), film * 0.86);
+    rgh = mix(rgh, 0.88, film * 0.86);
+    coat *= 1.0 - film * 0.90;
+    filmAmt = film;
 
     /* The dust line along the sill. Every car that has been driven on a wet
      * road has a hard-edged pale band where the film thins out at the top of
@@ -688,13 +1002,40 @@ const PAINT_BODY = /* glsl */ `
     rgh = mix(rgh, 0.80, run * 0.55);
   }
 
-  /* Contact occlusion on the car itself. The bottom 150 mm of a body sees the
-   * road and its own shadow and very little else, and at four degrees there is
-   * no cast shadow available to do the job on the sunward side. Without it the
-   * sills read as brightly as the roof and the car floats. */
-  gAO *= mix(0.20, 1.0, smoothstep(-0.02, 0.42, hh));
+  /* Contact occlusion on the car itself. The bottom of a body sees the road
+   * and its own shadow and very little else, and at four degrees there is no
+   * cast shadow available to do the job on the sunward side. Without it the
+   * sills read as brightly as the roof and the car floats.
+   *
+   * It now runs to 580 mm rather than 420, which is the top of the road film
+   * rather than the top of the rocker, and it is applied to the reflection as
+   * well as to the irradiance. That second part is what was missing: a panel
+   * 200 mm off the ground cannot see half the sky, and leaving the mirror term
+   * unoccluded meant the lower flank was returning a clean image of the
+   * sunlit frontage while the diffuse beside it was correctly dark. */
+  gAO *= mix(0.16, 1.0, smoothstep(-0.02, 0.58, hh));
+  /* Sky occlusion on the mirror, over the whole height of the body, and this
+   * is the term that replaces last round's 0.35.
+   *
+   * With the reflection switched off entirely a flank measures 16 counts and
+   * with it on it measures 116, so on a car parked in shade the mirror is not
+   * part of the value, it is all of it — which means the height gradient the
+   * critic asked for has to be stated here or it cannot exist. It is a real
+   * occlusion and not a curve fit: what a panel can see of the bright half of
+   * the world falls off steeply as it drops, because the kerb, the footway,
+   * the row of parked cars and the car's own bodywork all subtend more of the
+   * hemisphere the lower you go, and none of them are in the analytic canyon.
+   * At the roof it is unity, at the shoulder about two thirds, at the sill
+   * under a fifth — roof hot, mid falling away, lower third dark, which is the
+   * order a car actually reads in.
+   *
+   * The film term is the other half. A mirror is a property of the clearcoat,
+   * and the bottom of a car does not have a clearcoat any more, it has four
+   * hundred millimetres of dried road spray. */
+  gSpecAO = mix(0.12, 1.0, smoothstep(0.10, 1.35, hh)) * (1.0 - filmAmt * 0.62);
   // And the underside of every overhang: sills, bumper undercuts, arch lips.
   gAO *= 1.0 - down * 0.55;
+  gSpecAO *= 1.0 - down * 0.45;
 
   diffuseColor.rgb *= col;
   roughnessFactor = clamp(rgh, 0.055, 1.0);
@@ -773,32 +1114,15 @@ vCarC = aCarC;`);
         `${NOISE}\n${CAR_PARS}\n${CAR_FRAG_DECL}\n${CANYON}\n${STREET_PROBE}\n${PAINT_DECL}\nvoid main() {`)
       .replace(HOOK, `${HOOK}\n${PAINT_BODY}`)
       .replace('#include <normal_fragment_maps>', `${FACADE_NORMAL}
+normal = normalize(normal + vec3(0.0, gTiltY, 0.0));
 /* The reflection is resolved from the shaded normal, not the geometric one, so
  * that the prism structure in a lamp lens and the panel curvature both bend
  * what they return. */
 {
   vec3 Vw = normalize(vWPos - cameraPosition);
   vec3 Rw = reflect(Vw, normalize(normal));
-  gReflC = streetProbe(vWPos, Rw, gCoatRough * 1.6);
-  gRefl = streetProbe(vWPos, Rw, gReflBlur);
-  /* A compensation, and it is a debt rather than a result — recorded here in
-   * full because the next person will otherwise spend the round I just spent.
-   *
-   * The probe above is now measured rather than guessed, and on paint that
-   * turned a dark blue saloon white. The reflection is unambiguously what did
-   * it: zeroing these two lines and changing nothing else brings the colour
-   * straight back. What I could not establish in the time available is where
-   * the over-weighting lives, and there are three candidates I ruled neither
-   * in nor out — the clearcoat lobe, which gets the sharp probe and whose
-   * terminal toward the sun is the sky itself; the roughness average, which a
-   * curved panel samples over a wide arc; and the possibility that the paint
-   * simply should be this bright and the fault is a silver-heavy palette.
-   *
-   * Against that, the same probe feeding car glass is visibly right, which is
-   * the case System 3's finding was about. So the constants stay measured and
-   * the compensation sits at paint's point of use, where it is one number that
-   * can be deleted the moment the real cause is found. */
-  gReflC *= 0.35; gRefl *= 0.35;
+  gReflC = streetProbe(vWPos, Rw, gCoatRough * 1.6) * gSpecAO;
+  gRefl = streetProbe(vWPos, Rw, gReflBlur) * gSpecAO;
 }`)
       .replace('#include <lights_fragment_maps>', CAR_MAPS(2.00))
       .replace('#include <emissivemap_fragment>', CAR_EMISSIVE)
@@ -853,8 +1177,19 @@ const GLASS_BODY = /* glsl */ `
   float dirt = vGl.z;
   float bow  = vGl.w;
   float seed = vGl.x;
-  vec2 q = vFuv;                       // (along the pane, across it) in 0..1
+  vec2 q = vFuv;
   float px = fwidth(q.x) + fwidth(q.y);
+
+  /* Two coordinates that mean the same thing on all three kinds of pane: how
+   * far up it you are, and how far along the run. On side glass the raw uv
+   * already says that; on a screen the pane is laid out lengthwise along the
+   * car, so up the pane is the along-car axis and it runs the other way on the
+   * backlight than on the windscreen. Every feature below is written against
+   * these rather than against uv, because a wiper sweep, a grime band and a
+   * demister element are all defined relative to the bottom of the glass and
+   * the old code had three different opinions about where that was. */
+  float up  = kind < 0.5 ? q.x : (kind > 1.5 ? 1.0 - q.x : q.y);
+  float acr = kind < 0.5 || kind > 1.5 ? q.y : q.x;
 
   /* Curvature. The loft carries the real shape, but a windscreen is a doubly
    * curved surface sampled at a dozen stations and the facets it leaves are
@@ -863,18 +1198,18 @@ const GLASS_BODY = /* glsl */ `
    * of the street into the middle of a screen is a strong cue on its own, and
    * a flat pane cannot produce it. Low frequency, so this is nowhere near the
    * relief that a four degree sun turns into noise. */
-  gSlope += vec2((q.x - 0.5) * bow * 2.0, (q.y - 0.5) * bow * 0.9);
+  gSlope += vec2((acr - 0.5) * bow * 2.0, (up - 0.5) * bow * 0.9);
 
   /* Dirt. A parked car's glass is filthy in a specific pattern: the wiper
    * sweep is clean and everything outside it is not, there is a band of grime
    * along the bottom where the scuttle throws it, and the side glass has the
    * vertical rain runs the paint has. */
-  float film = 0.10 + 0.42 * unit(wfbm(vec2(q.x * 9.0, q.y * 2.2) + seed, 3));
-  film += 0.45 * (1.0 - smoothstep(0.0, 0.22, q.y));
+  float film = 0.10 + 0.42 * unit(wfbm(vec2(acr * 9.0, up * 2.2) + seed, 3));
+  film += 0.45 * (1.0 - smoothstep(0.0, 0.22, up));
   if (kind < 0.5){
     // The wiper arc: two overlapping sweeps, clean inside.
-    float arc = min(length(vec2((q.x - 0.30) * 1.25, q.y - 0.05)),
-                    length(vec2((q.x - 0.72) * 1.25, q.y - 0.05)));
+    float arc = min(length(vec2((acr - 0.30) * 1.25, up - 0.05)),
+                    length(vec2((acr - 0.72) * 1.25, up - 0.05)));
     film *= mix(1.0, 0.35, smoothstep(0.78, 0.42, arc));
   }
   film = clamp(film * (0.35 + 0.9 * dirt), 0.0, 1.0);
@@ -893,6 +1228,18 @@ const GLASS_BODY = /* glsl */ `
   vec3 hazeC = mix(vec3(0.85, 0.80, 0.95), vec3(4.18, 2.50, 2.03),
     smoothstep(-0.25, 0.90, dot(normalize(vec2(R.x, R.z) + 1e-5), normalize(uSun.xz))));
   gRefl = mix(gRefl, hazeC * 0.85, film * 0.32);
+  /* The same occlusion the paint carries, and for the same reason.
+   *
+   * streetProbe is an empty canyon and a side window is not looking at one: it
+   * is a pane 1.2 m off the road with the rest of the parked row, both kerbs,
+   * the footway furniture and the car's own pillars between it and everything
+   * the model returns. Unoccluded, this pane measured 3.1 in linear light —
+   * brighter than the body it sits in at 1.7 and six times the shopfront
+   * glazing across the road at 0.52, which is the comparison the critique
+   * turns on and the one this scene can settle, because both are in the same
+   * frame. A car window is not a better mirror than a shop window; it is a
+   * smaller, dirtier, more curved one with more standing in its way. */
+  gRefl *= 0.30;
   /* Drain some of the saturation, exactly as the sash glass and the shopfront
    * glazing do. A pane with city film on it is not a first-surface mirror:
    * most of what leaves it toward the eye has been scattered rather than
@@ -900,12 +1247,18 @@ const GLASS_BODY = /* glsl */ `
    * toward grey. */
   gRefl = mix(gRefl, vec3(dot(gRefl, vec3(0.2126, 0.7152, 0.0722))), 0.30);
 
-  /* Fresnel. 0.075 rather than the textbook 0.04, because car glass is tinted
-   * and laminated — two surfaces and an interlayer — and because a week of
-   * city film scatters more at every angle than clean glass does. */
+  /* Fresnel, on the shopfront glazing's form rather than on a guess.
+   *
+   * That material is the best surface in the build and it earns it here: the
+   * textbook 0.043 for n = 1.52 at one interface, then 2R/(1+R) because a
+   * windscreen is a laminated slab and the light that refracts in meets the
+   * second boundary on the way out. 8.2 per cent head-on, unity at grazing.
+   * The old 0.075 base was standing in for the film, which is added separately
+   * below and was therefore being counted twice. */
   float ndv = clamp(abs(dot(Nw, -Vw)), 0.0, 1.0);
-  float F = 0.075 + 0.925 * pow(1.0 - ndv, 5.0);
-  F = clamp(F + film * 0.10, 0.0, 1.0);
+  float Fs = 0.043 + 0.957 * pow(1.0 - ndv, 5.0);
+  float F = 2.0 * Fs / (1.0 + Fs);
+  F = clamp(F + film * 0.055, 0.0, 1.0);
   /* Privacy tint on the rear side glass and the backlight, which most cars
    * have and which is why the back of a car is darker than the front. It
    * cannot reduce the reflection, only what comes through — so it goes into
@@ -922,7 +1275,7 @@ const GLASS_BODY = /* glsl */ `
    * pitch, and they are the one detail that identifies a rear window at any
    * distance where the window itself is more than a few pixels. */
   if (kind > 1.5){
-    float lines = aaStep(0.80, fract(q.y * 9.0), px * 9.0);
+    float lines = aaStep(0.80, fract(up * 9.0), px * 9.0);
     gRefl *= 1.0 - lines * 0.07;
     diffuseColor.a = min(1.0, diffuseColor.a + lines * 0.04);
   }
@@ -1038,9 +1391,24 @@ const WHEEL_BODY = /* glsl */ `
      * scene entitled to be black, and the reflection is switched off outright
      * rather than attenuated. */
     gPatch = 1.0;
-    col = vec3(0.0032, 0.0031, 0.0032);
     rgh = 1.0;
-    gAO *= 0.03;
+    /* Suppressing the reflection was the fix and blacking the albedo with it
+     * was one step too far: the flat and the 55 mm of sidewall above it went
+     * to the same value, so what the critic saw was a tyre curving into a void
+     * rather than a tyre standing on a flat. A loaded tyre shows two things at
+     * the road — a straight segment about 150 mm long where the tread is in
+     * contact, and immediately above it a darker crescent where the sidewall
+     * bulges out past the tread and shades itself. So the plane keeps the
+     * black, and the wall above it is rubber with an occlusion ramp on it,
+     * which is what draws the crescent.
+     *
+     * The margin quads are the ones that used to interpolate through
+     * horizontal and catch the sky; gPatch still holds the mirror off all of
+     * them, which is the part that has to stay. */
+    float onRoad = 1.0 - smoothstep(0.004, 0.030, vWPos.y - vWhlBase);
+    col = mix(vec3(0.0102, 0.0100, 0.0104), vec3(0.0034, 0.0033, 0.0034), onRoad);
+    col *= 0.82 + 0.36 * unit(wfbm(pw * 1.4, 3));
+    gAO *= mix(0.16, 0.03, onRoad);
 
   } else if (part < 1.5){
     /* ── Rubber ─────────────────────────────────────────────────────── */

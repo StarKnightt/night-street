@@ -33,6 +33,7 @@ import { installSensorFloor } from './sensor';
 import { Buildings } from './Buildings';
 import { StreetLevel } from './StreetLevel';
 import { Cars } from './Cars';
+import { Lighting } from './Lighting';
 
 export function Street() {
   installSensorFloor();
@@ -189,9 +190,13 @@ export function Street() {
       <Buildings />
       <StreetLevel />
       <Cars />
+      {/* System 5. Seven luminaires, three neon signs, a traffic signal and
+        * the analytic sources they register — and not one additional Light.
+        * Mounted after Cars because it picks up window.__carLights. */}
+      <Lighting />
       {/* The key light, which used to be rendered from inside the lamp component
-        * and so was carried off with it when the lamps went. It is the only light
-        * in the scene now, which is what this hour actually has. */}
+        * and so was carried off with it when the lamps went. It is still the
+        * only light in the scene, which is what this hour actually has. */}
       <SunLight />
       <Dust />
     </group>
