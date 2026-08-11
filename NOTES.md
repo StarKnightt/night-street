@@ -8,8 +8,69 @@ The technique brief for Systems 5, 6 and 8 — lighting, atmosphere and
 post-processing — lives at `docs/TECHNIQUE.md`. Read it before starting any of
 the three.
 
+## The shadowed-ground shimmer — closed, and the premise did not survive
+
+The walk harness reported that the shadowed carriageway differences at 9.5 code
+values after 5.6 mm of camera travel and only 13.8 after 90 mm, and reasoned
+that a difference already saturated at the smallest step must be aliasing. The
+first half reproduces exactly. The second is the part to correct, because it
+sent two rounds of work at the wrong causes and someone will otherwise send a
+third.
+
+`tools/shimmer.mjs` reruns the measurement independently. Each candidate was
+removed and the same walk remeasured; on the nearest carriageway, at 5.8 mm of
+travel:
+
+| what was removed | change |
+| --- | --- |
+| supersample 2× — four samples per pixel, boxed to the same output grid | −8% |
+| variance-aware normal filtering at 6× coefficient and 9× cap (`?saa=`) | 0% |
+| PCSS tap rotation anchored to the world instead of the screen | 0% |
+| the shadow filter reduced to a single tap (`?onetap`) | 0% |
+| the analytic chip layer entirely (`?nochips`) | −9% |
+| the road's specular lobes (`?nospec`) | −39% |
+
+**The supersample row is the one that settles it.** Four samples per pixel halve
+the amplitude of anything above Nyquist, and they remove almost nothing — so the
+content under the pixel is resolved and this is not aliasing. Normal-map
+aliasing, mip selection, LOD bias and shadow-map swimming are each excluded by a
+row of their own.
+
+What it actually is: the near carriageway crosses the screen at about 1.4 pixels
+per frame at 1/240 s and 1 m/s, where the facade beside it moves 0.07. A
+difference saturates once the image has moved past the correlation length of its
+own detail, so the test as posed separates *fast-moving* image content from
+slow-moving, not aliased from resolved. The facade's 6.1× growth and the near
+road's 1.1× are the same surface behaviour at two very different screen speeds.
+The distance trend says the same thing in the other direction: per pixel of
+image motion the far field is the *least* stable, which is the opposite of what
+a near-field aliasing story predicts.
+
+The only honest filter for resolved detail moving that fast is the camera's own,
+and §5.5's arithmetic had already specified it: a 5.7 mm lens at f/1.7 focused at
+8 m carries about 1.3 px of circle of confusion at the nearest ground a standing
+eye can see, and none past three metres. Measured on the same walk, near
+carriageway at 5.8 mm: **19.2 → 13.1 counts**, with the facade control at 0.53 →
+0.51 and the growth ratio rising 1.13 → 1.26 — the instantaneous part goes and
+the parallax stays, which is the signature that had to be checked rather than
+assumed.
+
+What is left is real detail moving 1.4 px per frame. Taking more of it means
+either blurring resolvable surface or accumulating temporally, and both are
+larger decisions than a shimmer fix.
+
+Anyone re-measuring this: `node tools/withlock.mjs shim -- node tools/shimmer.mjs
+--q nograde --q g=1`, and add `--ss 2` for the supersample control. Do not
+conclude "aliasing" from saturation alone again without it.
+
 ## Post-processing / colour grade pass owns
 
+- **Road hue and saturation.** Partly done, and the remainder is now known not
+  to be the grade's. The pass takes the sunlit carriageway from saturation 0.263
+  to 0.227 and R:B from 2.27 to 2.00 with its value held at 130 counts, and the
+  shaded road from 0.237 to 0.201. Closing the rest of the way to 0.15 globally
+  would have to desaturate the sunlight itself, which is the look. The residual
+  is in the road's albedo. The original note follows, unchanged:
 - **Road hue and saturation.** The matrix sits at about 3 degrees red with a
   saturation of 0.23, where real asphalt measures 0.05–0.12. The sunlit
   carriageway reads at luminance ~0.30 and saturation ~0.35; the targets are
