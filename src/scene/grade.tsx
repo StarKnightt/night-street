@@ -121,7 +121,21 @@ export const GRADE: Grade = {
   shadow: [0.985, 0.995, 1.0],
   high: [1.0, 0.998, 0.992],
   vignette: 0.1,
-  coc: 1.6,
+  /* Gather radius at 1.5 m, in pixels, and the number is §5.5's table read at
+   * that row rather than a strength.
+   *
+   * The table gives 5.6 px at 0.6 m, 3.2 at 1.0, 2.0 at 1.5, 0.9 at 2.6 and
+   * nothing past three metres, for a 5.7 mm lens at f/1.7 focused at 8 m. It
+   * is worth saying which quantity that is, because the two readings differ by
+   * a factor of two and the difference is visible: the brief uses these values
+   * as the reference project's `maxNearPx`, which is a gather *radius*, so
+   * they are used as radii here. Read as diameters they would be half this.
+   *
+   * The curve below reproduces the rest of the table to about five per cent,
+   * so this one number sets the whole of it, and a standing camera at this
+   * pitch never sees ground closer than about two metres — where it works out
+   * at 1.3 px. */
+  coc: 2.0,
   /* Floor, dark-weighted amount, chroma blotch.
    *
    * The first two are sensor.ts's own numbers with the floor raised from
@@ -223,7 +237,9 @@ void main() {
     float dist = dec > 0.02 ? uCoc.y / dec : 1e4;
     // 5.7 mm at f/1.7 focused at 8 m, normalised so uCoc.x is the radius at
     // the nearest ground a standing camera can see.
-    coc = uCoc.x * clamp((1.0 / max(dist, 0.35) - 1.0 / 8.0) / (1.0 / 1.6 - 1.0 / 8.0), 0.0, 1.0);
+    // Reciprocal distance, which is what a defocus is actually linear in, and
+    // it reproduces §5.5's table within five per cent from one coefficient.
+    coc = uCoc.x * clamp((1.0 / max(dist, 0.35) - 1.0 / 8.0) / (1.0 / 1.5 - 1.0 / 8.0), 0.0, 1.7);
   }
 
   vec3 src;
