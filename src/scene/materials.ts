@@ -1783,8 +1783,10 @@ Screed screed(vec2 p, float px){
   float gv = 1.0 - sstep(0.35, 1.1, px / 0.0006);
   if (gv > 0.004){
     float g = unit(wfbm(p * 1650.0, 2));
-    o.t += (g - 0.5) * 0.95 * gv;
-    o.n += (vec2(g, unit(wfbm(p * 1650.0 + 37.0, 2))) - 0.5) * 1.10 * gv;
+    o.t += (g - 0.5) * 1.05 * gv;
+    // Relief pared right back everywhere in this function; see the note on the
+    // sand block below. What used to be slope is now tone.
+    o.n += (vec2(g, unit(wfbm(p * 1650.0 + 37.0, 2))) - 0.5) * 0.34 * gv;
   }
 
   /* Float swirl: the broad arcs a power float leaves behind.
@@ -1821,8 +1823,8 @@ Screed screed(vec2 p, float px){
    * concrete. On a real float finish the arcs are barely there: you see them
    * when the light rakes and not otherwise, and what you actually read the
    * surface by is the sand. */
-  o.t += swirl * 0.014;
-  o.n += fperp * swirl * 0.030;
+  o.t += swirl * 0.020;
+  o.n += fperp * swirl * 0.012;
 
   /* Sand grain, air voids and popouts — the things that make it chalky.
    *
@@ -1853,13 +1855,21 @@ Screed screed(vec2 p, float px){
    * first, by analogy with the road. Zeroing normalScale on every material in the
    * scene changed this region by nothing at all, because these terms are added
    * after that multiply and are not scaled by it. */
+  /* Tone, not slope, and that division is the whole of the remedy.
+   *
+   * o.t multiplies albedo and o.n tilts the normal, and against a
+   * four-degree key those two are not comparable currencies. A tone term of
+   * ten per cent is ten per cent of the pixel wherever the sun is; a slope term
+   * of the same nominal size moves N·L between 0.07 and 0.5 and is therefore a
+   * sevenfold swing between neighbouring pixels. That is what turned this
+   * surface into a bed of white granules, and no roughness value damps it.
+   * So every relief amplitude in this function is now a fraction of what it
+   * was, and the detail those terms used to carry has been moved into o.t. */
   float sv = 1.0 - sstep(0.35, 1.1, px / 0.0048);
   float sand = unit(wfbm(p * 210.0, 2));
-  o.t += (sand - 0.5) * 0.115 * sv;
-  // 0.42 -> 0.11. Sand in a float-finished top is a texture you read at arm's
-  // length, not relief that catches a sunset.
+  o.t += (sand - 0.5) * 0.175 * sv;
   o.n += (vec2(unit(wfbm(p * 210.0 + 17.0, 2)), unit(wfbm(p * 210.0 + 71.0, 2))) - 0.5)
-       * 0.11 * sv;
+       * 0.035 * sv;
 
   float vv = 1.0 - sstep(0.35, 1.1, px / 0.022);
   float voidF = unit(wfbm(p * 46.0 + 5.0, 2));
@@ -1868,7 +1878,7 @@ Screed screed(vec2 p, float px){
   float pv = 1.0 - sstep(0.35, 1.1, px / 0.067);
   float pop = sstep(0.955, 0.985, unit(wfbm(p * 15.0 + 61.0, 3)));
   o.t -= pop * 0.42 * pv;
-  o.n += normalize(vec2(0.6, -0.8)) * pop * 0.28 * pv;
+  o.n += normalize(vec2(0.6, -0.8)) * pop * 0.10 * pv;
 
   /* Broom drag: parallel striations across the footway, 12mm pitch, wandering
    * slightly and breaking up where the bristles skipped. Across the walk, not
@@ -1878,8 +1888,8 @@ Screed screed(vec2 p, float px){
     float wander = wfbm(p * 5.5, 2) * 0.006;
     float b = sin((p.y + wander) * 523.6);
     float skip = sstep(0.30, 0.62, unit(wfbm(vec2(p.x * 3.0, p.y * 0.7), 2)));
-    o.t += b * 0.080 * bv * skip;
-    o.n += vec2(0.0, b) * 0.95 * bv * skip;
+    o.t += b * 0.105 * bv * skip;
+    o.n += vec2(0.0, b) * 0.26 * bv * skip;
     o.r += b * 0.02 * bv * skip;
   }
 
@@ -1892,20 +1902,28 @@ Screed screed(vec2 p, float px){
     if (fract(id * 5.77) > 0.86){
       float hole = 1.0 - sstep(0.10, 0.26, d);
       o.t -= hole * 0.85 * av;
-      o.n -= (rel / max(d, 1e-4)) * hole * 0.9 * av;
+      o.n -= (rel / max(d, 1e-4)) * hole * 0.32 * av;
       o.r += hole * 0.01 * av;
     }
   }
-  float pv = 1.0 - sstep(0.35, 1.1, px / 0.010);
-  if (pv > 0.004){
+  /* Named cv, not pv.
+   *
+   * This declaration collided with the popout gate added above it, and a
+   * redeclaration in the same scope is a compile error. The program failed
+   * silently — no console error, just a walk material that fell back to a flat
+   * untextured plane, which reads as a lighting fault rather than a broken
+   * shader. Every measurement of "the footway has no texture at all" was
+   * measuring this. */
+  float cv = 1.0 - sstep(0.35, 1.1, px / 0.010);
+  if (cv > 0.004){
     float f2, id; vec2 rel;
     float d = wchip(p / 0.085 + 11.3, f2, id, rel);
     if (fract(id * 3.19) > 0.955){
       float cr = 1.0 - sstep(0.13, 0.30, d);
       float rim = sstep(0.13, 0.20, d) * (1.0 - sstep(0.20, 0.30, d));
-      o.t -= cr * 0.70 * pv;
-      o.t += rim * 0.55 * pv;          // raw broken edge, paler than the face
-      o.n -= (rel / max(d, 1e-4)) * cr * 1.1 * pv;
+      o.t -= cr * 0.70 * cv;
+      o.t += rim * 0.55 * cv;          // raw broken edge, paler than the face
+      o.n -= (rel / max(d, 1e-4)) * cr * 0.40 * cv;
     }
   }
   return o;
@@ -1915,6 +1933,7 @@ Screed screed(vec2 p, float px){
 const WALK_FRAG_HEAD = /* glsl */ `
 vec2 gScreedN = vec2(0.0);
 uniform float uBuildLine;
+uniform float uKerbEdge;
 ${WORLD_VARYINGS}
 
 /* Joint layout.
@@ -2012,11 +2031,21 @@ const WALK_FRAG_BODY = /* glsl */ `
    * scored into it. Widening it, and letting a minority of flags read as
    * clearly newer and paler, is most of what makes a pavement look laid rather
    * than printed. */
+  /* Sized against the frame rather than against the idea.
+   *
+   * The authored spread ran the per-flag multiplier from 0.32 to 1.05 — a
+   * three-to-one step between neighbours — which on screen is not a pavement
+   * laid over decades but a chequerboard. What differential staining actually
+   * measures on a sunlit footway is a handful of luminance units between one
+   * flag and the next, so the spread is now about twelve per cent either side
+   * of the mean, and the mean is held where it was so the overall level of the
+   * footway does not move. The paler minority stays, at a size that reads as a
+   * replaced flag rather than as a light box. */
   float fresh = sstep(0.82, 0.94, id2);
-  diffuseColor.rgb *= (0.44 + 1.02 * id) * 0.72;
-  diffuseColor.rgb *= mix(1.0, 1.55, fresh);
-  diffuseColor.rgb *= mix(vec3(0.88, 0.95, 1.12), vec3(1.05, 1.00, 0.95), id3 * 0.75);
-  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.55, 1.52, 1.46), step(0.90, id2) * 0.7);
+  diffuseColor.rgb *= 0.60 + 0.17 * id;
+  diffuseColor.rgb *= mix(1.0, 1.17, fresh);
+  diffuseColor.rgb *= mix(vec3(0.94, 0.975, 1.055), vec3(1.025, 1.00, 0.975), id3 * 0.75);
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.13, 1.12, 1.10), step(0.90, id2) * 0.7);
 
   /* Traffic film. Everything in a city is dirtiest where it is walked on and
    * where road spray reaches it, which is the kerb edge. */
@@ -2068,13 +2097,43 @@ const WALK_FRAG_BODY = /* glsl */ `
   c *= clamp(1.0 + sc.t * 0.90, 0.10, 2.1);
   // Down in the joint: dark, but not black — there is grit in there catching
   // a little light, and a pure black line is a drawn line.
-  c = mix(c, vec3(0.0140, 0.0142, 0.0150), joint * 0.93);
+  /* The joint holds dirt, and the dirt is not the same dirt all the way along.
+   *
+   * A gap between two flags fills with grit, moss and the grey silt that washes
+   * off the face, and it fills unevenly — packed and pale in one stretch, open
+   * and near-black in the next. A groove of one constant colour is a line
+   * drawn on a surface; a groove whose fill changes along its run is a gap
+   * between two stones. */
+  float jointFill = unit(wfbm(vec2(p.x * 3.1, p.y * 3.1) + 43.0, 3));
+  vec3 jointC = mix(vec3(0.0125, 0.0127, 0.0132), vec3(0.0335, 0.0318, 0.0282),
+                    sstep(0.42, 0.86, jointFill));
+  c = mix(c, jointC, joint * 0.93);
   c = mix(c, c * 1.24, lip * 0.55);          // the rounded, light-catching lip
   c = mix(c, c * 0.62, spall * 0.5);
   // A fresh break shows the aggregate, which is paler than the weathered face.
   c = mix(c, c * 1.5, chip * 0.6);
   c = mix(c, c * 0.72, stain * 0.55);
   c = mix(c, vec3(0.0230, 0.0225, 0.0215), gum * 0.9);
+
+  /* The leading arris.
+   *
+   * The front edge of the flag course, where it stands over the back of the
+   * kerb, is the one line on a footway that never holds dirt: it is walked
+   * over, scuffed by feet coming off the road and washed by everything that
+   * runs to the gutter, so it has lost its weathering film and shows pale
+   * concrete. In a photograph of paving in low sun it is the feature that
+   * states where the footway ends — without it the flags and the kerb top run
+   * together into one grey field.
+   *
+   * Albedo only, and faded out with range. A one-pixel bright line held to the
+   * vanishing point is an aliasing generator, and this scene has already paid
+   * for two of those. */
+  float arrD = length(vWPos - cameraPosition);
+  float arrisW = max(wpx * 1.6, 0.011);
+  float arris = (1.0 - sstep(0.0, arrisW, abs(abs(p.x) - uKerbEdge - 0.012)))
+              * (0.45 + 0.55 * unit(wfbm(vec2(p.y * 0.85, 3.0), 3)))
+              * (1.0 - sstep(9.0, 26.0, arrD));
+  c = mix(c, c * 1.34, arris * 0.80);
 
   // Damp seeping from the kerb joint and out of the flag joints. Concrete is
   // porous, so it takes water in and goes dark rather than glossy.
@@ -2190,8 +2249,16 @@ const WALK_NORMAL_HOOK = /* glsl */ `
   float ax = abs(fj.x) + wob, az = abs(fj.y) + wob;
   float sx = (sstep(hj - 0.055, hj, ax) - sstep(hj, hj + 0.02, ax) * 1.6) * sign(fj.x);
   float sz = (sstep(hj - 0.055, hj, az) - sstep(hj, hj + 0.02, az) * 1.6) * sign(fj.y);
-  mapN.xy += vec2(sx, sz) * 0.85;
-  mapN.xy += gScreedN * 0.85;
+  /* The joint relief is allowed to stay, because a joint is a sparse linear
+   * feature and not a full-field perturbation: there is one of them every
+   * 920 mm, so it cannot produce the field of blown granules that a per-pixel
+   * grain does. It does get the footprint gate that every other feature in
+   * this material already had, so it withdraws with range instead of holding
+   * its amplitude to the vanishing point. */
+  float jpx = fwidth(pj.x) + fwidth(pj.y);
+  float jv = 1.0 - sstep(0.35, 1.1, jpx / (uJoint * 2.2));
+  mapN.xy += vec2(sx, sz) * 0.55 * jv;
+  mapN.xy += gScreedN * 0.55;
   normal = normalize( tbn * normalize(mapN) );
 
   /* The same normal-variance roughness widening the road already has. The
@@ -2227,6 +2294,8 @@ export function makeWalkMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
     shader.uniforms.uBuildLine = {
       value: DIMS.roadHalf + DIMS.kerbDepth + DIMS.walkWidth,
     };
+    // The front edge of the flag course, over the back of the kerb.
+    shader.uniforms.uKerbEdge = { value: DIMS.roadHalf + DIMS.kerbDepth };
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `${WORLD_VARYINGS}\nvoid main() {`)
       .replace('#include <begin_vertex>', VERTEX_HOOK);

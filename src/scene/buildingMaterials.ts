@@ -140,6 +140,8 @@ const MASONRY_END = /* glsl */ `
 #include <lights_fragment_end>
 reflectedLight.directDiffuse *= gSun;
 reflectedLight.directSpecular *= gSun;
+reflectedLight.indirectSpecular *= gSpecCut;
+reflectedLight.directSpecular *= gSpecCut;
 reflectedLight.indirectDiffuse =
   canyonSky(reflectedLight.indirectDiffuse, vWN, vWPos.y) * 3.40 * gAO;
 float faceAcross = max(-vWN.x, 0.0);
@@ -165,6 +167,8 @@ varying float vRoleF;
 uniform vec3 uSun;
 vec2 gSlope = vec2(0.0);
 float gAO = 1.0;
+/** Scales the image-based specular. Cut on horizontal cast stone; see below. */
+float gSpecCut = 1.0;
 /* Direct-light occlusion at a scale the shadow map cannot reach.
  *
  * A shadow map texel on this scene covers six millimetres of wall at best, and
@@ -648,6 +652,9 @@ const MASONRY_BODY = /* glsl */ `
   float hh = vWPos.y - baseY;
 
   vec3 col; float rgh;
+  /* The daylight roughness floor, per role. Raised on horizontal cast stone;
+   * see the coping note below. */
+  float rghFloor = 0.28;
   if (role < 1.5){
     if (pal < 0.5)       brick(uv, seed, px, col, rgh);
     else if (pal < 1.5)  renderCoat(uv, seed, px, col, rgh);
@@ -669,6 +676,68 @@ const MASONRY_BODY = /* glsl */ `
     }
   } else if (role < 3.5){
     castStone(uv, seed, px, col, rgh);
+    /* Copings, sills, lintel tops, cornices and string courses — every cast
+     * stone band in the block, because they are all one material and the same
+     * defect has now been found on two of them.
+     *
+     * The coping of the lot wall was rendering as a regular chain of bright
+     * dashes along its whole run: peak/mean 5.17 over the measured box, beating
+     * at the 7-8 px pitch of the pickets standing on it, which chop the run into
+     * dashes. It is the kerb-cap defect again, on a surface nobody had checked.
+     *
+     * What it is not, and this took a bisection to establish, is specular.
+     * Forcing the whole role to a roughness of 1.0 moved the peak by three per
+     * cent, and cutting the image-based specular to nothing moved it by none.
+     * The chain is diffuse: a narrow band of clean, pale, high-albedo cast stone
+     * turned into a low sun, sitting against a wall face that is in shade. It is
+     * bright because it is clean, and it is a chain because nothing along its
+     * length distinguishes one metre of it from the next.
+     *
+     * So the remedy is the one the kerb got, translated into the term that is
+     * actually carrying it. The roughness goes up and the daylight floor with
+     * it, which is right for weathered stone even though it is not what was
+     * doing the damage. The run is broken along its length by two slow fields,
+     * so that it becomes a sequence of differently dirty stretches instead of
+     * one continuous line. And the general level comes down, hardest on the
+     * up-faces, because a coping is the dirtiest surface on an elevation — it is
+     * horizontal, nothing washes it, and it collects a century of grit and moss.
+     * A clean one is the tell.
+     *
+     * The vertical faces get the same treatment at about half strength. That is
+     * deliberate: the fascia of a coping and the nose of a sill are the parts
+     * that catch this light, they are the same stone with the same exposure, and
+     * halving it keeps the stone bands on the frontages reading as the pale
+     * accents they are meant to be.
+     */
+    float upS = clamp(vWN.y, 0.0, 1.0);
+    float runA = unit(wfbm(vec2(uv.x * 0.40, uv.y * 0.40) + 27.0, 3));
+    float runB = unit(wfbm(vec2(uv.x * 1.85, uv.y * 1.85) + 5.0, 2));
+    {
+      float filth = 0.24 + 0.54 * runA + 0.22 * runB;
+      /* And a boundary wall gets it far worse than a second-floor sill.
+       *
+       * A coping at knee height on a street frontage is splashed by every
+       * vehicle that passes, sat on, leaned against and never once cleaned; the
+       * same stone four storeys up is washed by the rain and only collects what
+       * the air puts on it. Keeping the heavy weathering low is what lets this
+       * kill the chain on the lot wall without taking the pale stone bands off
+       * the elevations, which are doing a job up there. */
+      float lowS = smoothstep(1.60, 0.85, hh);
+      filth *= mix(1.0, 0.22 + 0.26 * runA, lowS);
+      col *= mix(mix(1.0, filth, 0.85), filth, upS);
+      // What settles on a ledge is grey-green, not the colour of the stone.
+      col = mix(col, col * vec3(0.88, 0.92, 0.86),
+                mix(0.35, 1.0, upS) * smoothstep(0.30, 0.75, runB) * 0.45);
+      rgh = mix(rgh, 0.97, upS * 0.92);
+      rghFloor = mix(rghFloor, 0.58, upS);
+      /* The image-based specular goes too. It is not what was carrying the
+       * chain, but at grazing incidence the split-sum Fresnel term runs to one
+       * whatever the roughness is, so a stone band seen nearly edge-on mirrors
+       * the brightest part of a sunset sky straight back at the camera. Porous
+       * weathered stone does not do that, and leaving it in place is how the
+       * next narrow ledge in this scene acquires the same defect. */
+      gSpecCut = (0.075 + 0.26 * runA * runB) * mix(1.0, 0.45, upS);
+    }
     if (role > 2.5){
       /* The plinth. Every street building has a dark base course, because the
        * bottom metre takes the road spray and gets painted dark so it does not
@@ -904,7 +973,7 @@ const MASONRY_BODY = /* glsl */ `
   col = mix(col, col * vec3(0.72, 0.86, 0.70), algae * 0.35);
 
   diffuseColor.rgb *= col;
-  roughnessFactor = clamp(rgh, 0.28, 1.0);
+  roughnessFactor = clamp(rgh, rghFloor, 1.0);
 
   /* Distance-filtered specular, as on the paving. A facade seen from a hundred
    * metres down the street is at grazing incidence over its whole height and
@@ -1258,13 +1327,46 @@ export function makeTrimMaterial(): THREE.MeshStandardMaterial {
 /* ── Steel ──────────────────────────────────────────────────────────────── */
 
 const METAL_BODY = /* glsl */ `
+/* Declared in main, before the block below, so the lighting hook further down
+ * can read it. */
+float gMetalSpec = 1.0;
 {
   float seed = vMetalP.x;
   float kind = vMetalP.y;
   vec2 p = vec2(vWPos.y * 9.0 + seed * 3.0, dot(vWPos.xz, vec2(9.0, 9.0)));
 
   vec3 base; float rgh; float met;
-  if (kind < 1.5){
+  if (kind < 0.5){
+    /* The lot railing, split out of the painted-casework branch it was sharing
+     * with the window air conditioners.
+     *
+     * It was running at their albedo — 0.21, the value of a white-painted sheet
+     * steel box — and the top rail and the picket shoulders are narrow facets
+     * turned into a four-degree sun, so the run came back as a chain of clipped
+     * dashes beating at the picket pitch beside the coping. A spear-topped
+     * railing is not painted white. It is painted black or dark green, it has
+     * been repainted over rust a dozen times, and its surface is matt.
+     *
+     * The rest is the kerb-cap remedy: the roughness goes up, the daylight floor
+     * with it, and a slow field along the run breaks the highlight so that it is
+     * a broken glint on old ironwork rather than one continuous line of dashes.
+     */
+    base = vec3(0.0225, 0.0242, 0.0228); rgh = 0.88; met = 0.10;
+    float rustR = smoothstep(0.50, 0.86, unit(wfbm(p * 1.3, 4)));
+    base = mix(base, vec3(0.0890, 0.0410, 0.0205), rustR * 0.75);
+    float runR = unit(wfbm(vec2(vWPos.z * 0.22 + seed, vWPos.y * 0.55), 3));
+    base *= 0.62 + 0.62 * runR;
+    rgh = clamp(mix(rgh, 0.97, rustR) + (runR - 0.5) * 0.10, 0.72, 1.0);
+    met = mix(met, 0.03, rustR);
+    /* The top rail is a 45 mm horizontal bar seen nearly edge-on, and that is
+     * the geometry that produces a specular chain: at grazing incidence the
+     * split-sum Fresnel term runs to one however rough the surface is, so the
+     * bar mirrors the brightest part of the sky along its entire length and the
+     * pickets chop the result into dashes. Roughness cannot reach it. The
+     * reflection is cut instead, hardest on the up-faces and unevenly along the
+     * run, which is what old painted ironwork actually returns. */
+    gMetalSpec = mix(0.30, 0.07, clamp(vWN.y, 0.0, 1.0)) * (0.45 + 1.10 * runR);
+  } else if (kind < 1.5){
     // A window air conditioner: painted steel case, gone chalky and streaked.
     base = vec3(0.2100, 0.2060, 0.1960); rgh = 0.62; met = 0.10;
     base *= 0.78 + 0.36 * unit(wfbm(p * 2.0, 3));
@@ -1354,9 +1456,10 @@ export function makeMetalMaterial(): THREE.MeshStandardMaterial {
  * works with is long gone, and its reflection of the sky arrives scattered and
  * largely achromatic rather than as a clean coloured image of the zenith. */
 {
-  vec3 s = reflectedLight.indirectSpecular;
+  vec3 s = reflectedLight.indirectSpecular * gMetalSpec;
   reflectedLight.indirectSpecular =
     mix(s, vec3(dot(s, vec3(0.2126, 0.7152, 0.0722))), 0.55);
+  reflectedLight.directSpecular *= gMetalSpec;
 }
 `);
   };
