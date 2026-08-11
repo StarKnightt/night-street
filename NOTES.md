@@ -4,6 +4,10 @@ Items that have been diagnosed and deliberately left for a later pass. Nothing
 here is a bug report against the current build; each is owned by a pass that has
 not run yet.
 
+The technique brief for Systems 5, 6 and 8 — lighting, atmosphere and
+post-processing — lives at `docs/TECHNIQUE.md`. Read it before starting any of
+the three.
+
 ## Post-processing / colour grade pass owns
 
 - **Road hue and saturation.** The matrix sits at about 3 degrees red with a
