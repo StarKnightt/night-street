@@ -2126,11 +2126,19 @@ const WALK_FRAG_BODY = /* glsl */ `
      * shadow twenty times longer than the grain that casts it does not read as
      * speckle, it reads as streaks. */
     vec2 q = vec2(dot(p, sd) * 0.14, dot(p, vec2(-sd.y, sd.x)));
-    float gv2 = 1.0 - sstep(0.35, 1.1, wpx / 0.0055);
-    float shade = sstep(0.34, 0.88, unit(wfbm(q * 195.0, 3))) * gv2;
+    float gv2 = 1.0 - sstep(0.25, 1.2, wpx / 0.0055);
+    float shade = sstep(0.30, 0.86, unit(wfbm(q * 195.0, 3))) * gv2 * 0.94;
+    /* Exposed aggregate: the three-to-eight-millimetre stones that a worn
+     * paving face stands proud of, each throwing forty to a hundred
+     * millimetres downsun. This is the band that carries speckle at four to
+     * ten metres, which is the range the review's frame is at — the grain
+     * above it is correctly averaged away by then, so without this there is
+     * genuinely no aggregate in a sunlit flag at the distance it is judged. */
+    float av = 1.0 - sstep(0.25, 1.2, wpx / 0.012);
+    shade = max(shade, sstep(0.48, 0.88, unit(wfbm(q * 88.0 + 4.0, 3))) * av * 0.96);
     // The voids and popouts throw shadows an order of magnitude longer.
-    float hv = 1.0 - sstep(0.35, 1.1, wpx / 0.030);
-    shade = max(shade, sstep(0.70, 0.96, unit(wfbm(q * 33.0 + 9.0, 2))) * hv * 0.9);
+    float hv = 1.0 - sstep(0.30, 1.2, wpx / 0.030);
+    shade = max(shade, sstep(0.62, 0.94, unit(wfbm(q * 33.0 + 9.0, 2))) * hv * 0.95);
     /* Broad wear, and this is the component that survives to forty metres.
      *
      * The two above are grain and voids, and both are correctly withdrawn once
@@ -2143,7 +2151,7 @@ const WALK_FRAG_BODY = /* glsl */ `
      * work has gone. */
     float wv = 1.0 - sstep(0.35, 1.1, wpx / 0.14);
     vec2 qw = vec2(dot(p, sd) * 0.55, dot(p, vec2(-sd.y, sd.x)));
-    shade = max(shade, sstep(0.46, 0.92, unit(wfbm(qw * 6.5 + 27.0, 3))) * wv * 0.52);
+    shade = max(shade, sstep(0.44, 0.90, unit(wfbm(qw * 6.5 + 27.0, 3))) * wv * 0.62);
     /* And the joints, which is the feature the review actually named.
      *
      * A joint is a five-millimetre recess, and at 4.2 degrees five millimetres
@@ -2160,11 +2168,16 @@ const WALK_FRAG_BODY = /* glsl */ `
      * own length. Three samples across the penumbra fill it in and also make
      * it the width it should be, which is thirteen grooves. */
     vec2 sID2;
-    float js = j.x;
-    js = max(js, walkJoints(p - sd * 0.022, sID2).x * 0.95);
-    js = max(js, walkJoints(p - sd * 0.046, sID2).x * 0.84);
-    js = max(js, walkJoints(p - sd * 0.070, sID2).x * 0.66);
+    float js = joint;
+    js = max(js, walkJoints(p - sd * 0.022, sID2).x * 0.97);
+    js = max(js, walkJoints(p - sd * 0.046, sID2).x * 0.90);
+    js = max(js, walkJoints(p - sd * 0.070, sID2).x * 0.76);
+    js = max(js, walkJoints(p - sd * 0.098, sID2).x * 0.58);
     shade = max(shade, js);
+    /* And the broken edges, which are recesses like the joints and were being
+     * treated as albedo alone: a spall is a piece missing, so in raking light
+     * it is a hole with a shadow in it and not a grey patch. */
+    shade = max(shade, spall * 0.80);
     gGraze = clamp(shade, 0.0, 1.0);
   }
 
@@ -2286,9 +2299,17 @@ reflectedLight.indirectDiffuse =
 /* Direct only. See the long note where gGraze is built: the shaded half of
  * this surface is signed off and must not move, and applying the term here is
  * what guarantees it cannot — there is no direct light in shadow to attenuate.
- * It is also the reason this is a shadowing term and not a brighter albedo. */
-reflectedLight.directDiffuse *= 1.0 - gGraze * 0.55;
-reflectedLight.directSpecular *= 1.0 - gGraze * 0.70;
+ * It is also the reason this is a shadowing term and not a brighter albedo.
+ *
+ * The depths are up from 0.55 and 0.70. At those the surface measured right —
+ * a sunlit flag went from 4.3 counts of standard deviation to 11.9 — and still
+ * did not read: joints came through as three or four ghost lines with no
+ * shadow in them, over a broad specular wash. The specular is the harsher of
+ * the two, and deliberately: at 4.2 degrees the lobe on a footway is enormous
+ * and it is the term that fills the joints back in after the diffuse has
+ * emptied them. */
+reflectedLight.directDiffuse *= 1.0 - gGraze * 0.80;
+reflectedLight.directSpecular *= 1.0 - gGraze * 0.94;
 `;
 
 const WALK_NORMAL_HOOK = /* glsl */ `

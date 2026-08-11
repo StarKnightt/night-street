@@ -24,6 +24,7 @@ import * as THREE from 'three';
 import { NOISE, CANYON } from '@/world/glsl';
 import { SUN_DIR, HORIZON_SUNWARD, HORIZON_AWAY } from './env';
 import { BUILD_LINE } from '@/world/block';
+import { signGLSL, signUniforms } from './signs';
 import {
   FACADE_VARYINGS, FACADE_VERTEX, FACADE_NORMAL,
 } from './buildingMaterials';
@@ -155,136 +156,19 @@ vec3 shopPaint(float g){
 
 `;
 
-/* Pseudo-signwriting. Shared by the fascias and by the sign plates on the
- * furniture, because a street blade and a shop sign are the same problem.
- *
- * There is no text anywhere in this project and there cannot be, because a
- * fascia is read from ten to forty metres and a letter on it is between one
- * and four pixels. What has to be right at that size is not the glyphs, it is
- * that there is a band of contrasting marks with word gaps in it, sitting on
- * the fascia's centre line and inset from both ends. Drawn analytically it
- * converges to the correct average tone as it falls under a pixel, which is
- * what a correctly filtered painted sign does; sampled text would alias into
- * a row of flickering dots. */
-/* The comb, and why it had to go.
- *
- * The first version divided the plate into equal cells and centred a mark in
- * each. Every glyph therefore began and ended on a fixed grid, and a run-length
- * measurement across it returns a coefficient of variation on glyph width of
- * near zero. Real lettering runs 0.35 to 0.5, because an I is not a W. What the
- * eye is picking up at this size is not the shapes of the letters, it is the
- * irregular rhythm of their edges — and a comb has no rhythm at all. Five
- * evenly spaced ticks on a street blade is worse than a blank plate, because a
- * blank plate is at least a plausible object.
- *
- * So the layout is a run: each glyph has its own advance, a space has a wider
- * one, and the accumulated width is measured in a first pass and then scaled to
- * fit the plate in a second. Two loops over fourteen iterations, no gradient
- * instructions inside either, so nothing here is in the compiler's way. The
- * result still is not text, but its edge statistics are those of text, which at
- * one to four pixels a letter is the whole of what is legible.
- */
-const LETTERING = /* glsl */ `
-/* The advance of one glyph, in cap heights: x is the width of the ink, y is
- * how far the pen moves. A space has no ink and a wider advance. Both passes
- * of the layout call this so that they cannot disagree about where a letter
- * starts. Widths run 0.30 to 1.08, which is roughly an I against a W. */
-vec2 glyphAdv(float i, float seed){
-  float hs = hash21(vec2(i, seed * 5.7));
-  float hw = hash21(vec2(i, seed * 2.3));
-  bool space = hs < 0.15 && i > 0.5;
-  float w = space ? 0.0 : (0.30 + hw * 0.78);
-  return vec2(w, (space ? 0.55 : w) + 0.19);
-}
-
-/* A run of lettering.
- *
- * q.x runs 0 to 1 across the available box, q.y is in cap heights above the
- * baseline, asp is the width of the box measured in cap heights, and px is
- * the pixel footprint in cap heights.
- *
- * Two things had to change from the version that produced a barcode. The
- * first is that a glyph is no longer a filled rectangle. A row of solid
- * blocks is eighty per cent ink, which at any magnification is a fence, and
- * the counters — the holes in the letters — are most of what distinguishes
- * text from a fence. So each glyph is assembled from up to five strokes: two
- * stems, and bars at the cap, the middle and the baseline. Eight combinations
- * of those cover the shapes of most of an alphabet: stems plus a middle bar
- * is an H, a left stem with a cap and a middle bar is an F, both stems closed
- * top and bottom is an O, a lone centre stem is an I. The strokes are summed
- * rather than maxed so that the whole thing filters down to the correct grey
- * as the letter falls under a pixel — about forty per cent ink, which is what
- * a line of type actually averages.
- *
- * The second is that the run is no longer stretched to fill the plate. It
- * used to divide by the accumulated width, so a six-letter name on a four
- * metre fascia gave six letters a metre wide. Now the caller states the box
- * in cap heights and the run takes as many letters as fit at their natural
- * size, then centres what it has. A long unit gets a long name.
- *
- * No gradient instructions anywhere inside, so the varying loop bound and the
- * early-out on the glyph under the fragment are both free of the compiler's
- * usual objection. */
-float lettering(vec2 q, float seed, float px, float asp){
-  if (q.x < -0.03 || q.x > 1.03 || asp < 1.6) return 0.0;
-  const int N = 14;
-
-  float total = 0.0, cnt = 0.0;
-  for (int i = 0; i < N; i++){
-    float a = glyphAdv(float(i), seed).y;
-    if (total + a > asp) break;
-    total += a; cnt += 1.0;
-  }
-  if (cnt < 2.0) return 0.0;
-  total -= 0.19;
-
-  float X = q.x * asp;
-  float x = (asp - total) * 0.5;
-  float ink = 0.0;
-  for (int i = 0; i < N; i++){
-    if (float(i) >= cnt) break;
-    vec2 a = glyphAdv(float(i), seed);
-    if (a.x > 0.0 && X > x - px - 0.02 && X < x + a.x + px + 0.02){
-      /* Cap height varies letter to letter — an ascender or a lower case body
-       * — and a few drop below the line. The baseline itself never moves,
-       * which is the one thing lettering keeps. */
-      float hg = hash21(vec2(float(i), seed * 9.1));
-      float hi = hg < 0.22 ? 1.0 : 0.68 + hg * 0.30;
-      float lo = hash21(vec2(float(i), seed * 11.3)) < 0.14 ? -0.24 : 0.0;
-      float st = min(0.165, a.x * 0.44);
-      float br = 0.150;
-      float x1 = x + a.x, xc = x + a.x * 0.5, mid = mix(lo, hi, 0.55);
-      float V = aaBand(lo, hi, q.y, px);
-      float L = aaBand(x, x + st, X, px) * V;
-      float R = aaBand(x1 - st, x1, X, px) * V;
-      float C = aaBand(xc - st * 0.5, xc + st * 0.5, X, px) * V;
-      float W = aaBand(x, x1, X, px);
-      float T = W * aaBand(hi - br, hi, q.y, px);
-      float M = W * aaBand(mid - br * 0.5, mid + br * 0.5, q.y, px);
-      float B = W * aaBand(lo, lo + br, q.y, px);
-      float f = floor(hash21(vec2(float(i), seed * 8.9)) * 8.0);
-      float g = f < 1.0 ? L + R + M
-              : f < 2.0 ? L + T + M
-              : f < 3.0 ? L + T + M + B
-              : f < 4.0 ? L + R + T + B
-              : f < 5.0 ? C
-              : f < 6.0 ? L + R + T
-              : f < 7.0 ? C + T
-                        : L + B;
-      ink += min(g, 1.0);
-    }
-    x += a.y;
-  }
-  return min(ink, 1.0);
-}
-`;
-
-const SHOP_DECL = SHOP_DECL_HEAD + LETTERING;
+/* Signwriting comes from the atlas in scene/signs.ts, which holds the
+ * letterforms and the word list and explains at length why the analytic
+ * version that stood here was replaced. The short of it: it read as
+ * well-set lettering that spelled nothing, and a fascia that spells nothing
+ * is worse than a blank one. */
+const SHOP_DECL = SHOP_DECL_HEAD + signGLSL();
 
 const SHOP_BODY = /* glsl */ `
 {
   vec2 uv = vFuv;
   float px = fwidth(uv.x) + fwidth(uv.y);
+  /* Taken here, above every branch, because it differentiates. */
+  float gMir = signMirror(uv, vWN);
   float seed = vShop.x;
   float part = vShop.y;
   /* 0 unlit, 1 the convenience store, 2 the bar. */
@@ -516,8 +400,15 @@ const SHOP_BODY = /* glsl */ `
     float bw = max(uw - mg * 2.0, 0.1);
     float band = 0.0;
     if (lit < 0.5 && hash21(vec2(seed * 3.7, 13.1)) < 0.88){
-      band = lettering(vec2((uv.x - u0 - mg) / bw, (uv.y - base) / cap),
-                       seed, px / cap, bw / cap);
+      int row = SGN_FASCIA0
+              + int(hash21(vec2(seed * 3.1, 27.5)) * float(SGN_FASCIAN) * 0.999);
+      /* The name is set at whatever size fits the board and centred on it —
+       * a long trade on a narrow unit is painted smaller, which is what a
+       * signwriter does, rather than being stretched to the margins. */
+      float capD = min(cap, bw / signAspect(row));
+      float wD = capD * signAspect(row);
+      band = signInk(row, vec2((uv.x - u0 - (uw - wD) * 0.5) / wD,
+                               (uv.y - base) / capD), px / capD, gMir);
     }
     vec3 ink = hash21(vec2(seed, 19.0)) < 0.6
              ? vec3(0.3200, 0.3050, 0.2720) : vec3(0.1400, 0.1080, 0.0380);
@@ -690,6 +581,7 @@ export function makeShopMaterial(): THREE.MeshStandardMaterial {
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
     shader.uniforms.uLitGain = LIT_GAIN;
+    Object.assign(shader.uniforms, signUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}
@@ -830,26 +722,109 @@ const SHOP_GLASS_BODY = /* glsl */ `
   float yHit  = vWPos.y + R.y * dHit;
   float zHit  = vWPos.z + R.z * dHit;
 
-  /* The frontage opposite. Only the west side of the street takes this sun, so
-   * a ray heading +X can never find a sunlit wall however far up it goes —
-   * that part of the old model was right and stays. */
-  float litLine = R.x < -0.02 ? 6.5 : 1e6;
+  /* The frontage opposite, in two bands with a hard line between them.
+   *
+   * The band structure is the whole content of the reflection and the previous
+   * version blurred the one edge that carries it: the sunlit-to-shade
+   * transition was smoothed over four metres, which at the scale a pane
+   * subtends is a gradient across the entire reflected wall, and a gradient
+   * reads as a tinted sheet. At 4.2 degrees the terrace opposite throws a
+   * shadow whose upper edge is the parapet — a straight line, sharp to within
+   * its own penumbra, which at this range is a few hundred millimetres. So it
+   * is drawn as one, antialiased against the footprint of the reflected ray
+   * rather than smoothed by hand.
+   *
+   * Only the west side takes this sun, so a ray heading +X can never find a
+   * sunlit wall however far up it goes.
+   *
+   * The line was at 6.5 m, which was a guess and a badly wrong one. The scene
+   * itself is the measurement: every frame shows the west frontage taking the
+   * sun straight down to the stallriser, because at this azimuth the beam runs
+   * along the canyon rather than across it and is not cut off by the terrace
+   * opposite. So a pane on the shaded side of the street is looking at a wall
+   * that is lit from the pavement up, and putting the shadow line at first
+   * floor level was throwing away the one genuinely bright thing the mirror
+   * has to work with. It varies along the run because the projections up-street
+   * — awnings, blades, a parapet return — put the bottom of some bays in
+   * shadow, and a skyline of bright and dark blocks is more of a reflection
+   * than an unbroken bright field would be. */
   float bay = floor(zHit / 2.55);
-  vec3 wall = mix(vec3(0.30, 0.31, 0.37), vec3(2.30, 1.34, 0.58),
-                  smoothstep(litLine - 1.0, litLine + 3.0, yHit));
+  float litLine = R.x < -0.02
+    ? mix(0.15, 3.4, step(0.68, hash21(vec2(floor(zHit / 8.1), 2.1)))) : 1e6;
+  /* Penumbra scaled by the reflected path length: near hits get a hard edge,
+   * far ones soften, which is both correct and what keeps the line from
+   * aliasing when the pane is at a glancing angle. */
+  float pen = 0.25 + dHit * 0.010;
+  float sun = smoothstep(litLine - pen, litLine + pen, yHit);
+  vec3 shadeWall = vec3(0.30, 0.31, 0.37);
   /* The bottom of an eleven-metre canyon sees barely a third of the sky, so
-   * the frontage opposite is much darker at the footway than at the eaves.
-   * Without this the reflected terrace is a flat panel and reads as one. */
-  wall *= 0.42 + 0.58 * smoothstep(0.0, 7.5, yHit);
-  wall *= 0.78 + 0.44 * hash21(vec2(bay, 5.1));
+   * the shaded frontage is much darker at the footway than at the eaves. The
+   * sunlit band is exempt: a wall in direct sun is not sky-limited, and
+   * applying the occlusion to it was halving the one bright thing in the
+   * reflection. */
+  shadeWall *= 0.42 + 0.58 * smoothstep(0.0, 7.5, yHit);
+  /* Sunlit stucco, at the radiance this scene actually gives a sunlit wall.
+   *
+   * Getting this number right is the whole of why the glazing stayed dark, and
+   * getting it wrong twice is worth recording. Both previous values were set by
+   * eye against a tonemapped frame, and a tonemapped frame is exactly the wrong
+   * place to judge a radiance from: forcing the reflection through unweighted
+   * put it at display 135 where a sunlit fascia measured 187, which looks like
+   * a two-thirds shortfall and is nothing of the kind.
+   *
+   * Calibrating the curve settles it. Feeding the pane a known constant of 1.6
+   * returns display 90, which fixes the response closely enough over this range
+   * at display = 0.284 * L^0.4545; inverting a sunlit fascia's 191 gives a
+   * scene radiance near 8.5, against the 2.3 this constant was carrying. The
+   * bright band was not two thirds of a sunlit wall, it was a quarter of one,
+   * and four fifths of that error was hidden by the shoulder. Everything
+   * bright in this reflection is set by that inversion from here on. */
+  vec3 litWall = vec3(13.0, 7.60, 3.30) * (0.84 + 0.32 * hash21(vec2(bay, 5.1)));
+  vec3 wall = mix(shadeWall * (0.78 + 0.44 * hash21(vec2(bay, 5.1))), litWall, sun);
   /* Window bays, dark against the masonry, in a row per storey. Crude to the
    * point of being a joke as architecture, and entirely sufficient as content:
    * what makes a reflection read is that it is broken up, not that it is
-   * recognisable. */
+   * recognisable.
+   *
+   * Which way round they go depends on which wall it is, and this is the
+   * finding that made the reflection work. A window in a sunlit wall is a hole:
+   * darker than the masonry around it, because you are seeing a room. A window
+   * in a *shaded* wall opposite a sunlit one is the brightest thing on that
+   * elevation, because it is a mirror aimed at the terrace in the sun — which
+   * is exactly the relationship the pane doing the reflecting is in. A pane on
+   * the sunlit side of this street can never reflect a sunlit wall, because the
+   * frontage opposite it is self-shadowed at every hour of this evening; what
+   * it can and should reflect is a row of bright rectangles set in a dark one,
+   * and that is a hard-edged block of facade luminance in a pane whichever way
+   * the geometry falls. */
   float st = fract((yHit - 0.55) / 3.15);
   float winRow = smoothstep(0.14, 0.24, st) * (1.0 - smoothstep(0.58, 0.68, st));
   float winBay = step(0.34, hash21(vec2(bay, 11.7))) * step(2.6, yHit);
-  wall = mix(wall, wall * 0.26 + vec3(0.030, 0.031, 0.040), winRow * winBay * 0.85);
+  vec3 winC = mix(vec3(3.60, 2.40, 1.25) * (0.55 + 0.75 * hash21(vec2(bay, 23.9))),
+                  wall * 0.13 + vec3(0.030, 0.031, 0.040), sun);
+  wall = mix(wall, winC, winRow * winBay * 0.90);
+  /* The ground storey opposite is a shopfront under a fascia and usually an
+   * awning, so it is darker than the wall above whether or not the wall is in
+   * the sun — and the line where the fascia cornice cuts it is straight, hard,
+   * and at a height a square-on pane reflects square in the middle. Its own
+   * glass is doing the same trick as the windows above. */
+  vec3 fasciaC = wall * 0.26 + vec3(0.010, 0.010, 0.014);
+  /* Shopfront glass, which is where most of these rays actually land and which
+   * is the brightest surface in the reflection by a wide margin. The pane
+   * opposite is a mirror pointed at the sunlit terrace, so it returns a
+   * fraction of a very bright wall — dimmer than that wall, brighter than
+   * anything else on a shaded elevation, and cut into rectangles by the piers
+   * between units. That is the block the review is asking for, and it is where
+   * a shopfront actually finds one: not in the sky, which is forty-five
+   * degrees above anything a street-level pane can see in an eleven-metre
+   * canyon, but in the glass across the road. */
+  float unitU = fract(zHit / 4.35);
+  float pier = smoothstep(0.03, 0.11, unitU) * (1.0 - smoothstep(0.86, 0.95, unitU));
+  vec3 glassC = vec3(2.60, 1.75, 1.05) * (0.30 + 1.05 * hash21(vec2(floor(zHit / 4.35), 47.7)));
+  float shopG = pier
+    * smoothstep(0.60, 0.72, yHit) * (1.0 - smoothstep(2.78, 2.92, yHit));
+  vec3 ground = mix(fasciaC, glassC, shopG * (1.0 - sun * 0.55));
+  wall = mix(ground, wall, smoothstep(3.02, 3.16, yHit));
 
   /* Sky over the parapet: warm and very bright toward the sun, cool and much
    * dimmer away from it, falling off with elevation from the horizon. */
@@ -860,7 +835,25 @@ const SHOP_GLASS_BODY = /* glsl */ `
   skyC = mix(skyC, skyC * 0.42 + vec3(0.10, 0.13, 0.26),
              smoothstep(0.02, 0.60, max(R.y, 0.0)));
 
-  vec3 road = vec3(0.105, 0.102, 0.118);
+  /* The ground the ray lands on when it goes down, which on a square-on pane is
+   * the street behind the photographer and is the half of the veil that was
+   * missing. Every shopfront photographed head on carries a ghost of the kerb
+   * line and the carriageway across its lower part; without it the pane is a
+   * uniform film over the room rather than a reflection of anywhere. The kerb
+   * is the one edge in it worth drawing, because it is the only straight line
+   * on the ground plane and it is what makes the ghost read as a street. */
+  float xHit = vWPos.x + R.x * dHit;
+  float kerb = abs(abs(xHit) - (uBuildLine - 2.30));
+  vec3 road = mix(vec3(0.088, 0.086, 0.101), vec3(0.135, 0.132, 0.150),
+                  smoothstep(uBuildLine - 2.30, uBuildLine - 2.05, abs(xHit)));
+  /* Sunlit footway where the sun reaches it, which it does in bands. Set from
+   * the same inversion: the sunlit flags in these frames measure display 170
+   * to 186, which is a scene radiance near seven, and at street level this is
+   * the brightest thing a downward reflected ray can find by a long way. */
+  road = mix(road, vec3(9.50, 6.80, 4.00),
+             step(uBuildLine - 2.25, abs(xHit))
+             * smoothstep(0.42, 0.58, hash21(vec2(floor(zHit / 3.4), 3.7))));
+  road = mix(road, road * 0.34, 1.0 - smoothstep(0.0, 0.09 + dHit * 0.004, kerb));
 
   bool toSky  = dRoof <= min(dFace, dRoad);
   bool toRoad = dRoad <  min(dFace, dRoof);
@@ -873,24 +866,37 @@ const SHOP_GLASS_BODY = /* glsl */ `
    * it is a third; at sixty it is most of the way, and the pane goes to a warm
    * sheet with the terrace ghosting through it. */
   vec3 hazeC = mix(uHorizonAway, uHorizonSun, smoothstep(-0.25, 0.90, az));
-  float ext = 1.0 - exp(-pow(dHit * 0.0205, 1.65));
-  gTint = mix(hit, hazeC, clamp(ext, 0.0, 0.90));
+  float ext = 1.0 - exp(-pow(dHit * 0.0168, 1.65));
+  gTint = mix(hit, hazeC, clamp(ext, 0.0, 0.88));
   /* Film on the pane scatters the reflection rather than removing it, so it
    * loses contrast toward the haze rather than going dark. Multiplying it down,
    * as this did, is the behaviour of a filter and not of dirt. */
   gTint = mix(gTint, hazeC * 0.42, dirt * 0.30);
 
-  /* Fresnel, and it is the whole behaviour of the surface. 0.06 rather than
-   * the textbook 0.04 because a pane with a week of city film on it scatters
-   * more than clean glass does at every angle. */
+  /* Fresnel, and there are two interfaces rather than one.
+   *
+   * The previous version applied Schlick once, which is the reflectance of a
+   * single air-to-glass boundary — but a window is a slab, and the light that
+   * refracts in meets the glass-to-air boundary on the way out and reflects a
+   * second time. For a sheet thin enough to ignore absorption the two sum to
+   * 2R/(1+R), which is a factor of 1.8 at grazing and 1.9 at normal. That is
+   * not a fudge to make the pane brighter; it is the reflectance of a pane
+   * rather than of a surface, and leaving it out is why the arithmetic kept
+   * saying six per cent for something that is visibly a mirror at a shallow
+   * enough angle.
+   *
+   * The base is back to the textbook 0.043 for n = 1.52, because the film that
+   * the old 0.06 was standing in for is added separately below and was
+   * otherwise being counted twice. */
   float ndv = clamp(abs(dot(Nw, -Vw)), 0.0, 1.0);
-  float F = 0.06 + 0.94 * pow(1.0 - ndv, 5.0);
+  float Fs = 0.043 + 0.957 * pow(1.0 - ndv, 5.0);
+  float F = 2.0 * Fs / (1.0 + Fs);
   /* The film itself is not specular and does not go away at normal incidence,
-   * so it sets a floor on how much of the room is hidden. Trimmed from 0.14:
-   * at that value a head-on pane was laying an eighth of a neutral reflection
-   * over the interior as a flat veil, which lifted the room's blacks and was a
-   * large part of why a lit shop read as a slab rather than as a volume. */
-  F = clamp(F + dirt * 0.075, 0.0, 1.0);
+   * so it sets a floor on how much of the room is hidden. Kept small: a head-on
+   * pane laying a large neutral veil over the interior lifts the room's blacks
+   * and is a large part of why a lit shop can read as a slab rather than as a
+   * volume. */
+  F = clamp(F + dirt * 0.055, 0.0, 1.0);
 
   /* White, not gTint, and this is the correction rather than a simplification.
    *
@@ -1468,13 +1474,15 @@ float slash(vec2 q, vec2 c, float r, float w, float px){
   float d = abs(p.x * 0.7071 + p.y * 0.7071);
   return (1.0 - aaStep(w, d, px)) * (1.0 - aaStep(r, length(p), px));
 }
-`+ LETTERING + `
+`+ signGLSL() + `
 `;
 
 const FURN_BODY = /* glsl */ `
 {
   vec2 uv = vFuv;
   float px = fwidth(uv.x) + fwidth(uv.y);
+  /* Taken here, above every branch, because it differentiates. */
+  float gMir = signMirror(uv, vWN);
   float kind = vKind.x;
   float seed = vKind.y;
   /* Height above the paving. aRect is overloaded — on a sign plate it is the
@@ -1632,12 +1640,16 @@ const FURN_BODY = /* glsl */ `
     float inb2 = aaBand(0.052, 0.948, q.x, px / max(vRect.z, 1e-4))
                * aaBand(0.150, 0.850, q.y, qpx);
     col = mix(vec3(0.4200, 0.4100, 0.3900), col, max(1.0 - inb + inb2, 0.0));
-    /* The name. The box is stated in cap heights so the run takes as many
-     * letters as the blade is long enough for, rather than stretching however
-     * many it picked across the whole plate. */
-    float cap = 0.48 * vRect.w;
-    float txt = lettering(vec2((q.x - 0.10) / 0.80, (q.y - 0.26) / 0.48),
-                          seed, px / cap, 0.80 * vRect.z / cap);
+    /* The name, set to fit between the borders and centred. A blade is made to
+     * suit its name, so the name is allowed to set the cap height down as far
+     * as it needs and the plate keeps its proportions. */
+    int row = SGN_NAME0 + int(hash21(vec2(seed * 5.3, 9.4)) * float(SGN_NAMEN) * 0.999);
+    float asp = signAspect(row);
+    float capD = min(0.52 * vRect.w, 0.86 * vRect.z / asp);
+    float wD = capD * asp;
+    float txt = signInk(row, vec2((uv.x - vRect.x - (vRect.z - wD) * 0.5) / wD,
+                                  (uv.y - vRect.y - (vRect.w - capD) * 0.5) / capD),
+                        px / capD, gMir);
     col = mix(col, vec3(0.4400, 0.4300, 0.4100), txt);
     rgh = 0.42 + 0.22 * unit(wfbm(p * 3.0, 2)); met = 0.0;
     gSpecCut = 0.30;
@@ -1661,12 +1673,21 @@ const FURN_BODY = /* glsl */ `
     float rr = ring(qa, vec2(0.5, 0.66), 0.235, 0.330, qpx);
     float bar = slash(qa, vec2(0.5, 0.66), 0.330, 0.052, qpx);
     col = mix(col, vec3(0.2600, 0.0230, 0.0180), clamp(rr + bar, 0.0, 1.0));
-    // The legend under the roundel.
-    float c1 = 0.11 * vRect.w, c2 = 0.09 * vRect.w;
-    float t1 = lettering(vec2((q.x - 0.16) / 0.68, (q.y - 0.14) / 0.11),
-                         seed, px / c1, 0.68 * vRect.z / c1);
-    float t2 = lettering(vec2((q.x - 0.20) / 0.60, (q.y - 0.27) / 0.09),
-                         seed + 3.0, px / c2, 0.60 * vRect.z / c2);
+    /* The legend under the roundel: NO PARKING over the hours it applies. Two
+     * lines, taken as a pair from the plate range so that the second line is
+     * the qualifier belonging to the first rather than another headline. */
+    int pr = SGN_PLATE0 + 2 * int(hash21(vec2(seed * 4.7, 17.9)) * 1.999);
+    float t1 = 0.0, t2 = 0.0;
+    {
+      float capD = min(0.115 * vRect.w, 0.84 * vRect.z / signAspect(pr));
+      float wD = capD * signAspect(pr);
+      t1 = signInk(pr, vec2((uv.x - vRect.x - (vRect.z - wD) * 0.5) / wD,
+                            (q.y - 0.145) * vRect.w / capD), px / capD, gMir);
+      float capE = min(0.095 * vRect.w, 0.78 * vRect.z / signAspect(pr + 1));
+      float wE = capE * signAspect(pr + 1);
+      t2 = signInk(pr + 1, vec2((uv.x - vRect.x - (vRect.z - wE) * 0.5) / wE,
+                                (q.y - 0.028) * vRect.w / capE), px / capE, gMir);
+    }
     col = mix(col, vec3(0.0180, 0.0175, 0.0170), clamp(t1 + t2, 0.0, 1.0));
     rgh = 0.40 + 0.22 * unit(wfbm(p * 3.0, 2)); met = 0.0;
     gSpecCut = 0.30;
@@ -1723,6 +1744,7 @@ export function makeFurnitureMaterial(): THREE.MeshStandardMaterial {
   });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uSun = { value: new THREE.Vector3(...SUN_DIR) };
+    Object.assign(shader.uniforms, signUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `
 ${FACADE_VARYINGS}

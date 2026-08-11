@@ -32,6 +32,7 @@ import { Dust } from './dust';
 import { installSensorFloor } from './sensor';
 import { Buildings } from './Buildings';
 import { StreetLevel } from './StreetLevel';
+import { Cars } from './Cars';
 
 export function Street() {
   installSensorFloor();
@@ -187,6 +188,7 @@ export function Street() {
 
       <Buildings />
       <StreetLevel />
+      <Cars />
       {/* The key light, which used to be rendered from inside the lamp component
         * and so was carried off with it when the lamps went. It is the only light
         * in the scene now, which is what this hour actually has. */}
