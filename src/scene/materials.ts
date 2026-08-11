@@ -21,6 +21,7 @@ import * as THREE from 'three';
 import { NOISE, CANYON } from '@/world/glsl';
 import type { SurfaceSet } from '@/world/bake';
 import { SUN_DIR } from './env';
+import { hazeFogVertex } from './haze';
 import { DIMS } from '@/world/dims';
 import { ARTIFICIAL, artificialAdd, artificialUniforms } from './lights';
 
@@ -2791,12 +2792,15 @@ export function makeApronMaterial(): THREE.MeshLambertMaterial {
      * There are buildings now, and a rear range behind the low frontage, so
      * the plane has to do far less. At 1.5 it is ground: dark, receding, and
      * gone under the block long before it reaches the horizon. */
+    /* The body comes from haze.ts (System 6) rather than being written here.
+     * This material is the only one that cannot use the shared fog_vertex
+     * chunk, so it used to carry a transcribed copy — including an assignment
+     * to vHazeWorld, a varying that only exists because haze.ts declares it.
+     * Renaming or dropping that varying there broke this program with a link
+     * error naming neither file. Keep it a call. */
     shader.vertexShader = shader.vertexShader.replace(
       '#include <fog_vertex>',
-      `#ifdef USE_FOG
-         vFogDepth = - mvPosition.z * 1.5;
-         vHazeWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
-       #endif`,
+      hazeFogVertex(1.5),
     );
   };
   m.customProgramCacheKey = () => 'apron-haze';
