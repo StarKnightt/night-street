@@ -45,3 +45,6 @@ next-env.d.ts
 
 # Scratch build for tools/sys5.ts, a CPU-only census.
 .sys5/
+
+.capture.lock
+.sys6*.log
