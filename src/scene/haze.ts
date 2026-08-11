@@ -40,11 +40,85 @@ import { walkHeight } from '@/world/geometry';
  * brief is right that it is wrong for this geometry. That reasoning is recorded
  * at WEDGE rather than here, so that it sits beside what was built instead.
  */
+/* Per-term switches, for measuring rather than for shipping.
+ *
+ * This project's most expensive recurring failure is code that is present,
+ * typechecks, reads correctly and is silently inert — a haze installer that
+ * wrote uniforms three had already built, an envMapIntensity nothing reads, a
+ * pow(0, 0.6) that killed a light path. The only defence that has ever worked
+ * is a differenced pair: render the frame twice with one term switched and
+ * measure the delta. A term that cannot be switched off cannot be proved to be
+ * on.
+ *
+ * Every switch below substitutes a *constant* into the same GLSL. It does not
+ * add a branch, a uniform or a define, so the compiled program is structurally
+ * identical whichever way it is set and a measured difference cannot be an
+ * artefact of having compiled a different shader. With no query string present
+ * the substitutions are the shipped values, so the default build is unchanged.
+ *
+ *   ?haze=noheight,nofloor    e.g.; comma-separated, dev only
+ */
+function hazeFlags(): Set<string> {
+  if (process.env.NODE_ENV === 'production') return new Set();
+  if (typeof window === 'undefined') return new Set();
+  const q = new URLSearchParams(window.location.search).get('haze');
+  return new Set(q ? q.split(',').map((s) => s.trim()).filter(Boolean) : []);
+}
+
 export function installHaze(sunDir: THREE.Vector3,
                             near: THREE.Color, sunward: THREE.Color) {
   const S = THREE.ShaderChunk;
   if ((S as unknown as Record<string, unknown>).__hazeInstalled) return;
   (S as unknown as Record<string, unknown>).__hazeInstalled = true;
+
+  const F = hazeFlags();
+  /* The floor of the comparison: three's stock fog maths — flat FogExp2 in the
+   * away colour, no direction, no height, no wedge, mixed in display space the
+   * way three does it.
+   *
+   * It cannot be implemented by returning early and leaving the stock chunks
+   * alone, and finding out why turned up a coupling worth reporting.
+   * `materials.ts:2794-2800` replaces `#include <fog_vertex>` on the apron with
+   * a literal block of its own that scales vFogDepth by 1.5 *and assigns
+   * vHazeWorld*. That varying only exists because this file publishes it, so
+   * with the stock chunks in place the apron program fails to link with
+   * "l-value required (can't modify a const)" — the identifier is not declared,
+   * and three surfaces the failure lazily on first draw rather than at compile.
+   *
+   * So the control declares the varying and drops only the maths. Reported to
+   * System 1 rather than fixed here: materials.ts is not this system's file,
+   * and the coupling is latent in the shipped build too — anything that stops
+   * this chunk publishing vHazeWorld silently kills the apron program. */
+  if (F.has('off')) {
+    S.fog_pars_vertex = `
+#ifdef USE_FOG
+  varying float vFogDepth;
+  varying vec3 vHazeWorld;
+#endif
+`;
+    S.fog_pars_fragment = `
+#ifdef USE_FOG
+  uniform vec3 fogColor;
+  varying float vFogDepth;
+  varying vec3 vHazeWorld;
+  #ifdef FOG_EXP2
+    uniform float fogDensity;
+  #else
+    uniform float fogNear;
+    uniform float fogFar;
+  #endif
+#endif
+`;
+    return;
+  }
+  /* Scale height as 1/k. Zero drives heightFactor down the `abs(kdy) < 1e-3`
+   * branch, which returns exactly 1.0 — i.e. uniform-in-altitude FogExp2, the
+   * behaviour before System 6. */
+  const K_HEIGHT = F.has('noheight') ? 0 : 0.05556;
+  const FLOOR = F.has('nofloor') ? 0 : 0.045;
+  /* Zero collapses hazePhase to a constant 1.0: isotropic air, no forward lobe
+   * and no backscatter. */
+  const PHASE_GAIN = F.has('nophase') ? 0 : 0.8496;
 
   /* Compiled in as constants rather than supplied as uniforms, and that is a
    * bug fix rather than a micro-optimisation.
@@ -119,6 +193,7 @@ export function installHaze(sunDir: THREE.Vector3,
       return [Math.min(a, b), Math.max(a, b)] as const;
     })
     .slice(0, 2);
+  if (F.has('nowedge')) SHAFTS.length = 0;
   while (SHAFTS.length < 2) SHAFTS.push([1e9, 1e9] as const);   // never entered
 
   const WEDGE_N = `vec2(${nx.toFixed(6)}, ${nz.toFixed(6)})`;
@@ -234,7 +309,7 @@ float hazePhase( float mu ) {
   float p = 0.78 * 0.8236 * inversesqrt( a * a * a )
           + 0.22 * 0.9600 * inversesqrt( b * b * b );
   // 1.0 at the phase minimum, 3.4 down the beam. tools/agx.mjs prints the pair.
-  return 1.0 + 0.8496 * ( p - 0.5901 );
+  return 1.0 + ${PHASE_GAIN.toFixed(6)} * ( p - 0.5901 );
 }
 `;
 
@@ -384,7 +459,7 @@ ${WEDGE}
    * 18 m scale height. A parapet 12 m above the eye then carries 73 per cent of
    * the optical depth of something level with the camera at the same range. */
   float dy = vHazeWorld.y - cameraPosition.y;
-  float kdy = 0.05556 * dy;
+  float kdy = ${K_HEIGHT.toFixed(6)} * dy;
   float heightFactor = ( abs( kdy ) < 1e-3 ) ? 1.0 : ( 1.0 - exp( - kdy ) ) / kdy;
   float hazeOptical = hazeDist * heightFactor;
 
@@ -396,7 +471,7 @@ ${WEDGE}
     float hazeSigma = 1.0 / max( fogFar - fogNear, 1.0 );
   #endif
 
-  /* A near-field floor, because fog that is exactly zero at zero distance is a
+  /* A density floor, because fog that is exactly zero at zero distance is a
    * statement that the first ten metres of a city street are a vacuum.
    *
    * FogExp2 is quadratic in distance, not Beer-Lambert, and the difference is
@@ -407,15 +482,28 @@ ${WEDGE}
    * stops, so it cannot touch the long-range behaviour the rectangle fix
    * depends on.
    *
-   * Sized rather than picked. Measured through tools/agx.mjs, at 3 m this puts
-   * 0.5 per cent of a haze that reads 191 over a near road that reads 17, which
-   * is nine tenths of one code value. That is the honest size of the effect and
-   * it is worth saying plainly: air at three metres does almost nothing, and the
-   * crushed near field in the crop is veiling glare in the lens, which is
-   * System 8's, not air, which is this file's. Where it does register is 10-40 m
-   * — the opposite footway, the far kerb, the parked car three cars down — and
-   * there it is worth two to four code values of separation that were not there. */
-  fogFactor = 1.0 - ( 1.0 - fogFactor ) * ( 1.0 - 0.045 * ( 1.0 - exp( - hazeOptical * 0.04 ) ) );
+   * THE SIZE OF THIS TERM WAS MIS-STATED AND IS NOW MEASURED. It was described
+   * as a near-field floor worth "nine tenths of one code value" at 3 m and "two
+   * to four" at 10-40 m. Differenced pairs against ?haze=nofloor say otherwise:
+   * 13.3 counts on the mid carriageway and 12.7 on the far carriageway looking
+   * into the sun, and 5.8 down the long lens. Three to six times the claim.
+   *
+   * The arithmetic the estimate missed is on the next line but one. This runs
+   * *before* the phase multiply, so its nominal 4.5 per cent is delivered at up
+   * to 3.4 times that looking down the beam; and 1/0.04 is a 25 m saturation
+   * length, so it is not a near-field term at all — it reaches 60 per cent of
+   * its ceiling by 25 m and 91 per cent by 60 m. It is a floor on the *whole*
+   * mid field, and the near field, where it really is worth about a count, is
+   * the one place it does least.
+   *
+   * Kept at 0.045 rather than cut to match the old description, on two grounds.
+   * Ordering it before the phase is physically right — a floor is extra
+   * aerosol, and extra aerosol scatters forward like the rest of it — and the
+   * region it actually acts on, 10-60 m toward the sun, is where the brief
+   * wants warm haze. What is corrected here is the claim, not the value. The
+   * distinction matters because a constant defended by a number that is six
+   * times off is indistinguishable from a wrong one until someone measures. */
+  fogFactor = 1.0 - ( 1.0 - fogFactor ) * ( 1.0 - ${FLOOR.toFixed(6)} * ( 1.0 - exp( - hazeOptical * 0.04 ) ) );
 
   /* Forward scattering. The lobe is deliberately broad: a narrow one puts a
    * hard-edged glowing disc in the haze that reads as a lens artifact rather
