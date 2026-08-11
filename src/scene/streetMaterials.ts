@@ -524,10 +524,7 @@ const SHOP_BODY = /* glsl */ `
       // by it rather than being it.
       float ceil = part < 5.5 ? clamp(-vWN.y, 0.0, 1.0) : 0.0;
       gEmit += lc * 1.55 * ceil * tubes * uLitGain;
-      /* Everything else in the room is lit by that ceiling and carries the
-       * same colour at roughly its own albedo. At the first value the walls
-       * sat at a fifth of the ceiling and the room read as a dark box with a
-       * bright lid rather than as a lit interior. */
+
       /* Everything else in the room re-emits what the ceiling throws at it,
        * and the albedo term is the whole point of writing it this way.
        *
@@ -538,21 +535,63 @@ const SHOP_BODY = /* glsl */ `
        * structure in it whatsoever. The unlit units next door looked far
        * better, which is the tell — they were being shaded rather than
        * painted. Reflected radiance is irradiance times albedo, so a dark
-       * vinyl floor under a bright ceiling stays a dark floor. */
+       * vinyl floor under a bright ceiling stays a dark floor.
+       *
+       * ── Why this was rewritten, which is the System 5 handover finding ──
+       *
+       * That reasoning was right and the arithmetic under it was not. The
+       * ceiling lands at 1.674 in red and the back wall — the surface a
+       * street-level camera looking through the window actually sees most of
+       * — landed at 0.060, an eighth of a stop above the sensor floor and
+       * code 37 on screen. The shopfront threw a correctly measured pool onto
+       * the footway while the shop itself read as an unlit hole, which a
+       * viewer reads as a bug even though the pool is right.
+       *
+       * Three factors multiplied to produce it, none of them visible on its
+       * own:
+       *
+       * 1. 'col' here is 0.045-0.09. That is the *unlit* room's appearance
+       *    used as an albedo, and 6.7 per cent reflectance is a coal cellar.
+       *    A trading unit is decorated, so the lit branch now lifts it to
+       *    about 0.45 on the walls — and, being a lift of 'col' rather than a
+       *    constant, keeps every bit of the noise structure above it.
+       * 2. The depth term fell to 0.30 at the back of the room. That term is
+       *    a daylight-aperture idea and it is simply false here: the emissive
+       *    ceiling runs the full depth of the room, so the back wall is
+       *    directly under the far end of the source and is not further from
+       *    the light at all. It survives at 0.22 because the front of the
+       *    room does get some sky through the glass; it no longer crushes.
+       * 3. The height term bottomed at 0.20 where a 2.8 m room under a
+       *    ceiling source is about 0.55.
+       *
+       * 0.32 x 0.20 x 0.30 is 0.019, which the 11.0 in front was silently
+       * compensating for at one point in the room and nowhere else. So the
+       * coefficient is now literally the ceiling's own radiance, 1.55, and
+       * 'ff' is a form factor that stays inside 0..1: the line reads as
+       * reflected = albedo x form factor x source, and can be checked as one.
+       * 'tools/interior.mjs' evaluates it on the CPU against the real AgX
+       * transform; keep the two in step.
+       *
+       * The ceiling is deliberately untouched. System 5 authored its aperture
+       * radiance against it, and this change moves the area-weighted aperture
+       * from 0.40 to 0.50 — toward that 0.90, not away from it. */
+      float up = clamp(vWN.y, 0.0, 1.0);
+      col *= part < 5.5 ? 6.6 - 3.6 * up : 4.6;
       /* Bright at the ceiling, falling toward the floor and toward the back.
-       * That gradient is worth stating deliberately rather than letting it
+       * The gradient is worth stating deliberately rather than letting it
        * fall out: System 5 puts a pool of warm light on the footway outside
        * these windows, and a pool needs something consistent behind it to sit
        * against — an interior at one value would make the spill read as a
-       * decal on the paving. */
-      float recv = (0.32 + 0.68 * clamp(vWN.y, 0.0, 1.0))
-                 * (0.20 + 0.80 * smoothstep(0.0, 2.35, hh))
-                 * (1.0 - 0.70 * smoothstep(0.15, 2.40, vDepth));
-      // Fittings a third: a gondola stands in front of the wall the ceiling is
-      // washing, and reading as a silhouette against it is what says "shelves"
-      // from across the road.
-      float shell = part < 5.5 ? 1.0 : 0.34;
-      gEmit += lc * 11.0 * col * recv * shell * (1.0 - ceil) * uLitGain;
+       * decal on the paving. It is a gentler gradient than it was, but it is
+       * still a factor of two from the reveal to the back corner. */
+      float ff = (0.50 + 0.34 * up)
+               * (0.55 + 0.45 * smoothstep(0.0, 2.35, hh))
+               * (1.0 - 0.22 * smoothstep(0.15, 2.40, vDepth));
+      // Fittings a little over half: a gondola stands in front of the wall the
+      // ceiling is washing, and reading as a silhouette against it is what
+      // says "shelves" from across the road.
+      float shell = part < 5.5 ? 1.0 : 0.55;
+      gEmit += lc * 1.55 * col * ff * shell * (1.0 - ceil) * uLitGain;
     }
   }
 

@@ -19,8 +19,12 @@ import { useMemo, useEffect } from 'react';
 import { buildStreetLevel } from '@/world/street3';
 import {
   makeShopMaterial, makeShopGlassMaterial, makeShutterMaterial,
-  makeAwningMaterial, makeFurnitureMaterial,
+  makeAwningMaterial, makeFurnitureMaterial, LIT_GAIN,
 } from './streetMaterials';
+
+declare global {
+  interface Window { __litGain?: { value: number } }
+}
 
 export function StreetLevel() {
   const built = useMemo(() => ({
@@ -44,7 +48,13 @@ export function StreetLevel() {
      * missing and is System 5's to add. Matching `colour` is what will keep
      * the spill the same colour as the room it comes out of. */
     window.__shopLights = built.level.lights;
-    return () => { delete window.__shopLights; };
+    /* And the interior's own gain, so a capture can prove the emissive path is
+     * live without a recompile. Setting it to zero must black the rooms out
+     * and setting it to four must blow them; a value that changes nothing
+     * means the branch is not reached, which is the failure mode that has cost
+     * this project the most rounds. Development only, like __scene. */
+    if (process.env.NODE_ENV === 'development') window.__litGain = LIT_GAIN;
+    return () => { delete window.__shopLights; delete window.__litGain; };
   }, [built]);
 
   useEffect(() => () => {
