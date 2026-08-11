@@ -92,12 +92,17 @@ await run({ width: 640, height: 360, url: DEV_URL }, async ({ page, errs, gl, re
     return { x: s.walker.x, z: s.walker.z };
   });
   await page.keyboard.down('KeyW');
-  await new Promise((r) => setTimeout(r, 11000));
+  await new Promise((r) => setTimeout(r, 10000));
+  const liveMid = await page.evaluate(() => {
+    const w = window.__scene.walker;
+    return { x: w.x, z: w.z, t: performance.now() / 1000 };
+  });
+  await new Promise((r) => setTimeout(r, 1000));
   const liveEnd = await page.evaluate(() => {
     const w = window.__scene.walker, c = window.__scene.camera.position;
     return {
       x: w.x, z: w.z, ey: w.eye.y, cy: c.y, v: w.speed, hit: w.contact,
-      fps: window.__scene.fps,
+      fps: window.__scene.fps, t: performance.now() / 1000,
     };
   });
   await page.keyboard.up('KeyW');
@@ -107,9 +112,34 @@ await run({ width: 640, height: 360, url: DEV_URL }, async ({ page, errs, gl, re
   console.log(`    started at ${live.x.toFixed(2)}, ${live.z.toFixed(2)}`);
   console.log(`    rests at ${liveEnd.x.toFixed(4)}, ${liveEnd.z.toFixed(4)}, clearance ${mm(lClear)} mm, speed ${liveEnd.v.toFixed(5)}`);
   check(Math.abs(lClear - BODY_R) < 0.001, `stopped one body radius off the car (${mm(lClear - BODY_R)} mm over)`);
-  const agree = Math.hypot(liveEnd.x - dEnd.x, liveEnd.z - dEnd.z);
-  console.log(`\n  the two paths come to rest ${mm(agree)} mm apart`);
-  check(agree < 0.002, 'driven and interactive resting places agree');
+  /* The two paths against each other.
+   *
+   * Not "do they stop in the same place", because neither of them stops. The
+   * hatch is parked at -0.030 rad, so a walker held square against its tail is
+   * held against a surface that is not square to it and slides along that
+   * surface for as long as the key is down — correctly, and the alternative
+   * would be a camera that sticks to a car. There is therefore no unique
+   * resting point to compare, and after ten seconds the two paths are a slide
+   * apart simply because one of them ran a second longer.
+   *
+   * What is common to both, and is the thing worth testing, is the contact
+   * itself: the distance to the surface, which is an equilibrium and must be
+   * one body radius on both; and the rate along it, which is a property of the
+   * solver and the pace and must not depend on how the frames were produced.
+   * The driven path is stepped by hand at a fixed 1/30, the interactive one by
+   * whatever the wall clock handed r3f, so agreement here is agreement across
+   * both the frame source and the frame rate.
+   */
+  const n = nearest(liveEnd.x, liveEnd.z);
+  const sep = { x: liveEnd.x - dEnd.x, z: liveEnd.z - dEnd.z };
+  const normal = Math.abs(sep.x * n.nx + sep.z * n.nz);
+  const dSlide = Math.hypot(dEnd.x - driven[driven.length - 31].x, dEnd.z - driven[driven.length - 31].z);
+  const lSlide = Math.hypot(liveEnd.x - liveMid.x, liveEnd.z - liveMid.z) / (liveEnd.t - liveMid.t);
+  console.log(`\n  both are held against the same tail, ${mm(normal)} mm apart across it`);
+  console.log(`  and sliding along it at ${(dSlide * 1000).toFixed(1)} mm/s driven, ` +
+    `${(lSlide * 1000).toFixed(1)} mm/s interactive, ${mm(Math.hypot(sep.x, sep.z))} mm of slide apart`);
+  check(normal < 0.001, 'driven and interactive sit at the same depth against the surface');
+  check(Math.abs(dSlide - lSlide) < 0.004, 'and slide along it at the same rate');
   check(Math.abs(liveEnd.cy - liveEnd.ey) < 1e-5, 'the camera tracks the eye on the live loop too');
 
   /* ── 3. The kerb, on both paths ───────────────────────────────────────── */
