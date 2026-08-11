@@ -44,6 +44,16 @@ const FPS = +flag('fps', 60);
 const HALF = args.includes('--half');
 const AUDIO = flag('audio', null);
 const MBPS = +flag('mbps', HALF ? 12 : 16);
+/* Cut the take short, and fade it out.
+ *
+ * These exist for the insurance cut. A thirty-second walk that ends in shade
+ * can be turned into a twenty-one-second walk that ends in the sun band it was
+ * already crossing, without a GPU and without touching the take — and a hard
+ * cut mid-stride reads as a file that got truncated, where half a second of
+ * fade reads as an edit. The suffix keeps it off the delivered name. */
+const UNTIL = +flag('until', 0);
+const FADE = +flag('fadeout', 0);
+const SUFFIX = flag('suffix', '');
 
 const src = path.join(ROOT, 'shots', tag, shot);
 if (!fs.existsSync(src)) { console.error(`no frames at ${path.relative(ROOT, src)}`); process.exit(1); }
@@ -52,7 +62,7 @@ if (!frames.length) { console.error('no frames'); process.exit(1); }
 const ext = path.extname(frames[0]).slice(1);
 
 const outFps = HALF ? FPS / 2 : FPS;
-const out = path.join(ROOT, 'shots', tag, `${shot}-${outFps}p.mp4`);
+const out = path.join(ROOT, 'shots', tag, `${shot}-${outFps}p${SUFFIX}.mp4`);
 
 /* Decimation, not resampling. `select` keeps every second frame and `setpts`
  * re-times what is left; `fps=` would resample against a clock and can repeat
@@ -74,12 +84,14 @@ const vf = [
    * glance. Stamp against the output rate. */
   HALF ? `select=not(mod(n\\,2)),setpts=N/${outFps}/TB` : null,
   'scale=in_range=full:out_range=limited',
+  FADE && UNTIL ? `fade=t=out:st=${(UNTIL - FADE).toFixed(3)}:d=${FADE}` : null,
   'format=yuv420p',
 ].filter(Boolean).join(',');
 
 const common = [
   '-y',
   '-framerate', String(FPS),
+  ...(UNTIL ? ['-t', String(UNTIL)] : []),
   '-i', path.join(src, `%05d.${ext}`),
   ...(AUDIO ? ['-i', AUDIO] : []),
   '-vf', vf,

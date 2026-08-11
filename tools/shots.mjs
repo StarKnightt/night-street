@@ -150,6 +150,167 @@ export const SHOTS = [
     ],
   },
   {
+    /* The deliverable, third cut: lit, shade, lit.
+     *
+     * `walk` and `walkF` are both compositionally backwards, and the number
+     * that says so is an exposure, not a dust count. Median luminance on the
+     * delivered frames peaks at 125.8 at t 3.5 and falls monotonically to 43.4
+     * by t 29.3; the final second contains no highlight of any kind — nothing
+     * clips, and the brightest of two million pixels is 227. That is not a
+     * golden-hour photograph, it is an underexposed dusk frame, and it is the
+     * real reason the ending "stopped rather than arrived". Holding on it, as
+     * walkF does, holds on a shot with no light in it.
+     *
+     * `tools/route.mjs` had been printing the cause all night: 43% of the take
+     * is inside a sun band and every second of it falls between t 8 and t 21.
+     * `block.ts` lights z -49..-32 and z -84..-73, and the old route ran -22
+     * to -62.7 — it stops 10.3 m short of the second band. Same 42 m walk,
+     * started 18.5 m further down the street, and the arc inverts:
+     *
+     *   t 0-6.2    inside sun band 1 from the first frame. Direct sun on the
+     *              carriageway, the motes lit instead of shadow-gated off, and
+     *              a sunlit estate sliding out of the left of frame
+     *   t 6.2-23.3 the shade middle — which is where the neon belongs. The
+     *              pharmacy cross at -52, the signal at -61.6, BAR / COLD BEER
+     *              at -65.26 and the bar's warm glazing at -67.88 all fall
+     *              inside it. Neon in shade is a better shot than neon in sun,
+     *              so the dim third is spent on the only emitters in the scene
+     *              rather than on empty shadowed road
+     *   t 23.3-30  into sun band 2 and staying there. The hatch at -76.3 is
+     *              the one parked car in the scene with direct sun on it and
+     *              the shade line lies across its bonnet; the vacant lot opens
+     *              the east side to the sky; the saloon at -96.4 sits in the
+     *              haze to give the far end of the street a known size
+     *
+     * It ends walking. heroF was built around releasing KeyW and letting the
+     * walker coast to rest, and `Walker.update` does not do that: with
+     * `input.forward` at zero the direction vector is zeroed before `speed` is
+     * applied, so translation stops in one frame while the bob and cadence
+     * wind down over the next 0.35 s. A trace shows z frozen to four decimals
+     * with `speed` still reading 0.98 m/s — a step from 23 mm of optical flow
+     * per frame to zero, and a third of a second of foot slide in a walk that
+     * measures 0.2% over 85 footfalls. That wants a change to walker.ts and
+     * walker.ts is not a 5 a.m. edit. What arrives at the end here is light.
+     *
+     * Lateral: starts 0.80 east of the crown so the west-kerb row — estate at
+     * -42.6 and supermini at -47.55, nose to tail with 700 mm between the
+     * bumpers — is 1.8 m away rather than 0.7 m, which keeps the car with the
+     * see-through wheel arch and the two-cuboid mirror out of the opening
+     * frame and lets it leave to the left as a sunlit shape. Then west across
+     * the second half, because the east kerb carries both hatches: the closest
+     * approach on the whole route is 0.631 m to the one at -70. Every yaw is
+     * paired, because the walker steers where it looks. */
+    name: 'walkG',
+    t: 0.265,
+    place: [0.80, -40.5],
+    seconds: 30,
+    keys: ['KeyW'],
+    look: [
+      [0.0, 0.000, -0.045],
+      [3.0, 0.030, -0.045],
+      [7.0, 0.050, -0.038],
+      [11.0, -0.025, -0.030],
+      [14.0, -0.055, -0.022],
+      [17.0, 0.045, -0.020],
+      [20.0, 0.090, -0.026],
+      [23.0, 0.045, -0.030],
+      [26.0, 0.010, -0.024],
+      [28.5, -0.005, -0.016],
+      [30.0, -0.010, -0.010],
+    ],
+  },
+  {
+    /* The deliverable, second cut: the same walk, but it arrives.
+     *
+     * `walk` above is 40.7 m of correct street that stops mid-stride between
+     * two parked cars, and its last frame is the weakest in the take. That is
+     * the worst place on a timeline for a weak frame: a clip is judged twice,
+     * once in the first second and once on whatever is on screen when the
+     * viewer decides whether to reply or keep scrolling. This cut is identical
+     * for 25.9 s and then does one thing — it stops and looks at the bar.
+     *
+     * Nothing about the stop is animated. KeyW is released at 26.2 and
+     * `walker.update` does the rest: speed decays with a 111 ms time constant,
+     * so the walker coasts 155 mm and is at rest by 27.0; the bob amplitude is
+     * scaled by smoothstep(pace / 1.4), so the stride shortens and the head
+     * settles from 1.6366 m to 1.6417 m with its vertical velocity going to
+     * zero rather than stepping to it; and the cadence term falls with the
+     * pace, so the last footfall lands where a last footfall would. The camera
+     * arrives at rest the way a person does. This is the collision and gait
+     * work being spent on something other than not walking into a car.
+     *
+     * The head turn *leads* the release by 300 ms, because that is the order
+     * the two happen in — you see the thing, then you stop. Over two seconds
+     * it swings 0.39 rad right and lifts 0.155 rad onto the BAR / COLD BEER
+     * blade. A projecting blade is the right sign to end on and that is not
+     * luck: `world/neon.ts` hung it perpendicular to the frontage precisely
+     * because "the elevation of a street the camera walks down is edge-on in
+     * every frame", so its lettered jambs face back up the road at the camera.
+     *
+     * The aim is deliberately *off* the sign. From the rest point, `node
+     * --experimental-transform-types tools/aim.mjs 0.672 -57.414` puts the
+     * blade at yaw -0.519, pitch 0.249, 9.0 m out; the camera holds -0.380 /
+     * 0.125. At fov 45 on 16:9 — half-angles 0.635 and 0.393 — that leaves the
+     * blade 22% of a half-width right of centre and 32% of a half-height up,
+     * the bar's warm glazing just right of centre, the signal head at 65% out
+     * to the right, and the street axis still 60% of the way to the left edge
+     * with the sun glow at the end of it. The subject of the last frame is the
+     * street; the neon is what the eye lands on inside it. Centring the sign
+     * would throw the road away and make it a photograph of a sign.
+     *
+     * The final 2.1 s are two identical keyframes, so the camera is not merely
+     * slow but numerically still. Two reasons. Platforms lift a poster frame
+     * from near the end of a clip, and a still camera is the only invitation
+     * this thirty seconds makes to look *at* the paving, the air and the
+     * letterforms instead of at motion — which is the whole claim being made.
+     * What still moves in those two seconds is the dust, the signal aspect on
+     * its own clock, and the grain. That is the difference between a held shot
+     * and a freeze. */
+    name: 'walkF',
+    t: 0.265,
+    place: [-5.00, -22.0],
+    seconds: 30,
+    /* Empty, with KeyW in `hold` instead: `hold` is the only way to release a
+     * key partway through, and the release is the shot. */
+    keys: [],
+    hold: [['KeyW', 0, 26.2]],
+    look: [
+      [0.0, 0.020, -0.050],
+      [4.0, 0.000, -0.045],
+      [6.5, -0.430, -0.045],
+      [13.0, -0.430, -0.040],
+      [16.0, -0.060, -0.045],
+      [20.0, -0.020, -0.035],
+      [24.0, 0.020, -0.035],
+      [25.9, 0.010, -0.030],
+      [27.9, -0.380, 0.125],
+      [30.0, -0.380, 0.125],
+    ],
+  },
+  {
+    /* The last four seconds of `walkF`, from a standing start.
+     *
+     * A framing is worth one capture slot to check and thirty seconds of walk
+     * to check the slow way. This parks the walker on the rest point `node
+     * tools/route.mjs heroF` reports — 0.672, -57.414, which is where the
+     * release at 26.2 plus 155 mm of coast puts it — and plays only the turn.
+     * 120 frames at 720p instead of 1800 at 1080p.
+     *
+     * It is not a substitute for the take: it starts at rest, so it says
+     * nothing about whether the settle reads. It answers the one question that
+     * is expensive to get wrong, which is what is in the last frame. */
+    name: 'endbeat',
+    t: 0.265,
+    place: [0.672, -57.414],
+    seconds: 5,
+    keys: [],
+    look: [
+      [0.0, 0.010, -0.030],
+      [2.0, -0.380, 0.125],
+      [5.0, -0.380, 0.125],
+    ],
+  },
+  {
     /* The walk the collider makes available: one that leans on things.
      *
      * The shot above is hand-routed around every solid object on the street,

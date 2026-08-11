@@ -8,6 +8,78 @@ The technique brief for Systems 5, 6 and 8 — lighting, atmosphere and
 post-processing — lives at `docs/TECHNIQUE.md`. Read it before starting any of
 the three.
 
+## Verifying the parts and shipping the assembly — the class of bug that cost us most
+
+Three separate failures here have the same shape, and it is worth naming the
+shape because the instinct that produces it is a good one. Each time, a system
+was verified by measuring the things it *makes*, and each time the thing that
+was broken was the way those things were *wired together* — which the
+measurement could not see, and which was reporting itself loudly somewhere
+nobody was reading.
+
+**System 7 was silent on every machine, in every capture, since the day it was
+written.** `tools/audio.mjs` checks the generators, and every one of them was
+producing correct samples: the tyre noise, the pink bed, the footstep
+transients, the impulse response. What it could not check was `build()`.
+`ConvolverNode` is the one node in a Web Audio graph that refuses to resample —
+it throws `NotSupportedError` outright if the buffer's rate differs from the
+context's — and the IR was rendered at `SR.ir` = 24 kHz into a context that
+comes up at 48. The throw happened before the bed, the spot sources and the
+footsteps were constructed, so nothing downstream of that line ever existed.
+The fix is one expression, `ctx.sampleRate`. The error was in the page console
+the whole time, and the reel captures it into `reel.json` under `errors`, where
+it sat through several reviews.
+
+**A mote field sat 32 m behind the camera in every capture ever reviewed** while
+the interactive walk looked correct, because it was positioned from a uniform
+written in `useFrame` and a capture teleports and renders inside one
+synchronous evaluation. Same shape: the particle generator was right, the
+integration was not, and the instrument was pointed at the generator.
+
+**`tools/obstacles.mjs` cleared routes that were not clear**, because it is a
+hand-copy of `world/cars.ts` that drifted — one car short, the dumpster's
+half-extents transposed. The routine was correct; the data it ran against was
+not the data the page uses.
+
+The common defence is cheap: **make the check load the real assembly**. That is
+why `tools/route.mjs` imports `scene/collide.ts` instead of a copy, why
+`tools/aim.mjs` derives sign positions from `world/street3.ts` rather than from
+a table typed out of it, and why `tools/audiotake.mjs` records the master bus
+through a `MediaStreamDestination` instead of summing the generators itself. The
+second defence is to read what the assembly says about itself: a non-empty
+`errors` array in `reel.json` is a finding, not noise.
+
+## `Walker` stops translating in one frame when forward input goes to zero
+
+Not a bug in anything that has shipped — nothing has ever released `KeyW` mid
+take — but it is a trap for the next person who composes an ending.
+
+`update()` builds the direction vector from `input.forward` *before* applying
+`speed`:
+
+```
+let vx = (-sin * input.forward + cos * input.strafe);
+...
+if (len > 1e-4) { vx /= len; vz /= len; } else { vx = 0; vz = 0; }
+const moved = slide(this.x, this.z, vx * this.speed * dt, vz * this.speed * dt);
+```
+
+With `forward` at 0 the vector is zeroed, so no translation occurs however much
+`speed` is left. The 111 ms decay on `speed` then feeds only the gait, so for
+about 0.35 s the bob amplitude and cadence wind down over a body that is already
+stationary. `node tools/route.mjs heroF --csv` shows `z` frozen to four decimal
+places with `speed` still reading 0.98 m/s.
+
+Two consequences. The camera's optical flow steps from 23 mm per frame to zero
+in one frame, which is a visible hitch; and the feet finish a fraction of a step
+without covering ground, which is foot slide in a walk that otherwise measures
+0.2% over 85 footfalls. A held final frame — a good idea, and the reason this
+was found — needs the walker to coast. The fix is to remember the last non-zero
+heading and keep applying it while `speed` decays, which would also make
+releasing W in the interactive walk feel like stopping rather than like a pause
+button. Left undone deliberately: it changes the motion of every future capture
+and was found at 4:50 a.m. on delivery day.
+
 ## The shadowed-ground shimmer — closed, and the premise did not survive
 
 The walk harness reported that the shadowed carriageway differences at 9.5 code
