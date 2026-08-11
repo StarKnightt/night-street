@@ -112,6 +112,36 @@ export const ROUTES = [
     ],
   },
   {
+    /* Open in the densest air on the street, then follow the light across.
+     *
+     * heroD is measurably short of dust: `node tools/airtime.mjs hero
+     * heronodust` counts 83 px/frame at its best, t 4 to t 9, and exactly zero
+     * from t 11 to t 25. The atmosphere pass found the field ignites around
+     * world z -21..-29, which is also where the old take's whole-frame mean
+     * peaked at 0.45 — the same shaft lights the paving and the motes in it,
+     * so the brightest ground and the thickest air are the same place, and
+     * heroD starts one metre past the end of it.
+     *
+     * So start inside it, on the west footway where the light lands at that z,
+     * and cross to the east side over t 6-14 as the shade line sweeps past —
+     * following the light rather than walking away from it. */
+    name: 'heroE',
+    place: [-5.00, -22.0],
+    seconds: 30,
+    keys: ['KeyW'],
+    look: [
+      [0.0, 0.020, -0.050],
+      [4.0, 0.000, -0.045],
+      [6.5, -0.430, -0.045],
+      [13.0, -0.430, -0.040],
+      [16.0, -0.060, -0.045],
+      [20.0, -0.020, -0.035],
+      [24.0, 0.020, -0.035],
+      [27.0, 0.045, -0.028],
+      [30.0, 0.030, -0.015],
+    ],
+  },
+  {
     /* The sunward footway, then down off the kerb and across into the road. */
     name: 'heroD',
     place: [5.00, -30.0],

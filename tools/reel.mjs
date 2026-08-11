@@ -101,70 +101,89 @@ const SHOTS = [
     look: [[0.0, 0.05, -0.10]],
   },
   {
-    /* The deliverable: 41.5 m in one take, down the sunlit footway, off the
-     * kerb, diagonally across the carriageway, and on down the crown of the
-     * road past the neon corner.
+    /* The deliverable: 40.7 m in one take. Down the west footway inside the
+     * light, off the kerb, diagonally across the carriageway as the shade line
+     * sweeps past, and on down the crown of the road to the neon corner.
      *
-     * It starts 34 m further down the street than the cut it replaces, and the
+     * It starts 26 m further down the street than the cut it replaces, and the
      * reason is arithmetic rather than taste. The sun is at 4.2 degrees, so a
      * 4 m frontage throws a 54 m shadow, and `world/block.ts` derives the only
      * two stretches of ground that see the disc at all from the gaps in the
      * sunward row: z -49..-32 and z -84..-73. The old route started at z = +2
-     * and spent its first 33 m inside that shadow. It is measurable in three
-     * independent instruments and they agree: the whole-frame mean in
-     * `shots/v4/reel.json` sits flat at 0.19 until t 14 and only reaches 0.45
-     * at t 20; the walkR region climbs from 40 to 200 counts over the same
+     * and spent its first 33 m inside that shadow. Three independent
+     * instruments say the same thing about it: the whole-frame mean in
+     * `shots/v4/reel.json` is flat at 0.19 until t 14 and only reaches 0.45 at
+     * t 20; the near-footway region climbs 40 -> 200 counts over the same
      * seconds; and the atmosphere pass counted under 30 dust pixels per frame
-     * until 8 s against 400-530 between 17 and 22. The first third of the take
-     * was dead, the best third was in the middle, and it was over by 25 s.
+     * until 8 s. A third of the take was dead and the best of it was over by
+     * 25 s.
      *
-     * This one is inside a sun band for 41% of its length and the first frame
-     * is the strongest image the scene makes — the sunward footway in the near
-     * field at a 4.2 degree grazing angle, with the shadow of the frontage
-     * opposite laid across it. What it passes, in order:
+     * What this one does per second, measured off `shots/heroE/reel.json`:
      *
-     *   t 0-6    z -30, on the east footway inside sun band 1. Lit paving
-     *            underfoot, the shade line crossing it, the pharmacy cross
-     *            green at the far kerb, a shuttered frontage close on the right
-     *   t 6-15   off the kerb — a 145 mm drop the collider resolves, and the
-     *            only vertical move in the clip — and diagonally across the
-     *            carriageway, which is what puts the whole east frontage
-     *            through the frame in parallax
-     *   t 15-20  onto the crown, the cross street open to the east
-     *   t 20-26  the neon corner: BAR / COLD BEER at the corner, the signal
-     *            head at z -61.6 facing back up the street, OPEN 24 HRS and
-     *            the van at -63.5 opposite
-     *   t 26-30  past the mouth of the service alley, the lit hardware
-     *            shopfront to the right, the road opening ahead
+     *   .358 .414 .409 .438 .410 .361 .345 .346 .347 .345 .339 .333 .328 .312
+     *   .299 .261 .231 .220 .212 .208 .206 .205 .208 .214 .221 .233 .233 .244
+     *   .243 .247
+     *
+     * against 0.246 falling to 0.205 and back to 0.299 for the best of the
+     * alternatives. It opens at nearly twice the old take's brightness, holds
+     * above 0.30 for fourteen seconds, and then goes to evening — which is the
+     * right shape for a clip somebody scrolls past, and is also just what the
+     * hour does.
+     *
+     *   t 0-6    z -22, west footway. Lit paving in the near field at a
+     *            grazing 4.2 degrees, the shade line laid across it, the sun
+     *            in the shop glass
+     *   t 6-14   off the kerb — a 145 mm drop the collider resolves, the only
+     *            vertical move in the clip — and diagonally across the road,
+     *            following the light rather than walking out of it. This is
+     *            where the wet carriageway and the sun glow between the
+     *            buildings are, and it is the best twenty metres in the scene
+     *   t 14-18  onto the crown, the cross street open to the east
+     *   t 18-26  into the shadow and the evening half: the pharmacy cross,
+     *            then BAR / COLD BEER, the signal head at z -61.6 facing back
+     *            up the street, OPEN 24 HRS and the van at -63.5 opposite
+     *   t 26-30  past the corner with the neon still in frame
+     *
+     * Where the air is decided the route as much as where the light is, and
+     * the two turn out to be the same place: the shaft that lights the paving
+     * is the shaft the motes are in. `node tools/airtime.mjs heroE
+     * heroEnodust` — two driven captures differing only in `?haze=nodust`,
+     * differenced frame for frame — counts 70 dust pixels per frame averaged
+     * over the take, peaking at 200, with 53% of the clip carrying 30 or more.
+     * The same measurement on the alternative route gives 20, peak 123, 26%.
+     * And `tools/air.mjs` puts the persistence at 5.05 px against the 76.5 px
+     * that the same number of points thrown down at random would give, so the
+     * air is a field of objects and not the grade's grain — which at the same
+     * threshold contributes 10 px per frame, an order of magnitude less.
      *
      * The crossing is steered, not strafed. `walker` has no head-body
-     * decoupling, so yaw *is* lateral travel: 0.21 rad held from t 6.5 to t 15
-     * is the 4.5 m from the building line to the crown, and it costs a 12
-     * degree turn away from the street axis, which is what somebody crossing a
-     * road actually does with their head. The corridor it lands in is 1.81 m
-     * wide — the van's east flank is at x = -0.81 and the two east-kerb
-     * hatches are at x = +1.00 — and the route holds x = +0.2..+0.6 through it.
+     * decoupling, so yaw *is* lateral travel: 0.43 rad from t 6.5 to t 13 is
+     * the 5 m from the building line to the crown, at a 25 degree turn away
+     * from the street axis, which is what somebody crossing a road does with
+     * their head. It lands in the 1.81 m corridor between the van's east flank
+     * at x = -0.81 and the east-kerb hatches at x = +1.00.
      *
-     * Two earlier drafts are in `tools/route.mjs`, which traces a candidate
-     * through `scene/collide.ts` in under a second: heroB, straight down the
-     * crown, which never gets lit paving into the near field, and heroC, which
-     * tried to reach the road on yaw alone and was still on the footway at t
-     * 30. An unpaired yaw in the first draft of heroA drifted 0.82 m left and
-     * jammed head-on into the back of the van for four and a half seconds.
-     * None of that cost a capture slot.
+     * Four earlier drafts are in `tools/route.mjs`, which traces a candidate
+     * through `scene/collide.ts` in a second and reports what is around it as
+     * well as what is near it. heroB went straight down the crown and never
+     * got lit paving into the near field. heroC tried to reach the road on too
+     * little yaw and was still on the footway at t 30. heroD is the one this
+     * beat. And the first draft of heroA drifted 0.82 m left on an unpaired
+     * glance and jammed head-on into the back of the van for four and a half
+     * seconds. None of that cost a capture slot.
      *
-     * `node tools/route.mjs heroD`: 41.5 m travelled, closest approach 0.530 m
-     * to the building line at t 0, nothing else within half a metre. */
+     * `node tools/route.mjs heroE`: 40.7 m travelled, closest approach 0.477 m
+     * to the building line at t 4, nothing touched. */
     name: 'walk',
     /* `t` only decides where `goTo` drops the walker before `place` moves it,
      * and it is set to the same stretch of street so the ground type under it
      * does not change between the two. 0.347 is z = -30 on `pathAt`. */
-    t: 0.347,
-    /* 0.70 m off the shopfronts on the east footway, which is the sunward
-     * side. The lane is clear here: the east footway carries sign posts at
-     * z -63.2 and -84.5 and a lamp column at -64, all of them beyond the
-     * point where this route has left it. */
-    place: [5.00, -30.0],
+    t: 0.265,
+    /* 0.70 m off the shopfronts on the west footway. The kerb-side strip here
+     * carries the sign post at (-3.73, -25.5), so the lane between it and the
+     * building line is the way through, and the route holds x = -5.05 until it
+     * turns off. */
+    place: [-5.00, -22.0],
     seconds: 30,
     keys: ['KeyW'],
     /* Small, paired, zero-mean yaw, and the pairing is not a stylistic
@@ -180,14 +199,15 @@ const SHOTS = [
      * from -0.04 to -0.012 over the last five seconds, which is what walking
      * back into the light looks like from inside a head. */
     look: [
-      [0.0, 0.000, -0.050],
-      [3.5, 0.020, -0.050],
-      [6.5, 0.210, -0.045],
-      [15.0, 0.210, -0.040],
-      [18.0, 0.075, -0.045],
-      [22.0, 0.085, -0.035],
-      [26.0, 0.070, -0.028],
-      [30.0, 0.035, -0.015],
+      [0.0, 0.020, -0.050],
+      [4.0, 0.000, -0.045],
+      [6.5, -0.430, -0.045],
+      [13.0, -0.430, -0.040],
+      [16.0, -0.060, -0.045],
+      [20.0, -0.020, -0.035],
+      [24.0, 0.020, -0.035],
+      [27.0, 0.045, -0.028],
+      [30.0, 0.030, -0.015],
     ],
   },
   {
@@ -437,12 +457,54 @@ if (DRY) {
 
 await acquire(`reel:${tag}`);
 
+/* What was on disk when this was shot.
+ *
+ * Several agents edit this worktree at once and the dev server hot-reloads, so
+ * "the walk video" and "the numbers in the report" are only the same build if
+ * nothing changed in between. The first cut of this reel was overtaken by an
+ * edit to streetMaterials.ts seven minutes after it finished, and the A/B
+ * against it silently compared two different roads.
+ *
+ * Taken twice, before and after, and that is not redundancy — the digest was
+ * previously read only at the end, which catches an edit that lands after the
+ * capture and misses one that lands during it. A provisional take of this very
+ * route was shot straight through a write to grade.tsx ten seconds before the
+ * last frame: Turbopack applied it without remounting the Rig, so the virtual
+ * clock never jumped, the capture completed cleanly, and the first two thirds
+ * of the file were graded differently from the last third. Nothing in the
+ * report said so. */
+function buildStamp() {
+  const files = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(e.name)) {
+        const st = fs.statSync(p);
+        files.push([path.relative(ROOT, p).replace(/\\/g, '/'), st.size, +st.mtimeMs.toFixed(0)]);
+      }
+    }
+  };
+  walk(path.join(ROOT, 'src'));
+  files.sort();
+  const h = createHash('sha1').update(JSON.stringify(files)).digest('hex').slice(0, 12);
+  const newest = files.reduce((a, b) => (b[2] > a[2] ? b : a));
+  return { digest: h, files: files.length, newest: { file: newest[0], at: new Date(newest[2]).toISOString() } };
+}
+const before = buildStamp();
+console.log(`  build ${before.digest}, newest source ${before.newest.file} at ${before.newest.at}`);
+
 const shots = [];
-/* Attribution switches, straight through to the page: `--q nospec` drops the
- * road's specular lobes and keeps its albedo, normals and roughness, and
- * `--q haze=noshadow` ungates the dust. Differencing a reel against itself
- * with one term removed is the only way to say which term a defect lives in. */
-const QUERY = flag('q', null);
+/* Attribution switches, straight through to the page: `--query nospec` drops
+ * the road's specular lobes and keeps its albedo, normals and roughness, and
+ * `--query haze=noshadow` ungates the dust. Differencing a reel against itself
+ * with one term removed is the only way to say which term a defect lives in.
+ *
+ * This was `--q`, which is also the JPEG quality flag, so raising the encoder
+ * quality for the delivery take silently appended `?0.97` to the page URL and
+ * every attribution switch also changed the encoder. Neither failure is
+ * visible in the output. */
+const QUERY = flag('query', null);
 await run({
   width: W, height: H,
   url: QUERY ? `${DEV_URL}${QUERY.startsWith('?') ? '' : '?'}${QUERY}` : DEV_URL,
@@ -698,36 +760,20 @@ await run({
     line('all', perf.all); line('walk', perf.walk); line('run', perf.run);
   }
 
-  /* What was on disk when this was shot.
- *
- * Several agents edit this worktree at once and the dev server hot-reloads, so
- * "the walk video" and "the numbers in the report" are only the same build if
- * nothing changed in between. The first cut of this reel was overtaken by an
- * edit to streetMaterials.ts seven minutes after it finished, and the A/B
- * against it silently compared two different roads. A digest of the source
- * tree costs nothing and makes that visible instead of invisible. */
-function buildStamp() {
-  const files = [];
-  const walk = (d) => {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (/\.(ts|tsx)$/.test(e.name)) {
-        const st = fs.statSync(p);
-        files.push([path.relative(ROOT, p).replace(/\\/g, '/'), st.size, +st.mtimeMs.toFixed(0)]);
-      }
-    }
-  };
-  walk(path.join(ROOT, 'src'));
-  files.sort();
-  const h = createHash('sha1').update(JSON.stringify(files)).digest('hex').slice(0, 12);
-  const newest = files.reduce((a, b) => (b[2] > a[2] ? b : a));
-  return { digest: h, files: files.length, newest: { file: newest[0], at: new Date(newest[2]).toISOString() } };
-}
-const build = buildStamp();
-console.log(`  build ${build.digest}, newest source ${build.newest.file} at ${build.newest.at}`);
+  const after = buildStamp();
+  const build = { ...after, before: before.digest, stable: after.digest === before.digest };
+  if (!build.stable) {
+    console.error(
+      `\n  ✗ THE SOURCE TREE CHANGED DURING THIS CAPTURE: ${before.digest} -> ${after.digest}\n` +
+      `    newest is now ${after.newest.file} at ${after.newest.at}.\n` +
+      '    Part of this take was rendered by a different build. Re-shoot it.',
+    );
+    process.exitCode = 1;
+  } else {
+    console.log(`  build ${build.digest} held for the whole capture`);
+  }
 
-const shaderErrors = await readShaderErrors();
+  const shaderErrors = await readShaderErrors();
   fs.writeFileSync(path.join(outDir, 'reel.json'), JSON.stringify({
     tag, when: new Date().toISOString(), build, query: QUERY, gl, size: [W, H], fps: FPS,
     encode: PNG ? 'png' : `jpeg q${QUALITY}`,
