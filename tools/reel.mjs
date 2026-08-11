@@ -101,48 +101,93 @@ const SHOTS = [
     look: [[0.0, 0.05, -0.10]],
   },
   {
-    /* The deliverable: one continuous walk from the top of the block, mostly
-     * looking where you are going, with one slow glance across to the sunlit
-     * frontage and back. 42 m at 1.4 m/s, which is t 0.02 -> 0.45. */
+    /* The deliverable: 41.5 m in one take, down the sunlit footway, off the
+     * kerb, diagonally across the carriageway, and on down the crown of the
+     * road past the neon corner.
+     *
+     * It starts 34 m further down the street than the cut it replaces, and the
+     * reason is arithmetic rather than taste. The sun is at 4.2 degrees, so a
+     * 4 m frontage throws a 54 m shadow, and `world/block.ts` derives the only
+     * two stretches of ground that see the disc at all from the gaps in the
+     * sunward row: z -49..-32 and z -84..-73. The old route started at z = +2
+     * and spent its first 33 m inside that shadow. It is measurable in three
+     * independent instruments and they agree: the whole-frame mean in
+     * `shots/v4/reel.json` sits flat at 0.19 until t 14 and only reaches 0.45
+     * at t 20; the walkR region climbs from 40 to 200 counts over the same
+     * seconds; and the atmosphere pass counted under 30 dust pixels per frame
+     * until 8 s against 400-530 between 17 and 22. The first third of the take
+     * was dead, the best third was in the middle, and it was over by 25 s.
+     *
+     * This one is inside a sun band for 41% of its length and the first frame
+     * is the strongest image the scene makes — the sunward footway in the near
+     * field at a 4.2 degree grazing angle, with the shadow of the frontage
+     * opposite laid across it. What it passes, in order:
+     *
+     *   t 0-6    z -30, on the east footway inside sun band 1. Lit paving
+     *            underfoot, the shade line crossing it, the pharmacy cross
+     *            green at the far kerb, a shuttered frontage close on the right
+     *   t 6-15   off the kerb — a 145 mm drop the collider resolves, and the
+     *            only vertical move in the clip — and diagonally across the
+     *            carriageway, which is what puts the whole east frontage
+     *            through the frame in parallax
+     *   t 15-20  onto the crown, the cross street open to the east
+     *   t 20-26  the neon corner: BAR / COLD BEER at the corner, the signal
+     *            head at z -61.6 facing back up the street, OPEN 24 HRS and
+     *            the van at -63.5 opposite
+     *   t 26-30  past the mouth of the service alley, the lit hardware
+     *            shopfront to the right, the road opening ahead
+     *
+     * The crossing is steered, not strafed. `walker` has no head-body
+     * decoupling, so yaw *is* lateral travel: 0.21 rad held from t 6.5 to t 15
+     * is the 4.5 m from the building line to the crown, and it costs a 12
+     * degree turn away from the street axis, which is what somebody crossing a
+     * road actually does with their head. The corridor it lands in is 1.81 m
+     * wide — the van's east flank is at x = -0.81 and the two east-kerb
+     * hatches are at x = +1.00 — and the route holds x = +0.2..+0.6 through it.
+     *
+     * Two earlier drafts are in `tools/route.mjs`, which traces a candidate
+     * through `scene/collide.ts` in under a second: heroB, straight down the
+     * crown, which never gets lit paving into the near field, and heroC, which
+     * tried to reach the road on yaw alone and was still on the footway at t
+     * 30. An unpaired yaw in the first draft of heroA drifted 0.82 m left and
+     * jammed head-on into the back of the van for four and a half seconds.
+     * None of that cost a capture slot.
+     *
+     * `node tools/route.mjs heroD`: 41.5 m travelled, closest approach 0.530 m
+     * to the building line at t 0, nothing else within half a metre. */
     name: 'walk',
-    t: 0.02,
-    /* The inside line of the sunward footway, 0.65 m off the shopfronts.
-     *
-     * There is no collision anywhere in the walker, so the route is the only
-     * thing keeping the camera out of solid objects, and this one took three
-     * attempts. Down the middle of the road it spent 1.50 s inside the flank
-     * of saloon A. Moved onto the footway at 0.4 m off the kerb it cleared the
-     * cars and went through the fire hydrant at z = -7 and the sign post at
-     * z = -25.5 instead — which `--dry` passed as clear, because the obstacle
-     * table did not have footway furniture in it yet.
-     *
-     * What is left is genuinely clear: the kerb-side strip of this footway
-     * carries the hydrant, the sign post and the lamp columns between x =
-     * -3.73 and -4.30, and the 0.9 m between the columns and the building line
-     * is the only lane through. It is also where a person walks past a row of
-     * shops, and it puts the sunward frontage close on the left with the road
-     * opening to the right.
-     */
-    place: [-5.05, 2.0],
+    /* `t` only decides where `goTo` drops the walker before `place` moves it,
+     * and it is set to the same stretch of street so the ground type under it
+     * does not change between the two. 0.347 is z = -30 on `pathAt`. */
+    t: 0.347,
+    /* 0.70 m off the shopfronts on the east footway, which is the sunward
+     * side. The lane is clear here: the east footway carries sign posts at
+     * z -63.2 and -84.5 and a lamp column at -64, all of them beyond the
+     * point where this route has left it. */
+    place: [5.00, -30.0],
     seconds: 30,
     keys: ['KeyW'],
-    /* Small, paired, zero-mean yaw.
+    /* Small, paired, zero-mean yaw, and the pairing is not a stylistic
+     * preference — the walker steers where it looks, with no decoupling of
+     * head from body, so every radian of glance is also lateral travel. An
+     * unpaired 0.07 rad held for four seconds is 390 mm across a 1.81 m
+     * corridor, and the first cut of this route drifted 0.82 m left on exactly
+     * that and jammed head-on into the back of the van at z = -61.0 for four
+     * and a half seconds. `tools/route.mjs` found it in under a second.
      *
-     * The walker steers where it looks, with no decoupling of head from body,
-     * so a four-second glance at a shopfront is also two and a half metres of
-     * sideways travel — which on a 2.35 m footway between a kerb and a wall is
-     * the whole width of it and then some. Held to about a twentieth of a
-     * radian and returned each time, which is also closer to what somebody
-     * filming a street on a phone actually does with their hands. */
+     * Positive yaw is left. The mean is biased very slightly right so the walk
+     * opens the sunward side of the street as it goes, and the pitch lifts
+     * from -0.04 to -0.012 over the last five seconds, which is what walking
+     * back into the light looks like from inside a head. */
     look: [
-      [0.0, 0.00, -0.05],
-      [5.0, -0.06, -0.04],
-      [9.0, 0.06, -0.06],
-      [13.0, -0.05, -0.03],
-      [17.0, 0.06, -0.07],
-      [22.0, -0.05, -0.05],
-      [26.0, 0.05, -0.05],
-      [30.0, 0.00, -0.05],
+      [0.0, 0.000, -0.050],
+      [3.5, 0.020, -0.050],
+      [6.5, 0.210, -0.045],
+      [15.0, 0.210, -0.040],
+      [18.0, 0.075, -0.045],
+      [22.0, 0.085, -0.035],
+      [26.0, 0.070, -0.028],
+      [30.0, 0.035, -0.015],
     ],
   },
   {
