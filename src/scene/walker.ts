@@ -174,8 +174,8 @@ export class Walker {
   private groundLead = 0;
   /** What the last resolved move ran into, or null. Read by the tools. */
   contact: string | null = null;
-  /** The pace the last resolved move actually managed, while in contact. */
-  private blockedTo = Infinity;
+  /** How much of the pace the ground is taking: 1 free, 0 pressed into a car. */
+  private stall = 1;
 
   constructor() {
     this.snapGround();
@@ -228,20 +228,7 @@ export class Walker {
     if (len > 1e-4) { vx /= len; vz /= len; } else { vx = 0; vz = 0; }
 
     const running = !!input.sprint && input.forward > 0;
-    let target = len > 1e-4 ? (running ? SPRINT_SPEED : DIMS.walkSpeed) : 0;
-    /* Pressed against something, the pace asked for is not the pace available.
-     *
-     * This is a *target*, taken from what last frame actually managed, rather
-     * than an assignment onto `speed`. Assigning it directly was tried and it
-     * is a pop: `speed` scales the bob amplitude and the cadence, so a walker
-     * meeting a car flank had its vertical bob amplitude collapse from 12.5 mm
-     * to zero inside one frame, and the eye jumped. Measured as the largest
-     * one-frame change in eye height it went 0.45, 0.43, 1.48, 5.67 m/s at 30,
-     * 120, 480 and 1920 Hz — the signature of a step, and a step in the one
-     * term the whole gait model exists to keep smooth. Fed in as a target it
-     * decays through the same ramp a released key uses, so the stride winds
-     * down over about 110 ms and the camera settles rather than freezing. */
-    if (this.contact) target = Math.min(target, this.blockedTo);
+    const target = len > 1e-4 ? (running ? SPRINT_SPEED : DIMS.walkSpeed) : 0;
     /* A person reaches walking pace in about a third of a second, and slows
      * down faster than they speed up. Breaking into a jog over the same lag
      * takes about 0.6 s to get most of the way to 3.1 m/s, which is roughly
@@ -256,24 +243,41 @@ export class Walker {
     this.z = moved.z;
     this.contact = moved.hit;
 
-    // Stay on the paved world; the buildings that would really stop you are
-    // System 2, so this is a soft bound rather than collision.
+    /* The building line is a solid now, and stops the body centre at exactly
+     * this value; the clamp is the backstop for the ends of the street, which
+     * are not, and for anything the solver could not resolve. */
     const limit = DIMS.roadHalf + DIMS.kerbDepth + DIMS.walkWidth - 0.4;
     this.x = clamp(this.x, -limit, limit);
     this.z = clamp(this.z, DIMS.zMin + 12, DIMS.zMax - 4);
 
-    /* What the pace actually came to, for the next frame to aim at.
+    /* How much of the pace the ground actually took, 1 free and 0 stopped.
      *
-     * Free of contact this is `speed` to the last bit — the step is
-     * `speed * dt` long and all of it survives — so the gait model and its
-     * measured 0.2 per cent of foot slide over 85 footfalls are untouched. In
-     * contact it is not: a walker pressed into a car flank travels nothing
-     * while the key is still down, and the feet would carry on striding
-     * underneath a camera that has stopped.
+     * The gait runs on `speed * stall` and the body runs on `speed`, and they
+     * have to be separate. Feeding the achieved pace back into `speed` was
+     * tried twice and is wrong both ways round. Assigned, it is a pop: `speed`
+     * scales the bob, so meeting a car flank collapsed the vertical amplitude
+     * from 12.5 mm to zero inside one frame and the eye jumped — 0.45, 0.43,
+     * 1.48, 5.67 m/s of one-frame eye movement at 30, 120, 480 and 1920 Hz,
+     * which is a step in the one term the gait model exists to keep smooth.
+     * Fed in as a target it is worse and quieter: sliding along a wall at an
+     * angle achieves `speed * cos t`, which becomes the next target, which
+     * achieves `speed * cos^2 t`, and a walker leaning along the building line
+     * coasts silently to a halt over a couple of seconds. Neither shows up in
+     * a still and both show up in a walk.
+     *
+     * As a separate factor neither happens. Free of contact the achieved pace
+     * *is* `speed`, so `stall` is exactly 1 and every number the gait produces
+     * is bit for bit what it was — the 0.2 per cent of foot slide measured
+     * over 85 footfalls is untouched. Sliding along a flank it settles at the
+     * cosine, so the cadence matches the ground speed and the feet still do
+     * not slide. Pressed square into a car it goes to zero over about 110 ms,
+     * so the stride winds down and the camera settles instead of freezing
+     * mid-bob or striding on the spot.
      */
-    this.blockedTo = this.contact && dt > 1e-6
-      ? Math.hypot(this.x - x0, this.z - z0) / dt
-      : Infinity;
+    const want = this.contact && dt > 1e-6 && this.speed > 1e-4
+      ? clamp(Math.hypot(this.x - x0, this.z - z0) / dt / this.speed, 0, 1)
+      : 1;
+    this.stall += (want - this.stall) * Math.min(1, dt * (want > this.stall ? 7 : 9));
 
     this.advanceGait(dt);
   }
@@ -311,11 +315,16 @@ export class Walker {
   private advanceGait(dt: number) {
     this.followGround(dt);
 
-    /* One step is PI of phase, and a step covers stepLength(speed) metres, so
-     * the number of steps per second is speed / stepLength. At 1.4 m/s that is
+    /* The pace the ground is actually seeing. Identical to `speed` unless the
+     * walker is in contact with something, and `stall` is exactly 1 until it
+     * is, so nothing below this line changes for a walk in the open. */
+    const pace = this.speed * this.stall;
+
+    /* One step is PI of phase, and a step covers stepLength(pace) metres, so
+     * the number of steps per second is pace / stepLength. At 1.4 m/s that is
      * exactly 2.00 and the phase rate is exactly 2*PI, as it was before; at
      * 3.1 m/s it is 2.75, which is a jog and not a sprint on a treadmill. */
-    const cadence = Math.PI * (this.speed / stepLength(this.speed));
+    const cadence = Math.PI * (pace / stepLength(pace));
     this.phase += cadence * dt;
     if (this.phase > Math.PI * 2) this.phase -= Math.PI * 2;
 
@@ -342,8 +351,8 @@ export class Walker {
      * and leaves the values at the ends, so the walk and the jog are bit for
      * bit what they were and only the ramp between them changes. */
     const ease = (u: number) => u * u * (3 - 2 * u);
-    const runU = ease(clamp((this.speed - V_WALK) / (V_RUN - V_WALK), 0, 1));
-    const walkU = ease(clamp(this.speed / V_WALK, 0, 1));
+    const runU = ease(clamp((pace - V_WALK) / (V_RUN - V_WALK), 0, 1));
+    const walkU = ease(clamp(pace / V_WALK, 0, 1));
 
     /* Vertical amplitude. 25 mm peak to peak at a walk and about 70 at a jog:
      * running is a series of controlled falls and the head really does move

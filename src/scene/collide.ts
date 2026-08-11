@@ -281,8 +281,16 @@ export function slide(x: number, z: number, dx: number, dz: number, r = BODY_R):
      * again until nothing overlaps. A corner is two surfaces and resolving the
      * nearer one leaves the point inside the other — one pass is how a
      * collider ejects a player sideways out of a corner instead of settling
-     * into it. Four sweeps is what the tightest place on the street needs. */
-    for (let k = 0; k < 4; k++) {
+     * into it.
+     *
+     * Eight sweeps, and the number is measured rather than chosen: the mouth
+     * of the service alley overlaps a bag pile, the dumpster and the building
+     * line at once, and sequential resolution over three mutually overlapping
+     * constraints converges linearly rather than in one pass. Four sweeps left
+     * a static 0.55 mm of shoulder inside the dumpster there. The loop exits
+     * the moment nothing overlaps, which is every frame that is not in
+     * contact, so the extra sweeps cost nothing anywhere else. */
+    for (let k = 0; k < 8; k++) {
       let any = false;
       for (const s of all) {
         const c = probe(s, x, z);

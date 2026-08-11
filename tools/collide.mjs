@@ -196,17 +196,49 @@ if (want('corner')) {
     if (BODY_R - w.clear > 0.0005) fail(`the wedge penetrated at yaw ${yaw}`);
   }
 
+  /* Sliding along a surface must not cost speed it does not have to.
+   *
+   * The failure this is here for is quiet: taking the pace the ground achieved
+   * and feeding it back as the next frame's target makes a walker leaning
+   * along a wall at an angle coast to a halt, because cos of the angle
+   * compounds every frame. Nothing about it looks wrong in a still and it
+   * ruins a walk. Against the building line, which is 600 m long, the
+   * tangential speed after ten seconds must still be the tangential speed.
+   */
+  console.log('\n  leaning along the building line, ten seconds:');
+  for (const yaw of [0.30, 0.60, 0.90, 1.20]) {
+    const p = run({ x: -5.0, z: -20, yaw, seconds: 10, dt: 1 / 120 });
+    const tail = p.slice(-120);
+    const along = Math.abs(tail[tail.length - 1].z - tail[0].z) / 1.0;
+    const want = DIMS.walkSpeed * Math.abs(Math.cos(yaw));
+    console.log(`  yaw ${pad(yaw.toFixed(2), 6)} slides at ${along.toFixed(3)} m/s against ${want.toFixed(3)} expected` +
+      `  (${(100 * along / want).toFixed(1)}%)`);
+    if (along < want * 0.97) fail(`sliding along the wall at yaw ${yaw} loses speed`);
+  }
+
   /* Jitter: pressed into a corner and held there, does the body sit still?
    * A depenetration that fights a projection oscillates by a millimetre or two
    * a frame, which is invisible in a still and reads as a shiver on video. */
   const held = run({ x: -1.945, z: -20, yaw: 0, seconds: 12, dt: 1 / 120 });
   const tail = held.slice(-240);
-  let jitter = 0;
-  for (let i = 1; i < tail.length; i++) {
-    jitter = Math.max(jitter, Math.hypot(tail[i].x - tail[i - 1].x, tail[i].z - tail[i - 1].z));
+  /* Not "does it move" — it should. The hatch is parked at -0.030 rad, so a
+   * walker pressed square into its tail slides along that tail at
+   * 1.4 sin(0.030) = 42 mm/s, and stopping dead instead would be the defect.
+   * What must not happen is the direction reversing frame to frame, which is
+   * what a depenetration fighting a projection looks like. */
+  let jitter = 0, reversals = 0;
+  let px = tail[1].x - tail[0].x, pz = tail[1].z - tail[0].z;
+  for (let i = 2; i < tail.length; i++) {
+    const dx = tail[i].x - tail[i - 1].x, dz = tail[i].z - tail[i - 1].z;
+    jitter = Math.max(jitter, Math.hypot(dx, dz));
+    if (dx * px + dz * pz < 0) reversals++;
+    px = dx; pz = dz;
   }
-  console.log(`\n  held against a car flank for 2 s: largest frame-to-frame move ${mm(jitter)} mm, speed ${tail[tail.length - 1].v.toFixed(4)} m/s`);
-  if (jitter > 1e-4) fail('the body jitters while held against a surface');
+  const rate = Math.hypot(tail[tail.length - 1].x - tail[0].x, tail[tail.length - 1].z - tail[0].z) / 2;
+  console.log(`\n  held against the hatch's tail for 2 s: slides along it at ${(rate * 1000).toFixed(1)} mm/s`);
+  console.log(`  against 1.4 sin(0.030) = ${(1.4 * Math.sin(0.030) * 1000).toFixed(1)} mm/s of tangent; ` +
+    `largest frame move ${mm(jitter)} mm, ${reversals} direction reversals`);
+  if (reversals) fail('the body jitters while held against a surface');
 }
 
 /* ── 3. Is the response a curve or a corner ─────────────────────────────── */
