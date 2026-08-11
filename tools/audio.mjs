@@ -32,7 +32,7 @@ import {
 import {
   SR, BED, BED_LAYERS, PASSBY, PASSBY_LANES, HORN, HORN_SPOTS, HORN_VOICES,
   STEPS, AC, AC_UNITS, AC_BUFFERS, BAR, NEON, IR, SENDS, MASTER, PANNER,
-  PEAK_DB, airCutoffHz, stepVariation, GEO,
+  PEAK_DB, airCutoffHz, stepVariation, GEO, bedLayerOpts,
 } from '../src/audio/design.ts';
 
 /* Where the mix is measured from.
@@ -323,10 +323,10 @@ if (want('air')) {
 let bedLayers = null;
 if (want('bed')) {
   header('1. traffic bed');
-  bedLayers = BED_LAYERS.map((L) => trafficLayer({
-    sr: SR.bed, seconds: L.seconds, seed: L.seed, lpHz: L.lpHz,
-    bumpHz: L.bumpHz, bumpDb: L.bumpDb, airDb: L.airDb, targetDb: BED.bufDb,
-  }));
+  // Through the same assembler the engine uses, so the bed this tool measures
+  // and the bed the graph plays cannot drift apart. They did once, and the
+  // result passed here and was inaudible there.
+  bedLayers = BED_LAYERS.map((L) => trafficLayer({ sr: SR.bed, ...bedLayerOpts(L) }));
 
   bedLayers.forEach((x, i) => {
     const L = BED_LAYERS[i];
@@ -367,6 +367,15 @@ if (want('bed')) {
     `centroid ${Math.round(a.centroid)} Hz, wanted <= ${BED.maxCentroidHz} — not enough distance filtering`);
   check('bed low fraction', a.fracBelow(500) >= BED.minLowFraction,
     `${(a.fracBelow(500) * 100).toFixed(1)}% below 500 Hz, wanted >= ${BED.minLowFraction * 100}%`);
+  /* And the check that was missing, which is the one that mattered.
+   *
+   * A bed that is 98% below 500 Hz passes every test above and is inaudible on
+   * a phone speaker, because a phone speaker reproduces almost nothing below
+   * 400 Hz. Both ends, from now on. */
+  check('bed not all bottom', a.fracBelow(500) <= BED.maxLowFraction,
+    `${(a.fracBelow(500) * 100).toFixed(1)}% below 500 Hz, wanted <= ${BED.maxLowFraction * 100}% — nothing here survives a small speaker`);
+  check('bed high fraction', 1 - a.fracBelow(500) >= BED.minHighFraction,
+    `only ${((1 - a.fracBelow(500)) * 100).toFixed(1)}% above 500 Hz, wanted >= ${BED.minHighFraction * 100}%`);
 
   /* Periodicity.
    *

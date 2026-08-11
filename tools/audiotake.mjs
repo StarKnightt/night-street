@@ -27,6 +27,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { run, finish, DEV_URL } from './harness.mjs';
 import { acquire, release } from './lock.mjs';
@@ -163,6 +164,29 @@ const kb = (fs.statSync(out).size / 1024).toFixed(0);
 console.log(`\n  → ${path.relative(ROOT, out)}  ${kb} kB, ${result.steps.length} footfalls`);
 console.log(`  walked z ${result.startZ} -> ${result.endZ}`);
 
+/* Is the recording as long as the walk was?
+ *
+ * A MediaRecorder on a MediaStreamDestination records the audio device's
+ * clock, and if the machine is busy enough that the graph underruns it does
+ * not error, it drops. One take on a contended GPU came back at 20.3 s of a
+ * 30 s walk with the whole timeline uniformly compressed — every footstep
+ * present, in step with each other, and a third of a second early by the end
+ * of the first bar. It looked completely normal until it was measured, which
+ * is the recurring theme of this system, so it is measured here now. */
+const dur = (() => {
+  const r = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+    '-of', 'csv=p=0', out], { encoding: 'utf8' });
+  return parseFloat(String(r.stdout || '').trim());
+})();
+if (Number.isFinite(dur)) {
+  const slip = SECONDS - dur;
+  console.log(`  recorded ${dur.toFixed(2)}s of a ${SECONDS}s walk (${slip > 0 ? '-' : '+'}${Math.abs(slip).toFixed(2)}s)`);
+  if (Math.abs(slip) > 0.35) {
+    console.error('  ✗ the recorder dropped audio — the timeline is compressed. Re-run when the machine is quieter.');
+    finish(1);
+  }
+}
+
 /* Did the sound land where the picture did?
  *
  * The picture's footfalls are exact — a driven capture puts them on a known
@@ -189,7 +213,13 @@ if (fs.existsSync(picture)) {
 
 const rep = result.report;
 console.log('\n  buses at the end of the take');
+/* `everDb` is the field that answers the question this block exists to ask.
+ * It used to print `rmsDb` and `peakDb`, which `BusReport` has never had, so
+ * every bus read `undefined` — including on the take where every bus really
+ * was silent, which is the one run where this output would have said so. */
 for (const [k, v] of Object.entries(rep.buses || {})) {
-  console.log(`    ${k.padEnd(8)} rms ${String(v.rmsDb).padStart(7)} dB   peak ${String(v.peakDb).padStart(7)} dB`);
+  console.log(`    ${k.padEnd(8)} now ${String(v.nowDb).padStart(7)} dB   hold ${String(v.holdDb).padStart(7)} dB   loudest ever ${String(v.everDb).padStart(7)} dB`);
 }
+if (rep.silent?.length) console.error(`  ✗ buses that never passed a sample: ${rep.silent.join(', ')}`);
+console.log(`  ${rep.counts.steps} steps, ${rep.counts.horns} horns, ${rep.counts.passBys} pass-bys, ${rep.counts.rattles} rattles, ${rep.counts.barHits} bar hits`);
 finish(0);

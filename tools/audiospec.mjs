@@ -132,6 +132,67 @@ const OCTAVES = [
   [1250, 2500], [2500, 5000], [5000, 10000], [10000, 20000],
 ];
 
+/* ── The gait, from the sound alone ─────────────────────────────────────── */
+
+/**
+ * Are the footsteps in there, and at what cadence?
+ *
+ * Autocorrelation of the envelope of the 200 Hz to 4 kHz band, which is the
+ * band a footstep lives in and the bed does not. This exists because a take
+ * can come back with the right spectrum, the right loudness and no footsteps
+ * at all — the recorder counts the walker's callbacks, and a hot reload part
+ * way through a capture replaces the callback and the count silently stops.
+ * A number derived from the audio cannot be fooled that way.
+ */
+function walkRate(file) {
+  const { L, R, n } = decode(file, ['highpass=f=200:poles=2', 'lowpass=f=4000:poles=2']);
+  // Envelope at 400 Hz, which resolves a 2 Hz cadence with room to spare.
+  const dec = Math.round(SR / 400);
+  const m = Math.floor(n / dec);
+  const env = new Float64Array(m);
+  for (let i = 0; i < m; i++) {
+    let s = 0;
+    for (let k = 0; k < dec; k++) {
+      const j = i * dec + k;
+      s = Math.max(s, Math.abs(L[j]) + Math.abs(R[j]));
+    }
+    env[i] = s;
+  }
+  let mean = 0;
+  for (let i = 0; i < m; i++) mean += env[i];
+  mean /= Math.max(1, m);
+  for (let i = 0; i < m; i++) env[i] -= mean;
+
+  let e0 = 0;
+  for (let i = 0; i < m; i++) e0 += env[i] * env[i];
+  let bestR = 0, bestLag = 0;
+  // 0.3 s to 1.2 s: 50 to 200 steps a minute, either side of anything human.
+  for (let lag = Math.round(0.3 * 400); lag <= Math.round(1.2 * 400); lag++) {
+    let s = 0;
+    for (let i = 0; i + lag < m; i++) s += env[i] * env[i + lag];
+    const r = s / Math.max(1e-20, e0);
+    if (r > bestR) { bestR = r; bestLag = lag; }
+  }
+
+  // And a straight count of transients, as a second opinion on the same
+  // question by a method that shares no arithmetic with the first.
+  let sd = 0;
+  for (let i = 0; i < m; i++) sd += env[i] * env[i];
+  sd = Math.sqrt(sd / Math.max(1, m));
+  let hits = 0, cool = 0;
+  for (let i = 1; i < m; i++) {
+    if (cool > 0) { cool--; continue; }
+    if (env[i] > 2.2 * sd && env[i] > env[i - 1]) { hits++; cool = Math.round(0.18 * 400); }
+  }
+
+  return {
+    lagMs: Math.round((1000 * bestLag) / 400),
+    r: +bestR.toFixed(3),
+    stepsPerMin: bestLag ? +(60 / (bestLag / 400)).toFixed(1) : 0,
+    transients: hits,
+  };
+}
+
 /* ── ffmpeg's loudness meter ────────────────────────────────────────────── */
 
 function ebur128(file) {
@@ -189,6 +250,8 @@ export function measure(file) {
   let peak = 0;
   for (let i = 0; i < n; i++) { peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i])); }
 
+  const gait = walkRate(file);
+
   const loud = ebur128(file);
 
   // The phone. A 4th-order highpass at 500 Hz is generous to a phone speaker,
@@ -212,7 +275,7 @@ export function measure(file) {
     truePeakDb: loud.truePeakDb,
     lufs: loud.lufs,
     lra: loud.lra,
-    octaves,
+    octaves, gait,
     phoneRmsDb: +db(rms(phone.L)).toFixed(1),
     phonePeakDb: +db(phonePeak).toFixed(1),
     phoneVsFullDb: +(db(rms(phone.L)) - db(rms(L))).toFixed(1),
@@ -233,6 +296,7 @@ export function print(m) {
     const bar = '#'.repeat(Math.max(0, Math.round(o.pct / 2)));
     console.log(`      ${String(o.lo).padStart(5)}-${String(o.hi).padEnd(6)} ${f1(o.db).padStart(6)}  ${String(o.pct).padStart(6)}%  ${String(o.msDb).padStart(6)} dB ${String(o.lrDb).padStart(6)} dB  ${bar}`);
   }
+  console.log(`    gait          envelope peaks at lag ${m.gait.lagMs} ms, r = ${m.gait.r}  (${m.gait.stepsPerMin} steps/min, ${m.gait.transients} transients counted)`);
   console.log(`    phone (hp 500 Hz, 4th order)  ${f1(m.phoneRmsDb)} dBFS rms, peak ${f1(m.phonePeakDb)} dB`);
   console.log(`      that is ${f1(-m.phoneVsFullDb)} dB below the full-band level`);
 }

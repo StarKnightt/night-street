@@ -83,6 +83,13 @@ function lowpass(f0, Q = Math.SQRT1_2) {
   return norm([(1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + al, -2 * cw, 1 - al]);
 }
 
+function highpass(f0, Q = Math.SQRT1_2) {
+  const w = (2 * Math.PI * f0) / SR;
+  const cw = Math.cos(w), sw = Math.sin(w);
+  const al = sw / (2 * Q);
+  return norm([(1 + cw) / 2, -(1 + cw), (1 + cw) / 2, 1 + al, -2 * cw, 1 - al]);
+}
+
 function norm([b0, b1, b2, a0, a1, a2]) {
   return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
 }
@@ -220,14 +227,20 @@ export function master(inFile, outFile, opts = {}) {
   let l = biquad(biquad(L, hs), ls);
   let r = biquad(biquad(R, hs), ls);
 
-  // 2. Bass mono, complementary so the sum reconstructs exactly.
-  const lp = lowpass(monoHz);
-  const lLo = biquad(biquad(l, lp), lp);
-  const rLo = biquad(biquad(r, lp), lp);
+  /* 2. Bass mono, over a fourth-order Linkwitz-Riley crossover.
+   *
+   * Not `x - lowpass(x)`, which is the tempting one-liner and which measured,
+   * on the first version of this tool, as doing almost nothing above 60 Hz: a
+   * second-order section is a quarter-cycle out at its own corner, so the
+   * difference signal there comes back 1.7 dB up instead of gone. Two matched
+   * LR4 legs sum to an all-pass and actually split the bands. */
+  const lp = lowpass(monoHz), hp = highpass(monoHz);
+  const lLo = biquad(biquad(l, lp), lp), rLo = biquad(biquad(r, lp), lp);
+  const lHi = biquad(biquad(l, hp), hp), rHi = biquad(biquad(r, hp), hp);
   for (let i = 0; i < n; i++) {
     const m = 0.5 * (lLo[i] + rLo[i]);
-    l[i] = l[i] - lLo[i] + m;
-    r[i] = r[i] - rLo[i] + m;
+    l[i] = lHi[i] + m;
+    r[i] = rHi[i] + m;
   }
 
   // 3. Gain to the loudness target, measured rather than guessed. K-weighting

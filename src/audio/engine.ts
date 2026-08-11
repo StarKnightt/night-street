@@ -24,12 +24,13 @@ import * as THREE from 'three';
 import {
   trafficLayer, passByBuffer, hornBuffer, footstepBuffer, acLoopBuffer,
   rattleBuffer, kickBuffer, barBassNote, barBodyHit, neonBuffer, streetIR,
-  barPattern, makeRng, dbToLin, linToDb, clamp, qToWebAudio, type Rng, type Samples,
+  barPattern, makeRng, dbToLin, linToDb, clamp, qToWebAudio, widenAbove,
+  type Rng, type Samples,
 } from './dsp';
 import {
   SR, BED, BED_LAYERS, PASSBY, PASSBY_LANES, HORN, HORN_SPOTS, HORN_VOICES,
   STEPS, AC, AC_UNITS, AC_BUFFERS, BAR, NEON, IR, SENDS, MASTER, PANNER,
-  PEAK_DB, airCutoffHz, stepVariation,
+  PEAK_DB, airCutoffHz, stepVariation, bedLayerOpts,
 } from './design';
 
 /* ── Debug surface types ───────────────────────────────────────────────── */
@@ -108,21 +109,20 @@ function toBuffer(ctx: BaseAudioContext, x: Samples, sr: number): AudioBuffer {
 }
 
 /**
- * Mono to a decorrelated stereo AudioBuffer by circular shift.
+ * Mono to a stereo AudioBuffer that is wide at the top and mono at the bottom.
  *
- * Free width. Two copies of the same noise offset by a few tens of
- * milliseconds are uncorrelated everywhere above about 30 Hz, and because the
- * buffer loops the shift is circular and the seam stays seamless. Alternating
- * which channel leads across the three bed layers keeps the sum centred.
+ * Free width, above the frequency where width is a real thing. `widenAbove`
+ * does the work and explains why the low band is shared; here the only
+ * decision is which channel leads, which alternates across the bed layers so
+ * that the sum stays centred.
  */
 function toStereoShifted(ctx: BaseAudioContext, x: Samples, sr: number, shiftMs: number): AudioBuffer {
   const n = x.length;
   const b = ctx.createBuffer(2, n, sr);
-  const s = Math.round((Math.abs(shiftMs) / 1000) * sr) % n;
-  const y = new Float32Array(n);
-  for (let i = 0; i < n; i++) y[i] = x[(i + s) % n];
-  b.copyToChannel(x, shiftMs >= 0 ? 0 : 1);
-  b.copyToChannel(y, shiftMs >= 0 ? 1 : 0);
+  const s = Math.round((Math.abs(shiftMs) / 1000) * sr);
+  const { left, right } = widenAbove(x, sr, BED.spreadAboveHz, s);
+  b.copyToChannel(left, shiftMs >= 0 ? 0 : 1);
+  b.copyToChannel(right, shiftMs >= 0 ? 1 : 0);
   return b;
 }
 
@@ -401,7 +401,7 @@ export class CityAudio {
     this.limiter.ratio.value = MASTER.limiter.ratio;
     this.limiter.attack.value = MASTER.limiter.attack;
     this.limiter.release.value = MASTER.limiter.release;
-    this.master.connect(this.limiter);
+    this.buildMasterChain(ctx, this.master, this.limiter);
     this.limiter.connect(this.listener.getInput());
 
     this.bufs = emptyBuffers();
@@ -458,6 +458,77 @@ export class CityAudio {
   }
 
   private pending: (() => void)[] = [];
+
+  /**
+   * The master chain: tilt, then bass mono, between the master gain and the
+   * limiter.
+   *
+   * This is voicing that belongs to the mix as a whole rather than to any
+   * source, and it exists because the delivered take was measured rather than
+   * heard. The shelves are small — the real correction was four sources that
+   * had no content above 500 Hz to begin with — and the numbers are in
+   * MASTER.tilt with the reasoning attached.
+   *
+   * The mono-maker is the interesting part. There is no Web Audio node for
+   * "sum the bottom two octaves", so it is a splitter, a fourth-order
+   * Linkwitz-Riley crossover on each side, and a merger: the two low bands are
+   * averaged into one signal that goes to both outputs, and the two high bands
+   * pass through untouched.
+   *
+   * It is a real crossover and not `x - lowpass(x)`, which was the first
+   * attempt and measured as doing nothing above 60 Hz — a second-order section
+   * is 90 degrees out at its own corner, so the difference signal there is
+   * 1.7 dB up rather than gone. An LR4 pair sums to an all-pass instead.
+   */
+  private buildMasterChain(ctx: AudioContext, input: AudioNode, output: AudioNode): void {
+    const T = MASTER.tilt;
+
+    const loShelf = ctx.createBiquadFilter();
+    loShelf.type = 'lowshelf';
+    loShelf.frequency.value = T.loHz;
+    loShelf.gain.value = T.loDb;
+
+    const hiShelf = ctx.createBiquadFilter();
+    hiShelf.type = 'highshelf';
+    hiShelf.frequency.value = T.hiHz;
+    hiShelf.gain.value = T.hiDb;
+
+    input.connect(loShelf);
+    loShelf.connect(hiShelf);
+
+    const split = ctx.createChannelSplitter(2);
+    const merge = ctx.createChannelMerger(2);
+    hiShelf.connect(split);
+
+    /** Two cascaded Butterworth sections: LR4, matching `widenAbove`. */
+    const pair = (ch: number, type: 'lowpass' | 'highpass'): BiquadFilterNode => {
+      const a = ctx.createBiquadFilter();
+      a.type = type;
+      a.frequency.value = T.monoHz;
+      a.Q.value = qToWebAudio(Math.SQRT1_2);
+      const b = ctx.createBiquadFilter();
+      b.type = type;
+      b.frequency.value = T.monoHz;
+      b.Q.value = qToWebAudio(Math.SQRT1_2);
+      split.connect(a, ch);
+      a.connect(b);
+      return b;
+    };
+
+    // The shared low band, at half of each so the sum is a mean and not a
+    // 6 dB lift.
+    const mono = ctx.createGain();
+    mono.gain.value = 0.5;
+    pair(0, 'lowpass').connect(mono);
+    pair(1, 'lowpass').connect(mono);
+
+    for (const ch of [0, 1] as const) {
+      pair(ch, 'highpass').connect(merge, 0, ch);
+      mono.connect(merge, 0, ch);
+    }
+
+    merge.connect(output);
+  }
 
   private addBus(name: string, gainDb: number): Bus {
     const b = new Bus(this.ctx, gainDb, this.master);
@@ -585,10 +656,7 @@ export class CityAudio {
    */
   private buildBedLayer(ctx: AudioContext, i: number): void {
     const L = BED_LAYERS[i];
-    const x = trafficLayer({
-      sr: SR.bed, seconds: L.seconds, seed: L.seed, lpHz: L.lpHz,
-      bumpHz: L.bumpHz, bumpDb: L.bumpDb, airDb: L.airDb, targetDb: BED.bufDb,
-    });
+    const x = trafficLayer({ sr: SR.bed, ...bedLayerOpts(L) });
     const buf = toStereoShifted(ctx, x, SR.bed, (i % 2 === 0 ? 1 : -1) * (BED.spreadMs + i * 14));
     this.count(buf);
     this.bufs.bed[i] = buf;

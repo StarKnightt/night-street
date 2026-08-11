@@ -39,10 +39,16 @@ export const GEO = {
  * the highest frequency the generator actually produces.
  */
 export const SR = {
-  bed: 12000,
+  /* The bed and the AC both carry a broadband band now — the near-road tyre
+   * roar and the condenser fans respectively — and a biquad corner at 4.6 or
+   * 6.5 kHz needs somewhere to sit that is not four fifths of the way to
+   * Nyquist, where the bilinear warping puts it somewhere other than where it
+   * was asked for. Both rates went up to suit the content, which is the rule
+   * this table already followed. */
+  bed: 16000,
   passBy: 12000,
   horn: 16000,
-  ac: 16000,
+  ac: 24000,
   rattle: 22050,
   step: 24000,
   bar: 8000,
@@ -67,11 +73,45 @@ export const SR = {
  * side of the block, and the general wash of a city, and those arrive through
  * different amounts of building.
  */
+/**
+ * ...and the fourth layer is the road you are standing next to.
+ *
+ * The first three are distant and are meant to be dull; that part was always
+ * right. What was missing is that a pavement beside a live road has a
+ * broadband wash coming off the tarmac a couple of metres away which has not
+ * travelled through anything, and it is the single largest contributor to the
+ * 500 Hz to 4 kHz band in any real street recording.
+ *
+ * Its absence is what made the delivered mix put 95% of its energy below
+ * 160 Hz and measure -35.5 dBFS above 500 Hz against -17.4 full band. That is
+ * not a mix that needs tilting, it is a mix with a source missing: a phone
+ * speaker reproduces almost nothing under 400 Hz, so the entire soundtrack
+ * was arriving about 18 dB down on the device most of the audience uses.
+ *
+ * `roarDb` is the balance knob, in dB relative to the rest of that layer, and
+ * it is applied after the distance filter because this road is not distant.
+ */
 export const BED_LAYERS = [
   { seconds: 13.7, seed: 0x4a1f, lpHz: 430, bumpHz: 108, bumpDb: 4.5, airDb: -13, rate: 0.973, gainDb: -3.5 },
   { seconds: 19.1, seed: 0x9d33, lpHz: 260, bumpHz: 78, bumpDb: 5.5, airDb: -19, rate: 1.041, gainDb: -1.5 },
   { seconds: 28.3, seed: 0xc70b, lpHz: 620, bumpHz: 143, bumpDb: 3.0, airDb: -9, rate: 0.917, gainDb: -8.0 },
+  {
+    seconds: 23.9, seed: 0x2e6d, lpHz: 1500, bumpHz: 165, bumpDb: 1.5, airDb: -2,
+    rate: 1.013, gainDb: -4.0, roarDb: 9.0, roarLoHz: 360, roarHiHz: 4600,
+  },
 ] as const;
+
+/** The one place the layer options are assembled, so the engine and
+ *  `tools/audio.mjs` cannot render two different beds and both pass. */
+export function bedLayerOpts(L: (typeof BED_LAYERS)[number], targetDb: number = BED.bufDb) {
+  return {
+    seconds: L.seconds, seed: L.seed, lpHz: L.lpHz, bumpHz: L.bumpHz,
+    bumpDb: L.bumpDb, airDb: L.airDb, targetDb,
+    roarDb: 'roarDb' in L ? L.roarDb : undefined,
+    roarLoHz: 'roarLoHz' in L ? L.roarLoHz : undefined,
+    roarHiHz: 'roarHiHz' in L ? L.roarHiHz : undefined,
+  };
+}
 
 export const BED = {
   /* Every continuous generator is rendered to this before any gain is
@@ -88,13 +128,32 @@ export const BED = {
   busDb: -8,
   /** Predicted level at the listener, for the tool to check against. */
   expectDb: [-27, -21] as [number, number],
-  /** Above this fraction of power below 500 Hz or it is not distance-filtered
-   *  enough to be a city rather than a hiss. */
-  minLowFraction: 0.90,
-  maxCentroidHz: 320,
+  /* Two bounds now, not one.
+   *
+   * The old check was `>= 90% below 500 Hz`, on the reasoning that a bed with
+   * too much top has not been distance-filtered enough to be a city rather
+   * than a hiss. That reasoning is sound and the check passed for weeks — and
+   * the mix it was guarding was inaudible on a phone, because 90% below 500 Hz
+   * turned into 98.5% once the whole street was summed and there was nothing
+   * left up there for a small speaker to reproduce.
+   *
+   * So the floor stays, loosened for the near-road layer, and a ceiling joins
+   * it. A one-sided check can only ever catch the failure it was written for,
+   * and this one was written before anybody had heard the system.
+   */
+  minLowFraction: 0.55,
+  maxLowFraction: 0.88,
+  maxCentroidHz: 1250,
+  /** ...and the same statement from the other end, which is the one that
+   *  matters on a phone speaker. */
+  minHighFraction: 0.12,
   /** Slow stereo decorrelation: the two channels use different layer phases so
    *  the bed is wide without being two different streets. */
   spreadMs: 37,
+  /** ...and only above here. Decorrelating a 50 Hz wave across a human head
+   *  is not a wide bed, it is a physically impossible one; below this corner
+   *  both channels get the same signal. */
+  spreadAboveHz: 220,
 } as const;
 
 /** Peak target for every one-shot buffer. Three dB of headroom is enough:
@@ -201,14 +260,23 @@ export const STEPS = {
   /** Buffers per foot. Twelve total, times playback rate, gain and filter
    *  variation per step. */
   bankPerFoot: 6,
-  busDb: -13,
+  /* Up from -13, and the reason is the near-road tyre roar the bed now
+   * carries. The roar occupies 500 Hz to 4 kHz, which is precisely the band a
+   * footstep lives in, and the first take with it measured the gait
+   * autocorrelation of the mix down from r = 0.19 to r = 0.06 — the steps were
+   * still there and were no longer the thing you noticed. A footstep has to
+   * stay above the street it is being taken on. */
+  busDb: -8,
   /** Playback rate spread. Retunes the whole step, including the transient. */
   rate: [0.93, 1.08] as [number, number],
   /** Per-step gain spread in dB, on top of the bank variation. */
   gainSpreadDb: 4.5,
   /** Per-step lowpass, which is the surface changing under the foot: a dusty
-   *  flag, a worn one, the metal of a service plate. */
-  lpHz: [2600, 9000] as [number, number],
+   *  flag, a worn one, the metal of a service plate. The bottom of the range
+   *  was 2600 Hz, which took the heel transient off a third of the steps —
+   *  and the heel transient is the only part of a footstep a phone speaker
+   *  can reproduce at all. */
+  lpHz: [3800, 9500] as [number, number],
   /** Feet are 0.16 m either side of the walk line and 1.65 m below the ear. */
   offset: 0.16,
   /** Below this cadence the walker is stopping and the step gets softer. */
@@ -253,7 +321,12 @@ export const AC = {
   /** Do not schedule rattles for a unit further away than this; it would be
    *  filtered into inaudibility anyway and it costs two nodes an event. */
   rattleRange: 34,
-  centroidHz: [180, 900] as [number, number],
+  /* The ceiling was 900 Hz, which is what a condenser sounds like from inside
+   * the compressor rather than from the pavement below it. The fan is the loud
+   * part and the fan is a broadband rush; with it rolled off at 1.6 kHz these
+   * four units contributed nothing at all to the only band a phone can
+   * reproduce. */
+  centroidHz: [180, 2200] as [number, number],
 } as const;
 
 /* ── 6. The bar ──────────────────────────────────────────────────────────── */
@@ -399,6 +472,42 @@ export const SENDS = {
 
 export const MASTER = {
   gainDb: -3,
+
+  /**
+   * The master tilt, and it is small on purpose.
+   *
+   * The prescription that came back from the listening critique was +12 dB
+   * above 500 Hz and -6 dB below 100, which is a lot of shelf to hang on a
+   * finished bus — it raises whatever is up there, including the parts that
+   * are up there by accident, and it does nothing for the fact that the
+   * street had no near-road tyre roar and its air conditioners were rolled
+   * off at 1.6 kHz. Those are fixed at source above. What is left here is the
+   * last few dB of voicing, applied where a shelf is the honest tool: the
+   * canyon reverb and the summed bed genuinely do pile up below 100 Hz in a
+   * way no single source is responsible for.
+   *
+   * If this number ever has to grow back towards twelve, that is a sign a
+   * source has gone quiet again and the shelf is covering for it.
+   */
+  tilt: {
+    hiHz: 500,
+    hiDb: 4.0,
+    loHz: 100,
+    loDb: -4.0,
+    /**
+     * Everything below this is summed to mono, at the very end.
+     *
+     * The delivered take had an L/R correlation of -0.0066 with the side
+     * channel exactly as loud as the mid — two independent noise signals, at
+     * every frequency including 40 to 80 Hz, where a wavelength is four to
+     * eight metres and no pair of ears three inches apart could possibly
+     * hear a difference. That was a synthesis artefact (three decorrelated
+     * bed layers and a stereo convolution tail) and it is also the classic
+     * way to lose your low end the moment anything sums to mono.
+     */
+    monoHz: 220,
+  },
+
   /* A limiter, not a compressor. Everything in the mix is already levelled;
    * this exists so that a horn landing on a kick on a footstep cannot clip,
    * and it should be doing nothing at all most of the time. */

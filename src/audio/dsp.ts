@@ -274,6 +274,57 @@ export function loopify(src: Samples, fade: number): Samples {
 export const binSnap = (hz: number, sr: number, n: number): number =>
   Math.max(1, Math.round((hz * n) / sr)) * (sr / n);
 
+/**
+ * Mono loop to a stereo pair that is wide at the top and mono at the bottom.
+ *
+ * The cheap way to widen a noise loop is to offset one channel by a few tens
+ * of milliseconds, which decorrelates it everywhere above a few tens of Hz.
+ * That is what this used to do and it is wrong at the bottom: at 40 to 80 Hz,
+ * where the bed keeps most of its energy, a wavelength is four to eight metres
+ * and the two ears of a listener cannot receive different signals. Independent
+ * channels down there are not width, they are an artefact, and they measure as
+ * a side channel exactly as loud as the mid — which is what the delivered take
+ * measured.
+ *
+ * So the shift is applied to the high band only, and the low band is shared.
+ *
+ * The split is a fourth-order Linkwitz-Riley pair — two cascaded Butterworth
+ * sections each way — and not the obvious `high = x - lowpass(x)`. The
+ * subtraction looks free and is wrong: a second-order lowpass is 90 degrees
+ * out at its corner, so `1 - H` there has a magnitude of 1.22 and the band the
+ * split was meant to remove from the difference signal comes back 1.7 dB
+ * *louder* than it went in. Measured on a first attempt at this, the mono-
+ * maker was only doing anything below about 60 Hz. An LR4 pair sums to an
+ * all-pass, which costs a little phase nobody can hear and actually separates
+ * the bands.
+ *
+ * Both channels stay seamless loops because the shift is circular and each
+ * filter is run over two copies of the loop and read out of the second.
+ */
+export function widenAbove(x: Samples, sr: number, crossHz: number, shiftSamples: number): { left: Samples; right: Samples } {
+  const n = x.length;
+  /* Filtered over two copies of the loop and read out of the second, because a
+   * biquad started from rest has a transient and does not know that sample
+   * zero follows sample n-1. Filter the loop once and the seam it was built to
+   * hide comes back as a click. */
+  const band = (c: Biquad): Float32Array => {
+    const pad = new Float32Array(2 * n);
+    pad.set(x, 0); pad.set(x, n);
+    biquadInPlace(pad, c, 2);
+    return pad.slice(n);
+  };
+  const low = band(lp(sr, crossHz, Math.SQRT1_2));
+  const high = band(hp(sr, crossHz, Math.SQRT1_2));
+
+  const s = ((shiftSamples % n) + n) % n;
+  const left = new Float32Array(n), right = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    left[i] = low[i] + high[i];
+    right[i] = low[i] + high[(i + s) % n];
+  }
+  return { left, right };
+}
+
 /* ── Slow parameter drift ──────────────────────────────────────────────── */
 
 /**
@@ -308,6 +359,22 @@ export type TrafficOpts = {
   /** How much upper-mid survives. Evening, not 3 a.m.: this is not zero. */
   airDb: number;
   targetDb: number;
+  /**
+   * Near-road tyre roar, in dB relative to the layer's own RMS. Absent on the
+   * distant layers and that is correct — this is the road the walker is
+   * standing beside, not one two blocks away.
+   *
+   * It is mixed in *after* the distance lowpass, which is the whole point.
+   * Everything else in this generator is shaped by the exponential air-and-
+   * buildings law, because everything else arrives through forty metres of
+   * city. The wash coming off the tarmac six feet away does not, so filtering
+   * it the same way is what left the mix with 95% of its energy below 160 Hz
+   * and nothing at all for a phone speaker to reproduce.
+   */
+  roarDb?: number;
+  /** Band of the roar. Wet tarmac at distance is a 400 Hz to 4 kHz hiss. */
+  roarLoHz?: number;
+  roarHiHz?: number;
 };
 
 /**
@@ -351,6 +418,31 @@ export function trafficLayer(o: TrafficOpts): Samples {
   // What comes back over the top of the lowpass: the hiss of tyres on a wet-ish
   // road that has not gone home yet. Small, but its absence reads as 3 a.m.
   biquadInPlace(x, highshelf(o.sr, 900, o.airDb), 1);
+
+  /* The road under the walker's feet.
+   *
+   * Pink rather than brown, because tyre roar is a broadband contact noise and
+   * not an engine, and mixed by measured ratio rather than by a fixed gain so
+   * that `roarDb` means what it says: the roar's RMS relative to the rest of
+   * the layer's, before the whole thing is normalised. That makes the spectral
+   * balance of the bed one number that can be set, measured and argued about.
+   */
+  if (o.roarDb !== undefined && Number.isFinite(o.roarDb)) {
+    const roar = pink(n, rng);
+    biquadInPlace(roar, hp(o.sr, o.roarLoHz ?? 380, 0.7), 2);
+    biquadInPlace(roar, lp(o.sr, o.roarHiHz ?? 4200, 0.7), 1);
+    // The broad rise around a kilohertz is the tread pattern, and it is what
+    // makes this a road rather than a hiss.
+    biquadInPlace(roar, peaking(o.sr, 1050, 0.7, 3.5), 1);
+    // The same slow swell as the rest of the layer, so the roar breathes with
+    // the traffic instead of sitting on top of it as a constant.
+    for (let i = 0; i < n; i++) roar[i] *= 1 + 0.22 * swell[i % swell.length];
+    const rx = rms(x), rr = rms(roar);
+    if (rr > 1e-12) {
+      const g = (rx / rr) * dbToLin(o.roarDb);
+      for (let i = 0; i < n; i++) x[i] += roar[i] * g;
+    }
+  }
 
   return rmsNormalise(loopify(x, fade), o.targetDb);
 }
@@ -691,21 +783,28 @@ export function acLoopBuffer(o: AcOpts): Samples {
 
   // Fan noise, chopped at the blade rate. The chop depth is what stops the
   // noise reading as a hiss laid over a hum.
+  /* The corners here used to be 1.6 kHz on the fan and 3.2 kHz on the sum, and
+   * both were too low by a wide margin. Stand next to a condenser: what you
+   * hear first is a broadband rush of air with the hum underneath it, and the
+   * rush runs well past 5 kHz. Rolled off at 1.6 kHz it became a second hum,
+   * which is why four of these on the street contributed almost nothing to the
+   * only part of the spectrum a phone speaker can reproduce. */
   const fanFade = Math.round(o.sr * 0.6);
   const fanRaw = pink(n + fanFade, rng);
-  biquadInPlace(fanRaw, lp(o.sr, 1600, 0.8), 1);
-  biquadInPlace(fanRaw, hp(o.sr, 240, 0.7), 1);
+  biquadInPlace(fanRaw, lp(o.sr, 5200, 0.7), 1);
+  biquadInPlace(fanRaw, hp(o.sr, 300, 0.7), 1);
   const fan = loopify(fanRaw, fanFade);
   const chop = binSnap(o.bladeHz, o.sr, n);
   for (let i = 0; i < n; i++) {
     const m = 1 + 0.22 * Math.sin((TAU * chop * i) / o.sr);
-    out[i] += fan[i] * 2.6 * m;
+    out[i] += fan[i] * 3.6 * m;
   }
 
-  // Sheet-steel casing resonance, and a hard corner above it: a condenser is a
-  // box of thin metal and it has a strong voice around 200-300 Hz.
+  // Sheet-steel casing resonance, and a corner above it: a condenser is a box
+  // of thin metal and it has a strong voice around 200-300 Hz. The corner is
+  // the grille and the louvres, not the machine, so it is gentle and high.
   biquadInPlace(out, peaking(o.sr, 246, 1.6, 5.0), 1);
-  biquadInPlace(out, lp(o.sr, 3200, 0.7), 1);
+  biquadInPlace(out, lp(o.sr, 6500, 0.7), 1);
   biquadInPlace(out, hp(o.sr, 62, 0.7), 1);
 
   return rmsNormalise(out, o.targetDb);
