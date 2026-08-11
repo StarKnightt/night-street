@@ -142,7 +142,7 @@ export const ROUTES = [
      * same asset at 3 m in direct sun reads as a car. Starting 0.75 m east of
      * the crown puts the supermini's flank 1.45 m away instead of 0.7 m, and
      * its rear 2.7 m ahead rather than beside. */
-    place: [0.80, -40.5],
+    place: [0.80, -33.5],
     seconds: 30,
     keys: ['KeyW'],
     look: [

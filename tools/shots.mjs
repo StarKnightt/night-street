@@ -202,7 +202,7 @@ export const SHOTS = [
      * paired, because the walker steers where it looks. */
     name: 'walkG',
     t: 0.265,
-    place: [0.80, -40.5],
+    place: [0.80, -33.5],
     seconds: 30,
     keys: ['KeyW'],
     look: [
@@ -214,9 +214,19 @@ export const SHOTS = [
       [17.0, 0.045, -0.020],
       [20.0, 0.090, -0.026],
       [23.0, 0.045, -0.030],
-      [26.0, 0.010, -0.024],
-      [28.5, -0.005, -0.016],
-      [30.0, -0.010, -0.010],
+      [26.0, 0.020, -0.024],
+      /* Left, not straight, for the last four seconds. The sunlit hatch at
+       * -76.3 is the only parked car in the scene with direct sun on it and it
+       * is worth having in the closing frames — but the walk finishes level
+       * with its tail, so on a heading of zero its far end sits 18% of a
+       * half-width right of centre and reads as a pale wedge across the corner
+       * rather than as a car. Seven hundredths of a radian left puts it at 73%
+       * out, where it is a foreground edge, and swings the west frontage in:
+       * that side carries the lit shopfronts and the OPEN neon, which as of
+       * a0eb6f5 has a colour instead of clipping to white. It also opens the
+       * clearance on the hatch from 0.77 m to 1.1 m. */
+      [28.0, 0.055, -0.018],
+      [30.0, 0.070, -0.010],
     ],
   },
   {

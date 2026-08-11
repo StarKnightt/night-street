@@ -55,6 +55,39 @@ const UNTIL = +flag('until', 0);
 const FADE = +flag('fadeout', 0);
 const SUFFIX = flag('suffix', '');
 
+/* --mux: put the track on the file that was already verified.
+ *
+ * Passing --audio to a fresh encode works, but it re-runs both x264 passes,
+ * and the file that then ships is not the file the luminance arc and the
+ * frame-by-frame checks were run against — it is a second encode that should
+ * be identical and has not been shown to be. Audio arriving late in the night
+ * is the normal case, so the normal case should be a stream copy: the video
+ * bitstream is carried over untouched and only the AAC is new.
+ *
+ * The 120 ms ramps are for the boundaries, not for taste. The take starts and
+ * ends mid-stride with traffic and room tone at full level, and a WAV that
+ * begins at a non-zero sample is a click on every player that does not
+ * crossfade its own start. */
+if (args.includes('--mux')) {
+  if (!AUDIO) { console.error('--mux needs --audio <file.wav>'); process.exit(2); }
+  const outFpsM = HALF ? FPS / 2 : FPS;
+  const vid = path.join(ROOT, 'shots', tag, `${shot}-${outFpsM}p${SUFFIX}.mp4`);
+  if (!fs.existsSync(vid)) { console.error(`no picture at ${path.relative(ROOT, vid)}`); process.exit(1); }
+  const dur = +(spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+    '-of', 'csv=p=0', vid], { encoding: 'utf8' }).stdout || '0').trim();
+  const outM = vid.replace(/\.mp4$/, '-sound.mp4');
+  const r = spawnSync('ffmpeg', ['-y', '-i', vid, '-i', AUDIO,
+    '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy',
+    '-af', `afade=t=in:st=0:d=0.12,afade=t=out:st=${(dur - 0.12).toFixed(3)}:d=0.12`,
+    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
+    '-movflags', '+faststart', '-shortest', outM], { encoding: 'utf8' });
+  if (r.status !== 0) { console.error((r.stderr || '').split('\n').slice(-15).join('\n')); process.exit(1); }
+  const sz = fs.statSync(outM).size / 1048576;
+  console.log(`  ${path.relative(ROOT, vid)} + ${path.basename(AUDIO)}`);
+  console.log(`  -> ${path.relative(ROOT, outM)}  ${sz.toFixed(1)} MB  (video stream copied)`);
+  process.exit(0);
+}
+
 const src = path.join(ROOT, 'shots', tag, shot);
 if (!fs.existsSync(src)) { console.error(`no frames at ${path.relative(ROOT, src)}`); process.exit(1); }
 const frames = fs.readdirSync(src).filter((f) => /\.(jpg|png)$/.test(f)).sort();
