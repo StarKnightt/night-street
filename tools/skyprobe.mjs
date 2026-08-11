@@ -30,17 +30,22 @@ const mix3 = (a, b, t, o) => {
 
 /* Kept deliberately parameterised so a candidate change can be tried here, in
  * a hundred milliseconds, before it costs a thirty-five second capture. */
+/* Resynced to src/scene/env.ts. Every one of these had drifted — the exponent
+ * was still 2.2 after env.ts moved to 4.6, the zenith and the anti-sun horizon
+ * were the pre-cooling values, and the halo was the wrong width and weight — so
+ * the tool was reporting the irradiance of a sky the renderer stopped using
+ * several rounds ago. Keep this block and env.ts's skyRadiance in step. */
 export const SKY = {
-  zenith: [0.0680, 0.1180, 0.3900],
+  zenith: [0.0850, 0.1300, 0.3600],
   upperWarm: [0.7400, 0.3900, 0.3450],
   horizonSun: [3.4000, 1.4200, 0.4200],
-  horizonAway: [0.3050, 0.2600, 0.3300],
-  azPow: 2.2,
-  hPow: 4.0,
+  horizonAway: [0.2000, 0.2000, 0.3100],
+  azPow: 4.6,
+  hPow: 5.6,
   mPow: 2.30,
-  warmFloor: 0.35,     // how much upperWarm reaches the anti-sun sky
-  wideHalo: 0.62,
-  wideK: 4.6,
+  warmFloor: 0.14,     // how much upperWarm reaches the anti-sun sky
+  wideHalo: 0.45,
+  wideK: 5.6,
 };
 
 export function skyRadiance(theta, phi, out, withDisc = false, S = SKY) {

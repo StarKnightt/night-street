@@ -1626,6 +1626,95 @@ float enclosed = 1.0 - gChipAO;
 reflectedLight.indirectDiffuse *= mix(vec3(1.0), vec3(0.52, 1.00, 2.30),
                                       clamp(enclosed * 1.15, 0.0, 1.0));
 
+/* The canyon the carriageway is standing in, which until now it could not see.
+ *
+ * Everything above lights the road plane with 'scene.environment', and that
+ * probe is the whole unoccluded dome. A road is a horizontal surface, so the
+ * cosine weighting puts most of that dome's contribution overhead — and
+ * overhead in this sky is the blue-violet zenith at a blue-to-red of 4.23.
+ * 'tools/skyprobe.mjs', resynced to env.ts, integrates the hemisphere of an
+ * up-facing normal at B/R 2.25, and the frame agrees: the shaded carriageway
+ * measured L = (0.0432, 0.0429, 0.0959) at t = 29.5 of the delivered take,
+ * B/R 2.22, arriving as (29, 33, 54) at a saturation of 0.455. NOTES.md's own
+ * figure for real asphalt is 0.05 to 0.12. That is aubergine, not tarmac.
+ *
+ * It is not the albedo and it is not the grade. It is that a road eleven
+ * metres wide between twelve-metre frontages cannot see the dome at all. The
+ * sky view factor of an infinite canyon is cos(atan(H / (W/2))), which here is
+ * 0.42: three fifths of the road's hemisphere is masonry, and at this hour a
+ * good deal of that masonry is in direct sun and is the warmest large source
+ * in the scene. 'canyonSky' models exactly this for walls and then deliberately
+ * suppresses itself on horizontals — '(1.0 - up * 0.96)' — because the paving
+ * in shade was signed off and must not move. So the correction the walls got
+ * was never available to the carriageway, and the carriageway is the surface
+ * that needs it most.
+ *
+ * The three numbers:
+ *
+ *   0.34   the sky view factor. The bare-canyon formula above gives 0.42 at the
+ *          centreline; this is under it because the formula knows about two
+ *          walls and nothing else, and this street has a parked vehicle every
+ *          few metres down both kerb lines, a van a metre from the camera for
+ *          much of the take, plus bollards, a dumpster and four lamp columns.
+ *          Everything in that list stands between the carriageway and the sky
+ *          and none of it is in cos(atan(H / (W/2))).
+ *   chroma B/R 0.47, normalised to unit luminance so it only redistributes.
+ *          A sunlit stucco frontage returning warm sun and warm horizon; the
+ *          sun itself is B/R 0.31, so a bounce off a pale warm wall sitting
+ *          between that and neutral is the right neighbourhood.
+ *   1.43   how much brighter that masonry is than the slot of sky it replaces.
+ *          Deliberately conservative: the sunlit frontage in the same frame
+ *          measures L 1.81 red against this surface's 0.043, so the honest
+ *          number is far larger and is not needed.
+ *
+ * The magnitude is carried by the fragment's own indirect luminance rather
+ * than by a constant, so albedo, the baked occlusion and the chip AO all still
+ * modulate it and the surface does not flatten.
+ *
+ * Gated on direct light, and that gate is load-bearing rather than a dodge.
+ * The sunlit carriageway is separately calibrated and is not this pass's to
+ * move, and the gate is also true: 'world/block.ts' derives the two sun bands
+ * from the *gaps* in the sunward row, so the stretches of road that see the
+ * disc are exactly the stretches that see more sky and less masonry. Ground
+ * that is lit has a higher sky view factor by construction. Verified both
+ * ways in shots/rp-after: the shaded stop moves and the sunlit stop does not.
+ */
+#ifndef DEBUG_ROAD_NO_BOUNCE
+{
+  const float SVF = 0.34;
+  const vec3  BOUNCE_CHROMA = vec3(1.075, 1.027, 0.507);
+  const float BOUNCE_GAIN = 1.434;
+  float dLit = dot(reflectedLight.directDiffuse, vec3(0.2126, 0.7152, 0.0722));
+  float openToSun = smoothstep(0.006, 0.060, dLit);
+  vec3 skyTerm = reflectedLight.indirectDiffuse;
+  float skyLum = dot(skyTerm, vec3(0.2126, 0.7152, 0.0722));
+  vec3 bounce = skyLum * BOUNCE_CHROMA * BOUNCE_GAIN;
+  reflectedLight.indirectDiffuse =
+    mix(skyTerm, mix(bounce, skyTerm, openToSun), 1.0 - SVF);
+
+  /* The same occlusion, applied to the reflection, and it is the last of the
+   * violet.
+   *
+   * With the diffuse corrected the shaded carriageway still measured blue 0.066
+   * against red 0.055 — six thousandths more blue than the diffuse model
+   * predicts, and the residual is the sky's own reflection. It comes from the
+   * same unoccluded probe, and at the grazing incidence that fills the bottom
+   * of a standing frame the reflected ray is nearly horizontal: it is pointing
+   * at the frontage forty metres down the street, or at the flank of the van
+   * parked two metres away, and in neither case at the zenith it is currently
+   * being given.
+   *
+   * Chroma only, with the luminance held, because unlike the diffuse term this
+   * is a redirection rather than a different amount of light — and because the
+   * lobe carries the wheel paths and the crown and none of that should move.
+   * The sunlit carriageway is safe here by measurement rather than by the gate:
+   * zeroing this channel outright changes it by four parts in a thousand. */
+  vec3 spec = reflectedLight.indirectSpecular;
+  float specLum = dot(spec, vec3(0.2126, 0.7152, 0.0722));
+  reflectedLight.indirectSpecular = mix(spec, specLum * BOUNCE_CHROMA, 1.0 - SVF);
+}
+#endif
+
 /* Desaturation of the sun's contribution to the carriageway, and this one is a
  * grade rather than a correction. It is labelled as such because the difference
  * matters to whoever reads this next.
@@ -1851,6 +1940,12 @@ export function makeRoadMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
    * the difference between the two runs that says whether it is the cause. */
   if (typeof location !== 'undefined' && location.search.includes('nochips')) {
     m.defines = { ...(m.defines ?? {}), DEBUG_ROAD_NO_CHIPS: '' };
+  }
+  /* The attribution switch for the canyon bounce, so the next person to
+   * measure the shaded carriageway can take the term out in one URL rather
+   * than guessing at how much of the hue is it. */
+  if (typeof location !== 'undefined' && location.search.includes('nobounce')) {
+    m.defines = { ...(m.defines ?? {}), DEBUG_ROAD_NO_BOUNCE: '' };
   }
 
   m.onBeforeCompile = (shader) => {

@@ -65,7 +65,11 @@ if (pts.length && file) {
     for (let y = cy - h; y <= cy + h; y++) {
       for (let x = cx - h; x <= cx + h; x++) {
         if (x < 0 || y < 0 || x >= img.w || y >= img.h) continue;
-        const i = (y * img.w + x) * 4;
+        // img.ch, not 4: readPNG hands back three bytes per pixel for a colour
+        // type 2 file, and a hardcoded stride of four walks off the end of the
+        // buffer near the bottom of the frame and reads the wrong pixel
+        // everywhere else.
+        const i = (y * img.w + x) * img.ch;
         r += img.data[i]; g += img.data[i + 1]; b += img.data[i + 2]; n++;
       }
     }
