@@ -10,6 +10,7 @@
  */
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
+import type { RootState } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Walker } from './walker';
 import { DIMS } from '@/world/dims';
@@ -19,6 +20,11 @@ const KEYS: Record<string, string> = {
   KeyS: 'b', ArrowDown: 'b',
   KeyA: 'l', ArrowLeft: 'l',
   KeyD: 'r', ArrowRight: 'r',
+  /* Both shifts, by code rather than by `e.shiftKey`. A modifier read off the
+   * other keys' events is only observed while another key is being pressed or
+   * released, so a shift held down after W was already down would never be
+   * noticed. */
+  ShiftLeft: 'sp', ShiftRight: 'sp',
 };
 
 export type DebugScene = {
@@ -28,6 +34,20 @@ export type DebugScene = {
   warp(seconds: number): void;
   setPaused(p: boolean): void;
   renderOnce(): void;
+  /**
+   * Take the whole frame loop off the wall clock, or put it back.
+   *
+   * `setPaused` only stops *this* component's update; dust, the shadow
+   * follower and the audio engine each have their own `useFrame` and keep
+   * running on real time underneath it. That is fine for a still, and wrong
+   * for a sequence: a capture that takes 90 ms per frame would advance the
+   * dust field three times as far between frames as the walk.
+   */
+  setDriven(on: boolean): void;
+  /** Advance every `useFrame` in the scene by exactly `dt` seconds and render. */
+  step(dt: number): void;
+  /** Virtual seconds elapsed since `setDriven(true)`. */
+  readonly clock: number;
   info(): { calls: number; triangles: number; programs: number; textures: number; geometries: number };
   probe(sampleStep?: number): Record<string, number>;
   readonly fps: number;
@@ -43,6 +63,11 @@ declare global {
 
 export function Rig({ onFootstep }: { onFootstep?: (foot: number) => void }) {
   const { gl, scene, camera } = useThree();
+  /* Read off the store rather than destructured, so the driven-loop controls
+   * below are the same functions r3f's own loop uses. */
+  const advance = useThree((s: RootState) => s.advance);
+  const setFrameloop = useThree((s: RootState) => s.setFrameloop);
+  const vclock = useRef(0);
   const walker = useMemo(() => new Walker(), []);
   const held = useRef(new Set<string>());
   const paused = useRef(false);
@@ -95,6 +120,7 @@ export function Rig({ onFootstep }: { onFootstep?: (foot: number) => void }) {
     walker.update(dt, {
       forward: (h.has('f') ? 1 : 0) - (h.has('b') ? 1 : 0),
       strafe: (h.has('r') ? 1 : 0) - (h.has('l') ? 1 : 0),
+      sprint: h.has('sp'),
     });
     apply();
   });
@@ -109,6 +135,20 @@ export function Rig({ onFootstep }: { onFootstep?: (foot: number) => void }) {
       warp(seconds) { walker.warp(seconds); apply(); },
       setPaused(p) { paused.current = !!p; },
       renderOnce() { apply(); gl.render(scene, camera); },
+      /* `frameloop: 'never'` makes r3f take its delta from the timestamp
+       * handed to `advance` instead of from the clock, so every subscriber in
+       * the scene sees exactly the interval the output file will be played
+       * back at. Switching it also resets `clock.elapsedTime` to zero, which
+       * is why the virtual clock restarts here. */
+      setDriven(on) {
+        setFrameloop(on ? 'never' : 'always');
+        vclock.current = 0;
+      },
+      step(dt) {
+        vclock.current += dt;
+        advance(vclock.current);
+      },
+      get clock() { return vclock.current; },
       info() {
         const i = gl.info;
         return {
@@ -176,7 +216,7 @@ export function Rig({ onFootstep }: { onFootstep?: (foot: number) => void }) {
     // having to add a code path to the app to test the app.
     (window as unknown as { __THREE?: unknown }).__THREE = THREE;
     return () => { delete window.__scene; };
-  }, [gl, scene, camera, walker, apply]);
+  }, [gl, scene, camera, walker, apply, advance, setFrameloop]);
 
   useEffect(() => { walker.placeAt(0); apply(); }, [walker, apply]);
 
