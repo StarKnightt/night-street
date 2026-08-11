@@ -240,23 +240,83 @@ float gMir = signMirror(vNuv, vWN);
     metalnessFactor = 0.0;
 
   } else if (part < 1.5){
-    /* LETTERFORMS, out of the stroke-font atlas System 3 already uses. */
+    /* LETTERFORMS, out of the stroke-font atlas System 3 already uses.
+     *
+     * ── A letter is a tube, and it was being drawn as a lit panel ─────────
+     *
+     * What stood here was edge * 1.32 - core * 0.30: a coverage mask filled
+     * to one value with a two per cent lift at its own outline. That is a
+     * backlit acrylic letter — a face illuminated from behind, uniform across
+     * its width — and it is what the sign measured as. Photographed, the BAR
+     * letters came off disk as flat slabs at (245, 190, 166), a single tone
+     * from one side of a stem to the other, while the bare tube 60 mm to the
+     * left of them in the same frame had a white core with red-orange falloff
+     * either side and read correctly. Two objects that are the same object
+     * were being drawn by two different models, and the wrong one was on the
+     * part that carries the word.
+     *
+     * A neon letter is bent glass of constant bore. It is limb *brightened*
+     * for the reason the TUBE branch above gives at length: the phosphor is a
+     * shell on the inside of the glass, so the chord a view ray cuts through
+     * it diverges toward the silhouette. Across a stroke that means two bright
+     * rails and a duller middle. A uniform fill is not a dimmer version of
+     * that, it is the opposite of it, and no level fixes it.
+     *
+     * The obstacle is that the atlas has no distance in it to build a profile
+     * from. signAtlas writes clamp(0.5 + (R - d), 0, 1) with R = 1.95
+     * texels, so it saturates half a texel inside the stroke: it is a coverage
+     * mask with an antialiasing band, and everything more than one texel in is
+     * flat 1.0. So the across-stroke coordinate is recovered by blurring —
+     * four taps at one stroke half-width, which is the same trick the glow
+     * proxy already uses to close the counters of a word, read here as a
+     * ramp rather than as a shape. A point on the centreline keeps most of its
+     * neighbours; a point on the edge loses half of them.
+     */
     int row = int(vNeon.y + 0.5);
     float cap = vNeon.z;
     float wdt = cap * signAspect(row);
-    vec2 q = vec2((vNuv.x - (vRect.x - wdt * 0.5)) / wdt, (vNuv.y - vRect.y) / cap);
-    float ink = signInk(row, q, fwidth(vNuv.x) / max(cap, 1e-3), gMir);
-    /* A tube standing 25 mm off its tray is a little wider in the frame than
-     * its stroke, and its own edge is its brightest part. Widening the ink and
-     * lifting the transition band is the flat-panel equivalent of the chord
-     * above; without it the lettering reads as painted rather than as glass.
-     */
-    float edge = smoothstep(0.06, 0.42, ink);
-    float core = smoothstep(0.34, 0.86, ink);
-    gEmit = col * (edge * 1.32 - core * 0.30);
+    float px = fwidth(vNuv.x) / max(cap, 1e-3);
+    vec2 qs = vec2(vRect.x - wdt * 0.5, vRect.y);
+    float ink = signInk(row, vec2((vNuv.x - qs.x) / wdt, (vNuv.y - qs.y) / cap), px, gMir);
+
+    /* SGN_R is the bake's stroke half-width in cap heights. Offsetting by
+     * exactly that puts a tap on the edge of the stroke when the sample is on
+     * its centreline, which is what makes the average separate the two. */
+    /* Unrolled. signInk takes an implicit-derivative texture fetch, and D3D
+     * rejects a gradient instruction inside a loop it cannot prove has a
+     * uniform trip count — "partial derivatives may have undefined value",
+     * eight of them per capture. The four taps are a fixed cross; written out
+     * they are the same instructions with none of the doubt. */
+    const float SGN_R = 0.075;
+    vec2 e = vec2(SGN_R * cap, 0.0);
+    float wide = 0.2 * (ink
+      + signInk(row, vec2((vNuv.x + e.x - qs.x) / wdt, (vNuv.y - qs.y) / cap), px, gMir)
+      + signInk(row, vec2((vNuv.x - e.x - qs.x) / wdt, (vNuv.y - qs.y) / cap), px, gMir)
+      + signInk(row, vec2((vNuv.x - qs.x) / wdt, (vNuv.y + e.x - qs.y) / cap), px, gMir)
+      + signInk(row, vec2((vNuv.x - qs.x) / wdt, (vNuv.y - e.x - qs.y) / cap), px, gMir));
+
+    /* Normalised distance from the centreline, then the same clamped 1/cos
+     * chord the TUBE branch uses, divided by the same 1.48 so that this
+     * redistributes the authored radiance instead of adding any: core 0.68x,
+     * rails 3.4x, flux unchanged. The two models now agree by construction,
+     * which is the point — the tube and the letters on the same sign have to
+     * be the same glass.
+     *
+     * Folded out once the stroke is no longer resolvable. Past that every tap
+     * returns the row's mean ink, wide stops describing a stroke, and
+     * without the gate a sign at forty metres would take the rail value over
+     * its whole area and get brighter as it got smaller. */
+    float u = clamp(1.0 - (wide - 0.45) / 0.35, 0.0, 1.0);
+    float chord = min(1.0 / max(sqrt(max(1.0 - u * u, 0.0)), 0.16), 5.0) / 1.48;
+    chord = mix(1.0, chord, 1.0 - smoothstep(0.35, 1.10, px / (2.0 * SGN_R)));
+
+    // The glass stands 25 mm off its tray, so it covers slightly more of the
+    // frame than the ink does.
+    float cov = smoothstep(0.06, 0.42, ink);
+    gEmit = col * chord * cov;
     // The tray behind, which is matt black and stays black.
-    diffuseColor.rgb = mix(vec3(0.0125, 0.0120, 0.0130), vec3(0.055), edge);
-    roughnessFactor = mix(0.85, 0.22, edge);
+    diffuseColor.rgb = mix(vec3(0.0125, 0.0120, 0.0130), vec3(0.055), cov);
+    roughnessFactor = mix(0.85, 0.22, cov);
     metalnessFactor = 0.0;
 
   } else if (part < 2.5){
@@ -392,15 +452,18 @@ vec3 halo = vec3(0.0);
     float cap = vGlow.w;
     float wdt = cap * signAspect(row);
     float px = fwidth(vGuv.x) / max(cap, 1e-3);
-    float ink = 0.0;
-    for (int k = 0; k < 5; k++){
-      vec2 o = k == 0 ? vec2(0.0)
-             : k == 1 ? vec2(0.46, 0.0) : k == 2 ? vec2(-0.46, 0.0)
-             : k == 3 ? vec2(0.0, 0.46) : vec2(0.0, -0.46);
-      vec2 s = vGuv + o * cap;
-      vec2 q = vec2((s.x - (vGP.x - wdt * 0.5)) / wdt, (s.y - vGP.y) / cap);
-      ink += signInk(row, q, px, gMir);
-    }
+    /* Written out rather than looped. signInk ends in an implicit-derivative
+     * texture fetch and D3D will not accept a gradient instruction inside a
+     * loop whose trip count it cannot prove uniform; it compiles, but it warns
+     * that the derivatives may be undefined, and undefined derivatives here
+     * mean the atlas picks its own mip. Five fixed taps cost nothing to spell
+     * out and leave no such doubt. */
+    float x0 = vGP.x - wdt * 0.5, d = 0.46 * cap;
+    float ink = signInk(row, vec2((vGuv.x - x0) / wdt, (vGuv.y - vGP.y) / cap), px, gMir)
+      + signInk(row, vec2((vGuv.x + d - x0) / wdt, (vGuv.y - vGP.y) / cap), px, gMir)
+      + signInk(row, vec2((vGuv.x - d - x0) / wdt, (vGuv.y - vGP.y) / cap), px, gMir)
+      + signInk(row, vec2((vGuv.x - x0) / wdt, (vGuv.y + d - vGP.y) / cap), px, gMir)
+      + signInk(row, vec2((vGuv.x - x0) / wdt, (vGuv.y - d - vGP.y) / cap), px, gMir);
     halo = vGlow.rgb * (ink * 0.20);
   } else {
     /* A TUBE OR A LENS. Closest approach between the view ray and the axis

@@ -82,8 +82,20 @@ export type NeonRows = { open: number; bar: number; beer: number };
 
 /** What System 5's analytic array needs in order to wash the board behind. */
 export type NeonSource = {
-  pos: V3; dir: V3; cd: number; colour: RGB; note: string;
+  pos: V3; dir: V3; cd: number;
+  /* The distribution exponent, and it decides whether the wash exists at all.
+   * 0 is isotropic and is what an exposed tube is: glass with nothing behind
+   * it radiates over the whole sphere, and the wall it stands off is lit by
+   * the back of it. Anything above 0 is a cosine lobe about `dir`, which is a
+   * tray sign with a black back. Registering a tube as a lobe about its host
+   * wall's outward normal is registering it as emitting away from the one
+   * surface it is there to light, and evaluates to exactly zero. */
+  expo: number;
+  colour: RGB; note: string;
 };
+
+/** Intensity of an emitter of area `m2` at radiance `col`, in candela. */
+const candela = (m2: number, col: RGB): number => m2 * Math.max(col[0], col[1], col[2]);
 
 export type BuiltNeon = {
   neon: THREE.BufferGeometry;
@@ -252,14 +264,19 @@ export function buildNeon(
     gf.panel(uc - hw - 0.10, uc + hw + 0.10, yc - hh - 0.10, yc + hh + 0.10, dP + 0.060);
 
     /* Analytic contribution. Ink coverage for OPEN at this size is about
-     * 0.0092 m2 at L = 8.34, so I = 0.077 cd — three parts in ten thousand of
-     * the sun at a metre. It is in the array for one reason: it is 400 mm from
-     * the stall riser and the reveal beside it, and a source that close washes
-     * what it is mounted on whatever its absolute level. */
+     * 0.0092 m2. It is in the array for one reason: it is 400 mm from the
+     * stall riser and the reveal beside it, and a source that close washes
+     * what it is mounted on whatever its absolute level.
+     *
+     * The one source here that really is a lobe about the outward normal: a
+     * tray sign is a black box with a lit face and it emits forward only. 0.6
+     * rather than a Lambertian 1.0 because the face is a diffusing panel with
+     * tubes standing off behind it, which is broader than a flat emitter. */
     sources.push({
       pos: w3(f.p(uc, yc, dP + 0.03)),
       dir: [store.frame.nx, 0, store.frame.nz],
-      cd: 0.077, colour: pal.open, note: 'OPEN, store window',
+      cd: candela(0.0092, pal.open), expo: 0.6,
+      colour: pal.open, note: 'OPEN, store window',
     });
     legend.push('OPEN');
   }
@@ -299,6 +316,7 @@ export function buildNeon(
      * way the text has to run from the screen-space derivatives, so neither
      * face has to be told that it is the far one. */
     const dm = (dA + dB) * 0.5;
+    const gf = new Face(G, bar.frame);
     for (const side of [-1, +1] as const) {
       const uf = uc + side * (hu + 0.004);
       const cap = 0.235;
@@ -314,6 +332,28 @@ export function buildNeon(
         .attr('aRect', uf + dm, yc - 0.185, 0, 0)
         .attr('aAxis', 0, 1, 0, 0);
       f.jamb(uf, dA + 0.02, dB - 0.02, yc - 0.24, yc - 0.02, side);
+
+      /* The halo over the word, which the OPEN sign has had since it was built
+       * and these did not. That asymmetry was visible in every frame of the
+       * bar: the two edge tubes carry a cylinder proxy and come off disk with a
+       * white core in a red-orange bloom, and the lettering 60 mm inboard of
+       * them stopped at a hard antialiased outline — the one emitter in the
+       * scene with an edge. Same mechanism as the OPEN panel: a quad standing
+       * off the face carrying a box-blurred copy of the same ink, so it is
+       * occluded by whatever is in front of the sign, which bloom is not.
+       *
+       * 25 mm off the jamb rather than the OPEN sign's 32, because these two
+       * faces are 154 mm apart and a proxy that reaches half that distance
+       * meets the one coming the other way inside the box. */
+      G.attr('aGlow', pal.red[0] * 0.20, pal.red[1] * 0.20, pal.red[2] * 0.20, cap)
+        .attr('aGA', bar.frame.nx, 0, bar.frame.nz, 0)
+        .attr('aGP', uf + side * 0.025 + dm, yc - 0.015, rows.bar, GLO.PANEL);
+      /* uv on a jamb is (u + d, y), so the 25 mm standoff moves the layout
+       * origin with the quad. Leaving aGP on the letters' own u would slide
+       * the halo a tenth of a cap height sideways off the word it belongs to,
+       * in opposite directions on the two faces. */
+      gf.jamb(uf + side * 0.025, dA - 0.05, dB + 0.05,
+        yc - 0.10, yc + hh + 0.08, side);
     }
 
     // The two edge tubes, standing clear of the box front and back.
@@ -323,18 +363,24 @@ export function buildNeon(
     }
 
     /* Analytic contribution, and this one earns its slot. Two 540 mm tubes at
-     * 19 mm radius present 0.0645 m2 of emitting surface at L = 8.34, so
-     * I = 0.54 cd, plus about 0.35 cd of lettering across the two faces. At
-     * 0.9 cd and 1.2 m from the fascia board that is E = 0.62 on the board —
-     * 7.4% of the sun's horizontal irradiance, on a board the sun never
-     * reaches. The wash on the fascia is the whole visible effect of this
-     * sign on anything but itself, and it is the reason a neon sign in a
-     * photograph looks attached to a building rather than composited onto it.
-     */
+     * 19 mm radius present 0.129 m2 of glass, and the lettering adds about
+     * 0.042 m2 of ink across the two jambs. At 1.2 m from the fascia board
+     * behind it that is a few per cent of the sun's horizontal irradiance on a
+     * board the sun never reaches. The wash on the fascia is the whole visible
+     * effect of this sign on anything but itself, and it is the reason a neon
+     * sign in a photograph looks attached to a building rather than composited
+     * onto it.
+     *
+     * Isotropic. The dominant emitters here are two bare vertical tubes on the
+     * leading and trailing edges of the box, and a bare tube has no axis — the
+     * fascia behind is lit by the half of the glass facing it. Registered as a
+     * lobe about the wall normal this was the strongest of the three sources
+     * and contributed nothing at all. */
     sources.push({
       pos: w3(f.p(uc, yc, (dA + dB) * 0.5)),
       dir: [bar.frame.nx, 0, bar.frame.nz],
-      cd: 0.89, colour: pal.red, note: 'bar sign, projecting',
+      cd: candela(0.129 + 0.042, pal.red), expo: 0,
+      colour: pal.red, note: 'bar sign, projecting',
     });
     legend.push('BAR', 'COLD BEER');
   }
@@ -381,16 +427,21 @@ export function buildNeon(
     litTube(P(yc - arm, dc), P(yc + arm, dc), r, pal.green, 0.34);
     litTube(P(yc, dc - arm), P(yc, dc + arm), r, pal.green, 0.34);
 
-    /* 1.14 m of 26 mm tube is 0.186 m2 at L = 9.72, so I = 1.81 cd. Sixty
-     * centimetres from the wall it puts E = 5.0 on the render immediately
-     * behind it, which is 60% of the sun's horizontal irradiance and by a wide
-     * margin the strongest thing System 5 does to any surface — because it is
-     * the only source in the scene mounted a hand's width from what it lights.
-     * The falloff takes it under a per cent of the sun by two metres away. */
+    /* 1.14 m of 26 mm radius tube presents 2*pi*r*l = 0.186 m2 of glass.
+     * Sixty centimetres from the wall that puts a third of the sun's
+     * horizontal irradiance on the render immediately behind it, which is by a
+     * wide margin the strongest thing System 5 does to any surface — because
+     * it is the only source in the scene mounted a hand's width from what it
+     * lights. The falloff takes it under a per cent of the sun by two metres.
+     *
+     * Isotropic, and this is the source the wrong model cost the most: two
+     * bare crossed tubes on a bracket, with the wall directly behind them at
+     * 180 degrees to the axis they were registered with. */
     const p = P(yc, dc);
     sources.push({
       pos: p, dir: [host.frame.nx, 0, host.frame.nz],
-      cd: 1.81, colour: pal.green, note: 'pharmacy cross',
+      cd: candela(0.186, pal.green), expo: 0,
+      colour: pal.green, note: 'pharmacy cross',
     });
     legend.push('a green cross');
   }

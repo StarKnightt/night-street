@@ -787,14 +787,27 @@ const SHOP_GLASS_BODY = /* glsl */ `
    * put it at display 135 where a sunlit fascia measured 187, which looks like
    * a two-thirds shortfall and is nothing of the kind.
    *
-   * Calibrating the curve settles it. Feeding the pane a known constant of 1.6
-   * returns display 90, which fixes the response closely enough over this range
-   * at display = 0.284 * L^0.4545; inverting a sunlit fascia's 191 gives a
-   * scene radiance near 8.5, against the 2.3 this constant was carrying. The
-   * bright band was not two thirds of a sunlit wall, it was a quarter of one,
-   * and four fifths of that error was hidden by the shoulder. Everything
-   * bright in this reflection is set by that inversion from here on. */
-  vec3 litWall = vec3(13.0, 7.60, 3.30) * (0.84 + 0.32 * hash21(vec2(bay, 5.1)));
+   * That paragraph then got it wrong a third time, and this is the correction.
+   * The curve it calibrated against, display = 0.284 * L^0.4545, was fitted
+   * through a pane of glass and has since been withdrawn; tools/agx.mjs ports
+   * the renderer's actual AgX transform and inverts it numerically. The same
+   * sunlit fascia at display 191 comes back at a scene radiance of 2.50, not
+   * 8.5. The old fit over-predicts by 3.4x here, so the 2.3 this constant used
+   * to carry was very nearly right and the raise to 8.5 was the error.
+   *
+   * The inverted surface matters and it is worth being explicit, because the
+   * companion raise in carMaterials.ts may not have the same shape. What was
+   * inverted here is an opaque sunlit stucco fascia, seen directly, so its
+   * display value is its own radiance and no Fresnel term stands between the
+   * two. Dividing one out would be wrong. The pane's throughput — 1.6 in
+   * returning display 90, which AgX puts at 0.266, so about 0.17 — is a
+   * reflectance, not an error to be cancelled: a shop window at this angle is
+   * meant to return a sixth of what it faces, and a reflection reading dimmer
+   * than the wall it reflects is the correct result rather than a shortfall to
+   * be tuned away. Sanity check on the arithmetic: every sibling radiance in
+   * this synthetic environment — the lit windows at 2.4, the glass opposite at
+   * 1.75 — sits near 2, and only this one stood at 8. */
+  vec3 litWall = vec3(3.85, 2.25, 0.98) * (0.84 + 0.32 * hash21(vec2(bay, 5.1)));
   vec3 wall = mix(shadeWall * (0.78 + 0.44 * hash21(vec2(bay, 5.1))), litWall, sun);
   /* Window bays, dark against the masonry, in a row per storey. Crude to the
    * point of being a joke as architecture, and entirely sufficient as content:
