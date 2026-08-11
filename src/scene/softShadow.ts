@@ -104,7 +104,45 @@ export const SUN_SHADOW: SoftShadowConfig = {
 
 let installed = false;
 
-export function installSoftSunShadows(cfg: SoftShadowConfig = SUN_SHADOW): void {
+/* Where the Vogel disc's rotation comes from — and it is a temporal decision,
+ * not a spatial one.
+ *
+ * A blocker search and a variable-width filter are Monte Carlo estimates: 12
+ * and 20 taps of a disc that on this road is up to 1.15 m across. The estimate
+ * carries a standard error, and rotating the tap pattern per pixel is what
+ * turns that error from a visible ring pattern into a dither. The question
+ * nobody asks is what the rotation should be a function of, and the default
+ * answer — gl_FragCoord — is the one choice that is wrong for a moving camera:
+ * a fragment's screen position changes with every step, so its phase, and
+ * therefore its estimate, is redrawn from scratch every frame. Fully
+ * decorrelated noise at the smallest camera movement is exactly the signature
+ * the walk harness measured on the shadowed carriageway, and it is why that
+ * patch was already saturated at 5.6 mm of travel while the facade beside it
+ * grew with parallax the way real parallax does.
+ *
+ *   'screen'  gl_FragCoord — three's own convention, and what shipped
+ *   'world'   the shadow-map UV, which is world space perpendicular to the
+ *             light, so a point on the road keeps its phase as the camera
+ *             walks past it and the residual error rides with the surface
+ *   'onetap'  no filter at all, for attribution: if the shimmer survives this
+ *             it is not coming from here
+ *
+ * Selected from the URL because the alternative is a rebuild per measurement,
+ * and this file is patched into the shader chunks once at module load.
+ */
+export type ShadowPhase = 'screen' | 'world' | 'onetap';
+
+export function shadowPhaseFromUrl(): ShadowPhase {
+  if (typeof location === 'undefined') return 'world';
+  if (location.search.includes('onetap')) return 'onetap';
+  if (location.search.includes('phiscreen')) return 'screen';
+  return 'world';
+}
+
+export function installSoftSunShadows(
+  cfg: SoftShadowConfig = SUN_SHADOW,
+  phase: ShadowPhase = shadowPhaseFromUrl(),
+): void {
   if (installed) return;
   installed = true;
 
@@ -171,7 +209,20 @@ export function installSoftSunShadows(cfg: SoftShadowConfig = SUN_SHADOW): void 
       float zc = z + shadowBias;
     #endif
 
-    float phi = sunIGN( gl_FragCoord.xy ) * PI2;
+    /* The tap rotation's argument. See the note on ShadowPhase above: this is
+     * the difference between a residual that sits still on the road and one
+     * that is redrawn every frame.
+     *
+     * In world mode the argument is the shadow-map UV in texels, times eight.
+     * Texels rather than anything else because that is the one grid this
+     * function already has that is fixed to the world: the shadow camera is
+     * texel-snapped as it follows, so a point on the road keeps its coordinate
+     * to within a fraction of a texel as the camera walks. Times eight because
+     * one rotation per texel is far too coarse — a shadow texel is 10.7 mm
+     * across the light and, at four degrees, 146 mm along it, which is a
+     * hundred screen pixels of near carriageway sharing one estimate, and a
+     * hundred pixels sharing an error is a blotch rather than a dither. */
+    float phi = sunIGN( ${phase === 'world' ? 'uv * shadowMapSize * 8.0' : 'gl_FragCoord.xy'} ) * PI2;
 
     // ---- blocker search ----------------------------------------------------
     vec2 sUV = vec2( SUN_SEARCH / SUN_FRUSTUM_W, SUN_SEARCH / SUN_FRUSTUM_H );
@@ -239,8 +290,8 @@ export function installSoftSunShadows(cfg: SoftShadowConfig = SUN_SHADOW): void 
     vec2 rUV = vec2( rWorld / SUN_FRUSTUM_W, rWorld / SUN_FRUSTUM_H );
 
     float lit = 0.0;
-    for ( int i = 0; i < ${cfg.filterTaps}; i ++ ) {
-      vec2 o = sunVogel( i, ${cfg.filterTaps}, phi ) * rUV;
+    for ( int i = 0; i < ${phase === 'onetap' ? 1 : cfg.filterTaps}; i ++ ) {
+      vec2 o = ${phase === 'onetap' ? 'vec2( 0.0 )' : `sunVogel( i, ${cfg.filterTaps}, phi ) * rUV`};
       float d = texture2D( shadowMap, uv + o ).r;
       float zr = zc + dot( grad, o );
       #ifdef USE_REVERSED_DEPTH_BUFFER
@@ -249,7 +300,7 @@ export function installSoftSunShadows(cfg: SoftShadowConfig = SUN_SHADOW): void 
         lit += ( d < zr ) ? 0.0 : 1.0;
       #endif
     }
-    lit /= float( ${cfg.filterTaps} );
+    lit /= float( ${phase === 'onetap' ? 1 : cfg.filterTaps} );
 
     return mix( 1.0, lit, shadowIntensity );
   }

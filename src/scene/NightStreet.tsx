@@ -4,6 +4,7 @@ import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Street } from './Street';
 import { Rig } from './Rig';
+import { Grade } from './grade';
 import { installSoftSunShadows } from './softShadow';
 import { installShaderErrorWatch } from './shaderWatch';
 import { CityAudio, footstep } from '@/audio/CityAudio';
@@ -72,6 +73,12 @@ export default function NightStreet() {
       >
         <Street />
         <Rig onFootstep={footstep} />
+        {/* Last child on purpose. It subscribes to the frame loop at a
+          * non-zero priority, which is what tells r3f to stop rendering the
+          * scene itself and hand the job over; everything above has to have
+          * had its own useFrame run first. ?nograde returns the exact frame
+          * the existing screenshot archive was judged through. */}
+        <Grade />
         <CityAudio />
       </Canvas>
       <Hud />

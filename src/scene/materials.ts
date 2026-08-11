@@ -68,6 +68,20 @@ function tile(set: SurfaceSet, metresPerTile = set.patch) {
  * about that one was never about units — paving is dielectric and the constant
  * zero is correct. Restoring aoMap also removes a duplication: gChipAO exists to
  * recompute in the shader an occlusion the bake already had. */
+/* Coefficient and ceiling for the road's specular antialiasing.
+ *
+ * A uniform rather than a literal so that the walk-difference harness can
+ * measure several strengths in one browser session. Widening a specular lobe
+ * is the one correction in this material that trades a real thing for a real
+ * thing — sparkle for glitter — so the setting has to be chosen against
+ * numbers from both sides of that trade rather than by eye. */
+export function specAAFromUrl(): THREE.Vector2 {
+  const d = new THREE.Vector2(2.2, 0.28);
+  if (typeof location === 'undefined') return d;
+  const m = /[?&]saa=([\d.]+),([\d.]+)/.exec(location.search);
+  return m ? new THREE.Vector2(+m[1], +m[2]) : d;
+}
+
 function applySet(m: THREE.MeshStandardMaterial, set: SurfaceSet) {
   m.map = set.map;
   m.normalMap = set.normalMap;
@@ -104,8 +118,23 @@ float gDamp = 0.0;
 float gPool = 0.0;
 float gPatchH = 0.0;
 vec2  gChipN = vec2(0.0);
+/* Variance of the shading normal inside one pixel that no derivative can
+ * measure, accumulated by the surface evaluation that creates it and spent by
+ * the normal hook. dFdx of the normal recovers the variation *between*
+ * neighbouring samples, which is the right estimator for a feature a few
+ * pixels wide and worthless for one that is a fifth of a pixel wide — there it
+ * returns a random draw whose expectation is the variance but whose value, per
+ * pixel, per frame, is noise. The chip loop knows the amplitude and the width
+ * of the feature it is declining to draw, so it can state the answer instead
+ * of having it estimated. */
+float gNVar = 0.0;
 uniform vec2 uSunXZ;
 float gPaint = 0.0;
+/* Strength and ceiling of the derivative-based lobe widening, as a uniform so
+ * that a walk can be measured at several settings in one browser session
+ * rather than one per rebuild. The shipped value is the pair that was signed
+ * off; ?saa=c,k overrides it. */
+uniform vec2 uSpecAA;
 /* Sky occlusion between the chippings.
  *
  * The other half of the aggregate report was that the shaded carriageway has no
@@ -876,7 +905,37 @@ const ROAD_FRAG_BODY = /* glsl */ `
       // Each stone is bedded at its own angle, which is most of why a real
       // aggregate field twinkles unevenly instead of glinting all at once.
       vec2 tilt = (vec2(fract(id * 23.1), fract(id * 41.7)) - 0.5) * 1.05;
-      vec2 n = (tilt - dir * rim * 2.10) * (sock > 0.5 ? -0.85 : 1.0);
+
+      /* The rim is a sub-pixel feature and has to be told so.
+       *
+       * This band is the sharpest and by far the largest normal feature in the
+       * material — a turnover of 2.10 in tangent space, about sixty-five
+       * degrees — and it is 0.10 of a cell wide, which is 3.4 mm on the coarse
+       * layer and 0.7 mm on the fine one. A pixel of carriageway at the bottom
+       * of a standing frame is four to six millimetres across. So over almost
+       * the whole frame the renderer is point-sampling a sixty-five degree
+       * turnover inside a band narrower than the pixel, and which side of it
+       * the sample lands on is a coin toss that is re-tossed the moment the
+       * camera moves. That is the shimmer the walk harness measured: saturated
+       * at the smallest step, because the samples either side of a step are
+       * independent rather than nearby.
+       *
+       * 'vis' above does not catch it. 'vis' asks whether the *cell* is
+       * resolvable, and a 34 mm cell is perfectly resolvable at the same
+       * distance where its 3.4 mm rim is not — the two differ by the factor of
+       * ten between a stone and its edge. So the rim gets its own gate against
+       * its own width.
+       *
+       * What is removed here is not thrown away, it is moved. Below is the
+       * variance it represents, handed to the roughness in the normal hook: a
+       * pixel that contains a fraction of a steeply turned rim genuinely has a
+       * wider distribution of normals in it than one that does not, and
+       * widening the lobe by that amount is the correct rendering of the same
+       * surface rather than a blur of it. Appearance at rest is preserved
+       * where the feature is resolved, which for the coarse layer is about a
+       * metre and a half — closer than that the rim comes back and is drawn. */
+      float rv = 1.0 - sstep(0.35, 1.10, fwL / 0.10);
+      vec2 n = (tilt - dir * rim * 2.10 * rv) * (sock > 0.5 ? -0.85 : 1.0);
 
       /* The hard terminator, and it has to be shading rather than a normal.
        *
@@ -911,6 +970,26 @@ const ROAD_FRAG_BODY = /* glsl */ `
       float lw = L == 0 ? 1.0 : (L == 1 ? 0.82 : 0.64);
       float w = face * vis * lw;
       agN = mix(agN, n, w);
+
+      /* The variance the rim carries, which is what the roughness is owed.
+       *
+       * Two-state distribution inside the pixel: a fraction f of it is rim,
+       * turned over by the part of the amplitude the normal is no longer
+       * carrying, and the rest is flat. The variance of that is f(1-f)a², and
+       * it correctly goes to zero at both ends — a pixel entirely on the rim
+       * has no variation in it either. Stated as a deviation of the *unit*
+       * normal rather than of the tangent-space offset, because that is the
+       * currency the derivative-based term downstream is already in and the
+       * two have to be addable. */
+      float rf = clamp(0.10 / max(fwL, 1e-4), 0.0, 1.0);
+      /* Deliberately not multiplied by rim. Whether *this* sample landed on
+       * the rim is the very coin toss being filtered out; if the widening were
+       * keyed to it the roughness would alias in place of the normal. Once a
+       * pixel is a fair fraction of a cell every pixel straddles a rim, and rf
+       * already says how much of it. */
+      float ra = 2.10 * (1.0 - rv);
+      float ru = ra * inversesqrt(1.0 + ra * ra);
+      gNVar = mix(gNVar, rf * (1.0 - rf) * ru * ru, w);
       /* Tone spread, pulled in from 4.2. Under one sodium lamp a wide spread
        * read as a road; under direct sun at grazing incidence the near field
        * became a bed of bright pebbles — the "over-scaled gravel scatter" in
@@ -969,6 +1048,7 @@ const ROAD_FRAG_BODY = /* glsl */ `
    * amount of further tuning here is worth anything until that is settled. */
 #ifdef DEBUG_ROAD_NO_CHIPS
   agT = 0.0; agS = 0.0; agSock = 0.0; gChipN = vec2(0.0); gChipAO = 1.0; gChipSun = 1.0;
+  gNVar = 0.0;
 #endif
 
   /* ---- albedo ---- */
@@ -1433,7 +1513,20 @@ const ROAD_NORMAL_HOOK = /* glsl */ `
    */
   vec3 dnx = dFdx(normal), dny = dFdy(normal);
   float nvar = 0.5 * (dot(dnx, dnx) + dot(dny, dny));
-  float alpha = roughnessFactor * roughnessFactor + min(nvar * 2.2, 0.28);
+  /* Two terms, and they are kept separate because they measure two different
+   * things and neither can do the other's job.
+   *
+   * The derivative term sees features that span a few pixels: the baked normal
+   * map between mip levels, the macro relief, the ripple on standing water.
+   * The analytic term is the variance the chip loop declined to draw because
+   * it was below the footprint — see gNVar. Adding them is correct because
+   * both are variances of the same distribution, and capping them separately
+   * is deliberate: the first cap is signed-off behaviour from the streaking
+   * round and moving it would move the sunlit glitter path with it, while the
+   * second bounds only the new term and can be reasoned about on its own. */
+  float alpha = roughnessFactor * roughnessFactor
+              + min(nvar * uSpecAA.x, uSpecAA.y)
+              + min(gNVar * 2.2, 0.30);
   roughnessFactor = clamp(sqrt(alpha), 0.0, 1.0);
 #endif
 `;
@@ -1748,6 +1841,17 @@ export function makeRoadMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
   if (typeof location !== 'undefined' && location.search.includes('nospec')) {
     m.defines = { ...(m.defines ?? {}), DEBUG_NO_ROAD_SPEC: '' };
   }
+  /* The companion switch, for the temporal-stability investigation.
+   *
+   * DEBUG_ROAD_NO_CHIPS has existed in the shader since the attribution round
+   * on saturation but was never reachable from outside a recompile. The
+   * shimmer measurement needs exactly this pairing — the same walk with the
+   * analytic chip layer in and out — because the chip loop is the one part of
+   * the road evaluated per fragment with nothing prefiltering it, and it is
+   * the difference between the two runs that says whether it is the cause. */
+  if (typeof location !== 'undefined' && location.search.includes('nochips')) {
+    m.defines = { ...(m.defines ?? {}), DEBUG_ROAD_NO_CHIPS: '' };
+  }
 
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, artificialUniforms());
@@ -1757,6 +1861,7 @@ export function makeRoadMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
     shader.uniforms.uSunXZ = {
       value: new THREE.Vector2(SUN_DIR[0], SUN_DIR[2]).normalize(),
     };
+    shader.uniforms.uSpecAA = { value: specAAFromUrl() };
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `${WORLD_VARYINGS}\nvarying float vSettle;\nattribute float aSettle;\nvoid main() {`)
       .replace('#include <begin_vertex>', `${VERTEX_HOOK}\nvSettle = aSettle;`);

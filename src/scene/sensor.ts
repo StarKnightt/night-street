@@ -33,7 +33,43 @@ const SENSOR = /* glsl */ `
    * towards neutral, and because a warm frame with warm shadows has no colour
    * structure left in it at all. */
   gl_FragColor.rgb = gl_FragColor.rgb * 0.955 + vec3(0.0040, 0.0046, 0.0070);
+}
+`;
 
+/* Everything below this line used to be in the chunk above and now lives in
+ * `scene/grade.tsx`, and both halves of that move were forced.
+ *
+ * The first half is ordering, and the technique brief calls it out in advance
+ * (§5.1, §5.6): read noise, chroma blotch and dither are display-referred, and
+ * with a grade in the frame they have to land *after* it. As it stood, the
+ * grade's toe and its midtone plateau — both of which act hardest exactly
+ * where the noise lives — would amplify or crush the very thing the noise was
+ * calibrated against.
+ *
+ * The second half is the defect the walk harness found, and it is more
+ * interesting. Parking the camera and stepping the simulation produced a
+ * bit-identical frame: mean change 0.00 across nine regions. The hash was
+ * keyed to gl_FragCoord and to nothing else, so the pattern was fixed in
+ * screen space *and* fixed in time. Screen space is right — a sensor's read
+ * noise belongs to the sensor and not to the world, which is why anchoring it
+ * to anything in the scene would have been the wrong fix — but a pattern that
+ * is never redrawn is not noise, it is a dirty lens, and that is what it read
+ * as over a moving image. In the new home there is a frame counter to seed it
+ * with, which there was never going to be here: this chunk is compiled into
+ * every material in the scene and there is no uniform that all of them share.
+ *
+ * The pedestal stays. It is a black point, not noise; it is a property of the
+ * signal the sensor hands over rather than of the image made from it, so it
+ * belongs before the grade and it has nothing to be redrawn from.
+ *
+ * One consequence worth stating because it will otherwise be found the hard
+ * way: with ?nograde there is now no dither, so the sky will band. That is the
+ * correct behaviour for a switch whose entire purpose is to return the exact
+ * frame the screenshot archive was judged through, but it does mean ?nograde
+ * is not a way to look at the sky.
+ */
+const MOVED_TO_GRADE = /* glsl */ `
+{
   /* Chroma noise, loudest where the signal is weakest.
    *
    * Three independent channels rather than one luminance term: the
@@ -124,6 +160,8 @@ const SENSOR = /* glsl */ `
   gl_FragColor.rgb = max(gl_FragColor.rgb + blot * (0.00016 + 0.00060 * d2 * d2), 0.0);
 }
 `;
+
+void MOVED_TO_GRADE;
 
 let installed = false;
 
