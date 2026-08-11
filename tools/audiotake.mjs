@@ -81,7 +81,7 @@ await run({ width: 640, height: 360 }, async ({ page, errs }) => {
   console.log(`  master ${JSON.stringify(built.rep.master)}`);
 
   await page.keyboard.down('KeyW');
-  result = await page.evaluate(async ([seconds, look]) => {
+  result = await page.evaluate(async ([seconds, look, holds]) => {
     const s = window.__scene;
     const eng = window.__audio.engine;
     const ctx = eng.ctx;
@@ -124,10 +124,30 @@ await run({ width: 640, height: 360 }, async ({ page, errs }) => {
     t0 = performance.now() / 1000;
     const startZ = s.walker.z;
 
+    /* Release the keys the shot releases.
+     *
+     * KeyW is pressed from Node before this runs and held for the whole take,
+     * which was right for every route that walks from end to end and is wrong
+     * for one that stops. `walkH` releases at 27.2 and rests 0.6 s later, and a
+     * recording that kept walking would put five footsteps and 3.8 m of
+     * doppler under a picture of a camera standing still — audible, and exactly
+     * the kind of drift the alignment check downstream is meant to catch rather
+     * than to have caused.
+     *
+     * Dispatched on `window` rather than through Playwright because Node is
+     * blocked in this evaluate for the whole thirty seconds. It is the same
+     * listener and the same `code`; the only difference is `isTrusted`, which
+     * nothing in the input path reads. */
+    const releases = (holds || []).map(([code, , to]) => ({ code, to, done: false }));
     await new Promise((done) => {
       const tick = () => {
         const sec = performance.now() / 1000 - t0;
         if (sec >= seconds) { done(); return; }
+        for (const r of releases) {
+          if (r.done || sec < r.to) continue;
+          window.dispatchEvent(new KeyboardEvent('keyup', { code: r.code, bubbles: true }));
+          r.done = true;
+        }
         const [yw, pw] = lookAt(look, sec);
         const SENS = 0.0022;
         const dx = (s.walker.yaw - yw) / SENS;
@@ -148,7 +168,7 @@ await run({ width: 640, height: 360 }, async ({ page, errs }) => {
       b64, steps, startZ: +startZ.toFixed(3), endZ: +s.walker.z.toFixed(3),
       report: window.__audio.report(),
     };
-  }, [SECONDS, shot.look]);
+  }, [SECONDS, shot.look, shot.hold || null]);
   await page.keyboard.up('KeyW');
 
   const bad = errs.filter((e) => e.startsWith('[pageerror]'));

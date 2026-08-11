@@ -176,6 +176,9 @@ export class Walker {
   contact: string | null = null;
   /** How much of the pace the ground is taking: 1 free, 0 pressed into a car. */
   private stall = 1;
+  /** Unit heading of the last commanded move, held through the run-down. */
+  private headX = 0;
+  private headZ = 0;
 
   constructor() {
     this.snapGround();
@@ -225,7 +228,32 @@ export class Walker {
     let vx = (-sin * input.forward + cos * input.strafe);
     let vz = (-cos * input.forward - sin * input.strafe);
     const len = Math.hypot(vx, vz);
-    if (len > 1e-4) { vx /= len; vz /= len; } else { vx = 0; vz = 0; }
+    /* Let go of the key and the body keeps its heading while the pace runs out.
+     *
+     * `speed` already decelerates properly — it is the same smoothed term the
+     * acceleration ramp uses, and the gait is anchored to it, so a falling pace
+     * shortens the stride and slows the cadence with no foot slide. None of
+     * that was reaching the ground. Translation was `direction * speed`, and
+     * direction came straight from the input, so releasing forward multiplied
+     * the whole thing by zero: 1.4 m/s to a dead stop between one frame and the
+     * next, while the gait wound down over the next tenth of a second and the
+     * feet took two more steps on the spot. Deceleration was modelled and then
+     * gated out of existence.
+     *
+     * Keeping the last heading is the whole fix. `speed` decays at 9 per
+     * second, so the walk coasts 0.16 m over about 0.3 s and stops — short of a
+     * real pedestrian's half metre, but a curve rather than a corner, which is
+     * the difference that shows.
+     *
+     * This cannot disturb anything already shot. Every capture to date holds
+     * KeyW for the whole take, `len` is above the epsilon on every frame of
+     * them, and the branch below is never taken. */
+    if (len > 1e-4) {
+      vx /= len; vz /= len;
+      this.headX = vx; this.headZ = vz;
+    } else {
+      vx = this.headX; vz = this.headZ;
+    }
 
     const running = !!input.sprint && input.forward > 0;
     const target = len > 1e-4 ? (running ? SPRINT_SPEED : DIMS.walkSpeed) : 0;

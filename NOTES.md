@@ -49,7 +49,45 @@ through a `MediaStreamDestination` instead of summing the generators itself. The
 second defence is to read what the assembly says about itself: a non-empty
 `errors` array in `reel.json` is a finding, not noise.
 
-## `Walker` stops translating in one frame when forward input goes to zero
+## `Walker` stopped translating in one frame when forward input went to zero — fixed
+
+Fixed at 05:25 on delivery day, in the take that ships. The diagnosis below
+stands as written; what follows it is the fix and why it was safe to make with
+three hours left.
+
+The fix is four lines: remember the unit heading of the last commanded move and
+keep applying it while `speed` decays.
+
+```
+if (len > 1e-4) { vx /= len; vz /= len; this.headX = vx; this.headZ = vz; }
+else            { vx = this.headX; vz = this.headZ; }
+```
+
+The reason it could be made this late is that it is *provably inert for
+everything already captured*. Every take to date holds `KeyW` for its whole
+duration, so `len` is above the epsilon on every frame and the new branch is
+never entered. That is not an argument, it is checkable: `node tools/reel.mjs
+--dry --shot walkG` before and after the change returns the same x range, the
+same end z of -75.3, and the same closest approach of 0.854 m to van F at the
+same frame 700. A change that cannot alter the numbers on the existing route is
+a change that cannot invalidate the existing take.
+
+Measured afterwards, at 30 Hz: `speed` runs 1.400, 0.480, 0.165, 0.057, 0.019,
+0.007, 0.002, 0 over about 0.6 s, the walk coasts 109 mm, and eye height goes
+from bobbing to *exactly* still — 0.000 mm of range and 0.00 mm of translation
+across the final 1.5 s. Nothing about the stop is animated: the gait is anchored
+to pace, so a decaying pace shortens the stride and slows the cadence with the
+foot slide unchanged, and the last footfall lands where a last footfall would.
+
+Worth filing next to the `ConvolverNode` note above, because it is the same
+shape of bug. Deceleration was fully and carefully modelled — the asymmetric
+7-up/9-down smoothing, the bob scaling, the cadence term — and then multiplied
+by zero one line later by a direction vector taken straight from the input. As
+with the convolver, every part measured correct in isolation; it was the
+assembly that discarded the work. The tell is the same too: the symptom appears
+only in a state nothing had exercised yet.
+
+### The original diagnosis
 
 Not a bug in anything that has shipped — nothing has ever released `KeyW` mid
 take — but it is a trap for the next person who composes an ending.
@@ -79,6 +117,41 @@ heading and keep applying it while `speed` decays, which would also make
 releasing W in the interactive walk feel like stopping rather than like a pause
 button. Left undone deliberately: it changes the motion of every future capture
 and was found at 4:50 a.m. on delivery day.
+
+## Where an ending can go on this street, and why it is not the BAR sign
+
+Recorded because it is a property of the block rather than of one route, and
+the next person to compose an ending will otherwise rediscover it the slow way.
+
+Two things want to be in the last frame: the sun, and something to look at. The
+sun bands on the carriageway are z -49..-32 and z -84..-73. The only object on
+the street that will hold a two-second look is the BAR / COLD BEER blade at
+(5.16, -65.26), and a projecting blade has to be seen from up the road, which
+puts a sane camera position around 10 m short of it, near z -55.
+
+z -55 is in the shaded middle, and it is not close to either band. Everywhere
+the sign frames well is in shade, and everywhere in the light has already walked
+past it — by the time the camera is inside the second band the blade is 9 to
+14 m behind its shoulder. There is no rest point that has both. `walkF` chose
+the sign and ends dark; `walkH` chooses the light and ends on frontage.
+
+The east kerb compounds it. From z -64 to -78 it is continuously parked —
+hatches at -70.0 and -76.3 and the van behind them — so any rest point in the
+lit stretch has a car within a couple of metres on the right. The hatch at -76.3
+is the one car in the scene with direct sun on it, which sounds like the answer
+and is not: the flank facing a camera coming down the street is its *shaded*
+side, so at rest it reads as a dark mass across the bottom right rather than as
+a sunlit car. Two still seconds pointed at the asset with the see-through wheel
+arch and the two-cuboid mirror is the worst use of a held beat available.
+
+The heading is what solves it, not the position. `restlook` in `tools/shots.mjs`
+parks the walker on the rest point and holds three headings for six seconds
+each; a quarter radian west puts that car's near corner outside the half-width
+and fills the frame with sunlit stucco, shopfront glazing and eight metres of
+paving. Cost: p99 falls from 194 to 183, because the small very bright disc of
+haze at the end of the street leaves frame. Gain: p50 rises 68 to 70, p90 rises
+154 to 160, and the frame has near-field detail in it. A held frame should be
+judged on what is *in* it, and p99 over a 2-megapixel frame is 20,000 pixels.
 
 ## The shadowed-ground shimmer — closed, and the premise did not survive
 

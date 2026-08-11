@@ -395,8 +395,20 @@ await run({
         );
       }
 
-      if (f === 15 && shot.keys.includes('KeyW') && r.speed < 0.5) {
+      /* A shot that releases KeyW partway has to carry it in `hold`, which
+       * used to slip past this check — and the failure it guards against is
+       * silent, because a walk that never starts renders thirty seconds of
+       * perfectly plausible frames of a camera standing still. Count the key
+       * wherever it is declared. */
+      const drivesW = shot.keys.includes('KeyW')
+        || (shot.hold || []).some(([k, from]) => k === 'KeyW' && from <= 0);
+      if (f === 15 && drivesW && r.speed < 0.5) {
         throw new Error(`input did not reach the walker: speed ${r.speed} after 15 frames of KeyW`);
+      }
+      /* And the mirror of it: the release has to actually take. */
+      for (const [k, , to] of shot.hold || []) {
+        if (k !== 'KeyW' || Math.abs(sec - (to + 1)) > 0.5 / FPS) continue;
+        if (r.speed > 0.1) throw new Error(`KeyW release did not take: speed ${r.speed} 1s after ${to}`);
       }
       for (const [k, from] of shot.hold || []) {
         if (!k.startsWith('Shift') || Math.abs(sec - (from + 2)) > 0.5 / FPS) continue;

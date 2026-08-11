@@ -230,6 +230,105 @@ export const SHOTS = [
     ],
   },
   {
+    /* walkG, but it arrives: the same walk with the last 2.6 s at rest.
+     *
+     * Identical to `walkG` for 27.2 s — same start, same keys, same look table
+     * up to 26 — and then KeyW is released and nothing else happens. That
+     * matters for more than tidiness: the footfalls up to the release are the
+     * same footfalls, so an audio take cut against one route is still in step
+     * with the other for everything except the run-down.
+     *
+     * Why the stop is here and not on a sign. The obvious ending is the BAR /
+     * COLD BEER blade, and `walkF` below does exactly that. It cannot be had on
+     * this route, and the reason is geometric rather than a matter of taste.
+     * The blade hangs at (5.16, -65.26); to sit at a sane 0.5 rad off the
+     * street axis the camera has to rest about 10 m short of it, near z -55.
+     * The sun bands are z -49..-32 and z -84..-73. Anywhere the blade is
+     * well framed is in the shaded middle, and anywhere in the light has
+     * already walked past it. The whole point of this recut was to end in the
+     * sun, so the sign loses.
+     *
+     * So the subject is the light, and the rest point is chosen off the
+     * measured arc rather than by eye. Mean frame luminance along this route
+     * plateaus from about z -71 to z -74 — 84.1, 85.8, 84.5 at t 27, 28, 29 —
+     * so there is a three-metre window where stopping costs nothing. Release
+     * at 27.2 plus 0.16 m of coast rests the camera at z -71.5, the near end
+     * of it.
+     *
+     * The near end, specifically, because of what is on the east kerb. The
+     * sunlit hatch spans z -78.5..-74.1 and it is the only car in the scene
+     * with direct sun on it, which also makes it the only one that will hold a
+     * two-second look. From the rest point its rear corner is 2.6 m out at 65%
+     * of a half-width right and its far end is 7 m out at 26%, so it sits
+     * whole, inside the right third, with the shade line across it. Resting
+     * three metres further on — which the luminance would equally allow — puts
+     * the camera level with its tail, and then a car whose wheel arch is
+     * see-through and whose mirror is two cuboids is a wall down the right of
+     * the frame for the last two seconds. Same light, quarter of the quality.
+     *
+     * The camera settles rather than turning. `walkF` swings 0.39 rad onto its
+     * sign because there is a sign; here a turn of that size would either
+     * centre the weakest asset in the shot or throw away the sunlit road, so
+     * the tail drifts 0.028 rad and lifts to level, which reads as a head
+     * coming to rest. The arrival is carried by the deceleration — `speed`
+     * decaying at 9 per second, the stride shortening with it, the bob winding
+     * out — and by the last 1.5 s being two identical keyframes, so the camera
+     * is numerically still and the dust, the signal and the grain are the only
+     * things left moving. That is a held shot rather than a freeze, and it is
+     * the only invitation this clip makes to look at the paving instead of at
+     * motion. */
+    name: 'walkH',
+    t: 0.265,
+    place: [0.80, -33.5],
+    seconds: 30,
+    /* Empty, with KeyW in `hold`: releasing a key partway is the whole shot. */
+    keys: [],
+    hold: [['KeyW', 0, 27.2]],
+    look: [
+      [0.0, 0.000, -0.045],
+      [3.0, 0.030, -0.045],
+      [7.0, 0.050, -0.038],
+      [11.0, -0.025, -0.030],
+      [14.0, -0.055, -0.022],
+      [17.0, 0.045, -0.020],
+      [20.0, 0.090, -0.026],
+      [23.0, 0.045, -0.030],
+      [26.0, 0.020, -0.024],
+      /* The look leads the release by 400 ms, because that is the order the two
+       * happen in: you see the thing, then you stop. Almost all of the 0.26 rad
+       * is spent after the walker is at rest, so it is a head turning and not a
+       * steer — the walker steers where it looks, and the whole swing displaces
+       * the rest point by 40 mm.
+       *
+       * West, onto the frontage, and this was measured rather than guessed:
+       * `restlook` holds this rest point at three headings for six seconds
+       * each. Level, the sunlit hatch is a dark mass across the bottom right,
+       * because the flank facing the camera is its shaded side — the one car in
+       * the scene with sun on it is the one thing at this rest point that does
+       * not read as sunlit, and two still seconds is an invitation to stare at
+       * the asset with the see-through wheel arch. Pitched up trades the near
+       * paving for haze and keeps the car. A quarter of a radian west puts the
+       * car's near corner outside the half-width, leaves it as a corner weight,
+       * and fills the frame with the thing this clip is actually claiming:
+       * sunlit stucco, shopfront glazing with reflections in it, fire escapes,
+       * and eight metres of procedural paving running diagonally out of the
+       * bottom of the frame.
+       *
+       * It is not brighter, and that is the cost of the hold rather than of the
+       * heading. Measured on the three test framings, the turn is very slightly
+       * up on both counts — p50 72 against 69, p99 185 against 182 — but the
+       * walking ending reaches p99 229, because it carries on another 3.8 m and
+       * the haze glow at the end of the street grows as you approach it. Almost
+       * all of that gap is the two metres given up to stop in, not the heading.
+       * Mean and p90 are flat from z -71 to z -74, so the trade is a small area
+       * of very bright pixels against a still frame with the paving, the
+       * glazing and the air in it. */
+      [26.8, 0.035, -0.018],
+      [28.6, 0.298, -0.002],
+      [30.0, 0.298, -0.002],
+    ],
+  },
+  {
     /* The deliverable, second cut: the same walk, but it arrives.
      *
      * `walk` above is 40.7 m of correct street that stops mid-stride between
@@ -318,6 +417,38 @@ export const SHOTS = [
       [0.0, 0.010, -0.030],
       [2.0, -0.380, 0.125],
       [5.0, -0.380, 0.125],
+    ],
+  },
+  {
+    /* Three framings of `walkH`'s rest point, six seconds each, to settle an
+     * argument the still frames could not.
+     *
+     * Holding at z -71.5 puts the sunlit hatch in the right of the frame, and
+     * on paper that is the best subject available: the only car in the scene
+     * with direct sun on it. In the frame it is the near flank that faces the
+     * camera and the near flank is the shaded side, so it reads as a dark mass
+     * across the bottom right rather than as a sunlit car — and two still
+     * seconds is an invitation to look straight at the one asset that cannot
+     * take it. So the question is whether turning off it recovers the hold, or
+     * whether the hold is simply the wrong idea on this route.
+     *
+     * a: what walkH does now, level and slightly left.
+     * b: 0.25 rad further left, which puts the hatch's near corner outside the
+     *    half-width and leaves the west frontage, its glazing and the paving.
+     * c: level but pitched up 0.06, trading near paving for the haze glow at
+     *    the end of the street and the roofline. */
+    name: 'restlook',
+    t: 0.265,
+    place: [-0.12, -71.5],
+    seconds: 18,
+    keys: [],
+    look: [
+      [0.0, 0.048, -0.002],
+      [5.5, 0.048, -0.002],
+      [6.0, 0.298, -0.002],
+      [11.5, 0.298, -0.002],
+      [12.0, 0.048, 0.058],
+      [18.0, 0.048, 0.058],
     ],
   },
   {
