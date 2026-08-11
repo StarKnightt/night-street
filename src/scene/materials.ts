@@ -1651,7 +1651,7 @@ reflectedLight.indirectDiffuse *= mix(vec3(1.0), vec3(0.52, 1.00, 2.30),
  *
  * The three numbers:
  *
- *   0.34   the sky view factor. The bare-canyon formula above gives 0.42 at the
+ *   0.30   the sky view factor. The bare-canyon formula above gives 0.42 at the
  *          centreline; this is under it because the formula knows about two
  *          walls and nothing else, and this street has a parked vehicle every
  *          few metres down both kerb lines, a van a metre from the camera for
@@ -1681,7 +1681,7 @@ reflectedLight.indirectDiffuse *= mix(vec3(1.0), vec3(0.52, 1.00, 2.30),
  */
 #ifndef DEBUG_ROAD_NO_BOUNCE
 {
-  const float SVF = 0.34;
+  const float SVF = 0.30;
   const vec3  BOUNCE_CHROMA = vec3(1.075, 1.027, 0.507);
   const float BOUNCE_GAIN = 1.434;
   float dLit = dot(reflectedLight.directDiffuse, vec3(0.2126, 0.7152, 0.0722));
