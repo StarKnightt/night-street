@@ -12,5 +12,5 @@
     "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["tools/sys5.ts", "src/world/**/*.ts", "src/scene/env.ts", "src/scene/haze.ts"]
+  "include": ["tools/sys5.ts", "tools/sys6.ts", "src/world/**/*.ts", "src/scene/env.ts", "src/scene/haze.ts"]
 }

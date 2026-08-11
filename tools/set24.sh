@@ -68,3 +68,36 @@ $S "$T-neon"  --t 0.4 --yaw -0.188 --pitch 0.162 --fov 40 --name bar   --noTilt 
 $S "$T-neon"  --t 0.4 --yaw -0.042 --pitch 0.129 --fov 16 --name sig   --noTilt --keep \
    --js "$(AT 4.5 -52.0); if(window.__sys5) window.__sys5.freeze(26)"
 $S "$T-spill" --t 0.4 --yaw 0.553  --pitch -0.223 --fov 55 --name store --noTilt --js "$(AT -2.6 -20.5)"
+
+# System 6's five stops. Derived the same way System 5's were: tools/sys6.ts
+# runs the same layoutBlock the scene runs, reconstructs the two shadow-boundary
+# planes the sunward gaps sweep, checks that they reproduce block.ts's own stated
+# sun bands (-48.7..-31.9 and -83.7..-72.9 against a prose -49..-32 and -84..-73)
+# and prints the camera, the yaw and how many metres of lit air the centre ray
+# crosses. Nothing here was found by shooting the street and looking.
+#
+#   shaft/road  the near boundary of the main wedge where it crosses the
+#               carriageway, which runs (-3.15, -27.4) to (3.15, -36.4). That
+#               diagonal is the only edge a shaft has in this canyon and the
+#               whole argument against a raymarch rests on it existing.
+#   shaft/edge  the same wedge seen across rather than along: from the east kerb
+#               at z -26 to the shaded west frontage at -38, 8.7 m of lit air
+#               against a dark wall. The wedge's best case, and the frame to
+#               judge whether it reads as air or as a gradient.
+#   mote/sun    straight into the sun, which from (-1, -28) leaves the canyon
+#               through the cross-street gap. The centre ray crosses zero metres
+#               of wedge — the view direction lies *in* the boundary planes, which
+#               is the degenerate case the view gate exists for — so this stop
+#               tests the forward lobe and the mote field and nothing else.
+#   air/ladder  a 30-degree lens from the head of the walk: near kerb, mid block,
+#               backdrop and the closeout in one frame. The height falloff and the
+#               aerial perspective are both read here or nowhere.
+#   air/away    the anti-sun view, where the old one-sided lobe left the air at
+#               exactly the base density and the new phase function does not.
+$S "$T-shaft" --t 0.245 --yaw -0.0715 --pitch -0.100 --fov 55 --name road  --noTilt
+$S "$T-shaft" --t 0.4   --yaw 0.6051  --pitch 0.100  --fov 50 --name edge  --noTilt --keep \
+   --js "$(AT 2.6 -26.0)"
+$S "$T-mote"  --t 0.4   --yaw -0.6109 --pitch 0.0733 --fov 40 --name sun   --noTilt \
+   --js "$(AT -1.0 -28.0)"
+$S "$T-air"   --t 0.02  --yaw 0.0     --pitch 0.0    --fov 30 --name ladder --noTilt
+$S "$T-air"   --t 0.6   --yaw 2.5307  --pitch 0.050  --fov 45 --name away   --noTilt --keep
