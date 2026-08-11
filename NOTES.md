@@ -23,6 +23,34 @@ the three.
 - **Shaded ground balance.** Blue leads red by 18 counts. Plausible, but
   slightly cool — verify against reference before accepting.
 
+## Against the collider — reported, not fixed
+
+The walker collides and follows the ground as of `scene/collide.ts`. Three
+things it found in files that are not the collision pass's to edit.
+
+- **`tools/obstacles.mjs` is missing a car and has one dimension swapped.**
+  It lists eight cars; `PARKED` has nine — saloon M at z = -96.4 is not in it,
+  so `--dry` reports the last seven metres of the street as clear when it is
+  not. Its supermini half length is 1.98 against the shape table's 1.975. And
+  its dumpster is 1.83 across the street by 1.22 along it, which is the wrong
+  way round: `emitDumpster` puts the 1.83 dimension along the frame's u axis
+  and `frame()` points u down +Z for it, which is also the only reading that
+  leaves the 1.1 m of clear footway street3.ts's own comment claims. The
+  header of that file says it is a copy pending an export; the export now
+  exists as `carSolids()` in `world/cars.ts`, and `node tools/collide.mjs
+  drift` reports the disagreements.
+- **The footway furniture is still copied.** `scene/collide.ts` carries the
+  five positions from `buildStreetLevel`, because System 3 writes them as
+  literal arguments at the call site rather than as a table. Whoever next
+  touches `world/street3.ts` should lift them into an exported constant; the
+  collider will import it and the copy can go.
+- **The eye is no longer at a constant height.** It follows `roadHeight` and
+  `walkHeight`, so it sits about 1.64 m above the datum on the carriageway and
+  about 1.79 m on the footway. Anything that assumed 1.65 — the shadow
+  follower's centre, a haze height falloff, the audio engine's ground
+  reflection delay in `audio/design.ts` — is now looking at a camera that
+  moves 145 mm vertically when it steps up a kerb.
+
 ## Later polish
 
 - Window contrast on the far-distance backdrop blocks in `lit/86` is only 4–8
