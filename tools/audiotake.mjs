@@ -187,6 +187,20 @@ if (Number.isFinite(dur)) {
   }
 }
 
+/* The footfall times, written down.
+ *
+ * The alignment below is checked against whatever picture exists when this
+ * runs, and on a morning where the route is being recut underneath the audio
+ * that is not necessarily the picture the track gets muxed into. Writing the
+ * times out means the next person can diff them against a new `reel.json`
+ * without owning a GPU or re-recording anything. */
+const sidecar = path.join(outDir, `${SHOT}.steps.json`);
+fs.writeFileSync(sidecar, JSON.stringify({
+  shot: SHOT, seconds: SECONDS, recordedSeconds: dur,
+  startZ: result.startZ, endZ: result.endZ,
+  steps: result.steps,
+}, null, 2));
+
 /* Did the sound land where the picture did?
  *
  * The picture's footfalls are exact — a driven capture puts them on a known
