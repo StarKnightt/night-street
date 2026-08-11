@@ -154,19 +154,62 @@ void main() {
   float mu = max(dot(vdir, uSun), 0.0);
   float scatter = pow(mu, 5.0);
 
-  // Only in the beam. Low sun skims, so the lit slab is a band, not a volume.
-  float lit = smoothstep(0.10, 0.9, world.y) * (1.0 - smoothstep(2.2, 4.4, world.y));
+  /* Only in the beam. Low sun skims, so the lit slab is a band, not a volume.
+   *
+   * The lower half of this band is a proxy for something that is now measured
+   * properly a few lines down. It was written before the motes were gated on
+   * the sun's shadow map, when nothing in this shader knew where the buildings
+   * were and the only available way to say "the beam does not reach the
+   * bottom of a canyon" was to fade the motes out near the ground. The shadow
+   * map answers that question exactly, per mote, so the ramp is now a second
+   * opinion on a question that has already been settled — and it is wrong in
+   * the one place that matters most, because where the beam *does* reach the
+   * road through a gap in the frontage, the brightest and most photographic
+   * air in the scene is the half metre directly above the pavement, and this
+   * was fading precisely that out. See BAND_TOP below for the measurement. */
+  //__BAND__
   float twinkle = 0.45 + 0.55 * sin(uTime * 2.3 + aSeed.x * 40.0 + aSeed.z * 17.0);
 
-  /* Nothing above eye level, because up there it is a star.
+  /* Not against the sky, because against the sky a mote is a star.
    *
-   * A mote higher than the camera always projects above the horizon line, and
-   * against the sky a small bright additive point is indistinguishable from a
-   * star — which is exactly what reviewers found scattered through the upper
-   * right of five frames and read, reasonably, as debris left over from the
-   * night build. Dust at golden hour is something you see against the ground
-   * and against the haze, not against the sky. */
-  float belowHorizon = 1.0 - smoothstep(-0.05, 0.55, world.y - cameraPosition.y);
+   * A small bright additive point on the sky is indistinguishable from a star,
+   * which is what reviewers found scattered through the upper right of five
+   * frames and read, reasonably, as debris left over from the night build.
+   * Dust at golden hour is something you see against the ground, against a
+   * frontage and against the haze.
+   *
+   * This used to be stated as a height: nothing above eye level, since a mote
+   * higher than the camera always projects above the horizon line. That is a
+   * sound test for whether a mote is above the horizon and a poor one for
+   * whether it is on the sky, and the difference is most of a street. The
+   * canyon here is 11.4 m wide between frontages that are one to four storeys,
+   * so nearly every above-horizon direction is filled with building; the gate
+   * was discarding the top 0.4 m of the slab outright and attenuating the
+   * 0.6 m below it, in every direction, to solve a problem that exists in
+   * about a quarter of them.
+   *
+   * So ask the question directly: continue the view ray past the mote and see
+   * what it hits. If it crosses the building line below the eaves there is a
+   * facade behind the mote and it is safe at any height. If it clears the
+   * roofline, or runs so near the street axis that it never reaches a
+   * frontage at all — which is the vanishing point, the brightest sky in the
+   * frame, and exactly where the stars were seen — it is on sky and goes.
+   *
+   * ROOF is the lowest frontage in the row rather than the mean, because this
+   * has to be conservative in the one direction that matters: 4.5 m is the
+   * single-storey workshop from block.ts's east side, and using the mean would
+   * light motes on sky wherever the row steps down. The ramp starts 1.5 m
+   * below it so the transition is an edge and not a cut.
+   *
+   * Costs a divide and a smoothstep. The 1e-3 floor on the denominator is the
+   * street-axis case: it sends the crossing height to some hundreds of metres
+   * rather than to infinity, which lands in the same place the smoothstep
+   * does and avoids the special case. */
+  const float WALL_X = 5.7;    // BUILD_LINE, block.ts
+  const float ROOF = 4.5;      // lowest frontage in the row
+  float dxWall = (vdir.x >= 0.0 ? WALL_X : -WALL_X) - cameraPosition.x;
+  float hitY = cameraPosition.y + vdir.y * (abs(dxWall) / max(abs(vdir.x), 1e-3));
+  //__GATE__
 
   /* Can the sun actually see this mote?
    *
@@ -217,7 +260,7 @@ void main() {
     sun = mix(1.0, mix(0.05, 1.0, visible), inside);
   }
 
-  vGlow = scatter * lit * twinkle * belowHorizon * sun * (0.35 + 0.65 * aSeed.y);
+  vGlow = scatter * lit * twinkle * gate * sun * (0.35 + 0.65 * aSeed.y);
 
   /* Motes are motes: a couple of pixels at most. Sized generously they stop
    * being dust and become out-of-focus bokeh, which asserts a shallow depth of
@@ -244,6 +287,21 @@ void main() {
   gl_PointSize = clamp(uPixel * (0.75 + 1.9 * sz) / max(-mv.z, 0.6), 0.8, 3.4);
 }
 `;
+
+/* The two gates, substituted into the source rather than selected by a
+ * uniform, so the shipped build compiles neither the branch nor the term it
+ * does not use and a measured difference cannot be a cost difference.
+ * `?haze=eyegate` restores the old one; see the block above for why it went. */
+const GATE_SKY = 'float gate = 1.0 - smoothstep(ROOF - 1.5, ROOF, hitY);';
+const GATE_EYE = 'float gate = 1.0 - smoothstep(-0.05, 0.55, world.y - cameraPosition.y);';
+
+/* The height band, likewise switchable, because deleting half of it is a claim
+ * about the shadow gate that has to be falsifiable: if the ground ramp really
+ * is redundant then dropping it must leave the shaded part of the street
+ * unchanged, since the shadow map is then the only thing holding those motes
+ * down. `?haze=band` puts the old one back. */
+const BAND_FULL = 'float lit = smoothstep(0.10, 0.9, world.y) * (1.0 - smoothstep(2.2, 4.4, world.y));';
+const BAND_TOP = 'float lit = 1.0 - smoothstep(2.2, 4.4, world.y);';
 
 const FRAG = /* glsl */ `
 uniform float uPeak;
@@ -295,7 +353,19 @@ export function Dust() {
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
 
     const m = new THREE.ShaderMaterial({
-      vertexShader: VERT,
+      /* Both placeholders must appear exactly once in the source, and the
+       * first version of this failed because the word was also in the comment
+       * above the site: String.replace takes the first match, so the comment
+       * got the statement and the statement stayed a comment. `lit` was then
+       * undeclared, the whole points program failed to link, and every mote in
+       * the scene disappeared. The harness called it; the assertion is here so
+       * the next edit to those comments does not have to. */
+      vertexShader: [['//__GATE__', dustFlag('eyegate') ? GATE_EYE : GATE_SKY],
+                     ['//__BAND__', dustFlag('band') ? BAND_FULL : BAND_TOP]]
+        .reduce((src, [token, body]) => {
+          if (src.split(token).length !== 2) throw new Error(`dust: ${token} is not unique in the shader source`);
+          return src.replace(token, body);
+        }, VERT),
       fragmentShader: FRAG,
       uniforms: {
         uTime: { value: 0 },

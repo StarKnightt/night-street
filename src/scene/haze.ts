@@ -65,6 +65,36 @@ function hazeFlags(): Set<string> {
   return new Set(q ? q.split(',').map((s) => s.trim()).filter(Boolean) : []);
 }
 
+/* The fog vertex chunk, as a value, because one other material needs its own
+ * copy of it and a copy is how this breaks.
+ *
+ * The haze reads world position in the fragment stage, so the vertex chunk
+ * publishes a `vHazeWorld` varying that stock three does not have. The apron
+ * in materials.ts scales its own fog depth, which means it cannot use the
+ * shared chunk and has to replace `#include <fog_vertex>` with a block of its
+ * own — and that block therefore has to know to assign a varying belonging to
+ * this file. It did, by transcription, and that is a coupling with no
+ * compile-time link between the two ends: renaming the varying here, or
+ * dropping it from the chunk, fails the apron program with "l-value required
+ * (can't modify a const)" at a site that names neither this file nor the
+ * varying. Three surfaces it lazily on first draw, so it is a black apron and
+ * a console line rather than a build error. It cost a hard failure once.
+ *
+ * So the apron calls this instead of transcribing it. Both ends now move
+ * together, and the invariant that the varying is declared in every path —
+ * including the `off` control above, which drops the maths but keeps the
+ * declaration — lives in one file.
+ *
+ * @param depthScale multiplies fog depth for this material only. */
+export function hazeFogVertex(depthScale = 1): string {
+  const d = depthScale === 1 ? '' : ` * ${depthScale}`;
+  return `#ifdef USE_FOG
+  vFogDepth = - mvPosition.z${d};
+  vHazeWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+#endif
+`;
+}
+
 export function installHaze(sunDir: THREE.Vector3,
                             near: THREE.Color, sunward: THREE.Color) {
   const S = THREE.ShaderChunk;
@@ -85,10 +115,10 @@ export function installHaze(sunDir: THREE.Vector3,
    * "l-value required (can't modify a const)" — the identifier is not declared,
    * and three surfaces the failure lazily on first draw rather than at compile.
    *
-   * So the control declares the varying and drops only the maths. Reported to
-   * System 1 rather than fixed here: materials.ts is not this system's file,
-   * and the coupling is latent in the shipped build too — anything that stops
-   * this chunk publishing vHazeWorld silently kills the apron program. */
+   * So the control declares the varying and drops only the maths. The apron
+   * end is now hardened too — it calls hazeFogVertex() below instead of
+   * transcribing it — but this path still has to declare the varying, because
+   * the apron assigns it whether or not the haze maths are installed. */
   if (F.has('off')) {
     S.fog_pars_vertex = `
 #ifdef USE_FOG
@@ -650,12 +680,7 @@ ${WEDGE}
   varying vec3 vHazeWorld;
 #endif
 `;
-  S.fog_vertex = `
-#ifdef USE_FOG
-  vFogDepth = - mvPosition.z;
-  vHazeWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
-#endif
-`;
+  S.fog_vertex = hazeFogVertex();
 
   void near;
 }
