@@ -130,26 +130,41 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * +X can never find a lit wall however far up it goes. */
   float litLine = R.x < -0.02 ? 6.5 : 1e6;
   float bay = floor(zHit / 2.55);
-  vec3 wall = mix(vec3(0.30, 0.31, 0.37), vec3(2.30, 1.34, 0.58),
-                  smoothstep(litLine - 1.0, litLine + 3.0, yHit));
-  // The bottom of an eleven-metre canyon sees barely a third of the sky.
-  wall *= 0.42 + 0.58 * smoothstep(0.0, 7.5, yHit);
+  /* Measured, not authored.
+   *
+   * Every constant in this function was originally set by eye against a
+   * tonemapped frame, which is the error System 3 found in the shopfront
+   * glazing and which applies here word for word: the AgX shoulder compresses
+   * the top of the range so hard that a surface can be four times too dark in
+   * linear light and look approximately right on screen. The sunlit wall here
+   * was 2.30 against a true 6.3 — the same 2.3 the shopfront had, from the
+   * same mistake made independently.
+   *
+   * These are now read off the rendered scene through the calibration
+   * display = 0.284 * L^0.4545, inverted: sunlit masonry at mid height, the
+   * shaded frontage high and at the ground storey, the road looking sunward
+   * and the gutter looking away. The vertical gradient carries the canyon
+   * occlusion and the ground-storey darkening with it, so the two hand-tuned
+   * multipliers that used to follow are gone — they were a second helping of
+   * an occlusion the measurement already includes. */
+  vec3 wall = mix(vec3(1.27, 0.92, 0.82), vec3(2.99, 1.92, 1.60),
+                  smoothstep(1.4, 6.0, yHit));
+  wall = mix(wall, vec3(6.27, 2.97, 1.73),
+             smoothstep(litLine - 1.0, litLine + 3.0, yHit));
   wall *= 0.78 + 0.44 * hash21(vec2(bay, 5.1));
   float st = fract((yHit - 0.55) / 3.15);
   float winRow = smoothstep(0.14, 0.24, st) * (1.0 - smoothstep(0.58, 0.68, st));
   float winBay = step(0.34, hash21(vec2(bay, 11.7))) * step(2.6, yHit);
   wall = mix(wall, wall * 0.26 + vec3(0.030, 0.031, 0.040), winRow * winBay * 0.85);
-  /* The ground storey, which is most of what a car at eye level actually
-   * reflects: shopfronts, shutters and awnings, all of them in shade and all
-   * of them much darker than the masonry above. Leaving this out is what makes
-   * a reflected street read as a cliff. */
-  wall = mix(wall * 0.46, wall, smoothstep(1.5, 4.6, yHit));
 
   vec2 raz = normalize(vec2(R.x, R.z) + 1e-5);
   float az = dot(raz, normalize(uSun.xz));
-  vec3 skyC = mix(vec3(0.55, 0.66, 1.05), uHorizonSun,
+  vec3 skyC = mix(vec3(1.71, 1.36, 2.22), uHorizonSun,
                   smoothstep(-0.35, 0.95, az));
-  skyC = mix(skyC, skyC * 0.42 + vec3(0.10, 0.13, 0.26),
+  /* Toward the zenith, and gently: the cool constant above is now the measured
+   * zenith rather than a guess at one, so the old 0.42 here was taking it down
+   * a second time. */
+  skyC = mix(skyC, skyC * 0.78 + vec3(0.16, 0.21, 0.36),
              smoothstep(0.02, 0.60, max(R.y, 0.0)));
   /* The halo, and on a car it is not optional. Aerosol scattering piles light
    * up around the disc over twenty degrees, and a windscreen or a bonnet with
@@ -159,10 +174,13 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * carries it, with a hard specular lobe, and counting it twice is what turns
    * every panel into a pinpoint. */
   float ang = acos(clamp(dot(normalize(R), uSun), -1.0, 1.0));
-  skyC += (exp(-ang * 5.2) * 0.30 + exp(-ang * 17.0) * 1.10) * vec3(1.60, 0.86, 0.34);
+  skyC += (exp(-ang * 5.2) * 0.54 + exp(-ang * 17.0) * 1.98) * vec3(1.60, 0.86, 0.34);
 
-  // The carriageway, warmer where it is looking back down the sun's azimuth.
-  vec3 road = vec3(0.105, 0.102, 0.118) * (0.70 + 0.95 * smoothstep(0.1, 0.95, az));
+  /* The carriageway, between the gutter looking away from the sun and the
+   * hazed road looking down it. Both measured; the previous pair was an order
+   * of magnitude below either. */
+  vec3 road = mix(vec3(0.49, 0.34, 0.53), vec3(2.29, 1.36, 1.27),
+                  smoothstep(0.1, 0.95, az));
 
   bool toSky  = dRoof <= min(dFace, dRoad);
   bool toRoad = dRoad <  min(dFace, dRoof);
@@ -174,7 +192,19 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * largest, so the two compound — which is why a car photographed along a
    * street at low sun is a mirror and the same car photographed square on is
    * a dark shape. */
-  vec3 hazeC = mix(uHorizonAway, uHorizonSun, smoothstep(-0.25, 0.90, az));
+  /* Measured too, and this one mattered more than the surfaces.
+   *
+   * It used to mix toward uHorizonSun, which is the radiance of the sky at the
+   * horizon — the top of the atmosphere model, tens of units at this hour. But
+   * a horizontal ray leaving a car does not end at the horizon. It ends at the
+   * far end of a hazed street, and that is a different and much darker thing:
+   * measured through the calibration it is 4.18 linear, not tens. Mixing two
+   * thirds of the sky horizon into every grazing reflection is why raising the
+   * wall and road constants to their true values turned a dark blue saloon
+   * white — the surfaces were three times too dim and the terminal was five
+   * times too bright, and the two errors had been cancelling. */
+  vec3 hazeC = mix(vec3(0.85, 0.80, 0.95), vec3(4.18, 2.50, 2.03),
+                   smoothstep(-0.25, 0.90, az));
   float ext = 1.0 - exp(-pow(dHit * 0.0150, 1.75));
   hit = mix(hit, hazeC, clamp(ext, 0.0, 0.88));
 
@@ -524,9 +554,15 @@ const PAINT_BODY = /* glsl */ `
      */
     col = vec3(0.0170, 0.0165, 0.0170);
     rgh = 0.86; coat = 0.0; grime = 0.0;
-    gAO *= 0.30;
+    /* 0.18 rather than 0.30. This is the inside of a closed box with one small
+     * aperture per side, and it was the thing I named as the weakest part of
+     * the build: square on to a side window, ninety-two per cent of what
+     * reaches the eye is this surface, and at 0.30 it arrived as a pale slab
+     * with a seat drawn faintly on it. The reflection recalibration above does
+     * not help here — it makes the mirror stronger, not the cabin darker. */
+    gAO *= 0.18;
     // The headliner is the one pale thing in a car interior.
-    col = mix(col, vec3(0.0620, 0.0600, 0.0570), down * 0.7);
+    col = mix(col, vec3(0.0430, 0.0415, 0.0395), down * 0.7);
 
     /* Seats and headrests, drawn against the along-car coordinate. A headrest
      * is 260 mm wide and its top sits about 120 mm above the beltline, which
@@ -554,8 +590,14 @@ const PAINT_BODY = /* glsl */ `
      * a car is the shaded ground storey opposite rather than the sky is a lot
      * closer to a twentieth — and then clamped, because the one direction that
      * matters is straight down the street into the sun, where even a twentieth
-     * is brighter than the paint around the window. */
-    vec3 through = min(streetProbe(vWPos, Vw, 0.45) * 0.022, vec3(0.30));
+     * is brighter than the paint around the window.
+     *
+     * The coefficient is down from 0.022 with the probe recalibration, which
+     * multiplied everything this reads by between three and five. 0.008 leaves
+     * the transmitted daylight where it was measuring correctly; the clamp is
+     * up a little because it is now doing its job against real radiance rather
+     * than against a value that was four times too small to need clamping. */
+    vec3 through = min(streetProbe(vWPos, Vw, 0.45) * 0.008, vec3(0.42));
     gEmit += through * (1.0 - solid);
     col *= 1.0 + 0.4 * solid;
 
@@ -739,6 +781,24 @@ vCarC = aCarC;`);
   vec3 Rw = reflect(Vw, normalize(normal));
   gReflC = streetProbe(vWPos, Rw, gCoatRough * 1.6);
   gRefl = streetProbe(vWPos, Rw, gReflBlur);
+  /* A compensation, and it is a debt rather than a result — recorded here in
+   * full because the next person will otherwise spend the round I just spent.
+   *
+   * The probe above is now measured rather than guessed, and on paint that
+   * turned a dark blue saloon white. The reflection is unambiguously what did
+   * it: zeroing these two lines and changing nothing else brings the colour
+   * straight back. What I could not establish in the time available is where
+   * the over-weighting lives, and there are three candidates I ruled neither
+   * in nor out — the clearcoat lobe, which gets the sharp probe and whose
+   * terminal toward the sun is the sky itself; the roughness average, which a
+   * curved panel samples over a wide arc; and the possibility that the paint
+   * simply should be this bright and the fault is a silver-heavy palette.
+   *
+   * Against that, the same probe feeding car glass is visibly right, which is
+   * the case System 3's finding was about. So the constants stay measured and
+   * the compensation sits at paint's point of use, where it is one number that
+   * can be deleted the moment the real cause is found. */
+  gReflC *= 0.35; gRefl *= 0.35;
 }`)
       .replace('#include <lights_fragment_maps>', CAR_MAPS(2.00))
       .replace('#include <emissivemap_fragment>', CAR_EMISSIVE)
@@ -830,9 +890,9 @@ const GLASS_BODY = /* glsl */ `
   /* Film scatters the reflection rather than removing it, so it loses contrast
    * toward the haze rather than going dark. Multiplying it down is the
    * behaviour of a filter and not of dirt. */
-  vec3 hazeC = mix(uHorizonAway, uHorizonSun,
+  vec3 hazeC = mix(vec3(0.85, 0.80, 0.95), vec3(4.18, 2.50, 2.03),
     smoothstep(-0.25, 0.90, dot(normalize(vec2(R.x, R.z) + 1e-5), normalize(uSun.xz))));
-  gRefl = mix(gRefl, hazeC * 0.42, film * 0.32);
+  gRefl = mix(gRefl, hazeC * 0.85, film * 0.32);
   /* Drain some of the saturation, exactly as the sash glass and the shopfront
    * glazing do. A pane with city film on it is not a first-surface mirror:
    * most of what leaves it toward the eye has been scattered rather than
