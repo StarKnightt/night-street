@@ -93,9 +93,26 @@ parked car is a defect in the route.
 node tools/route.mjs heroE          # trace a route against the real collider
 node tools/airtime.mjs heroE        # dust per frame, second by second
 node tools/audiotake.mjs heroE      # record the audio at real speed
+node tools/expose.mjs shots/heroI/night-street-1080p30.mp4
+node tools/expose.mjs a.mp4 b.mp4 --at 3.5,29.3   # p50 / p99 / max / clipped
 node tools/deliver.mjs heroE --fps 60 --half --mbps 12
+node tools/deliver.mjs heroI --mux --audio track.wav   # onto the verified file
 node tools/digestcheck.mjs shots/heroE/reel.json
 ```
+
+`expose.mjs` answers "does the clip end brighter than it starts", which is the
+one question about this take that cannot be settled by looking, because the eye
+adapts across thirty seconds and the whole point of the route is a slow arc.
+Without an argument it prints the arc a second at a time; with `--at` it prints
+the four measures a still is judged on, counted from raw gray8 rather than
+estimated. Both modes ask ffmpeg for `out_range=full`, and that matters: the
+review encode off the frame sequence is full-range and the delivered file is
+limited-range, so the same highlight reads 255 in one and 243 in the other, and
+a pixel that clips on screen gets reported as absent.
+
+`deliver.mjs --mux` stream-copies an already-encoded picture and adds only the
+AAC. Audio arrives last on a deadline, and re-encoding to add it would ship a
+file that is not the file the measurements were run against.
 
 `route.mjs` exists because `--dry` reports against `tools/obstacles.mjs`, which
 has drifted from `world/cars.ts` — one car short, the dumpster's half-extents
@@ -190,6 +207,7 @@ tools/         harness.mjs, shoot.mjs, px.mjs, diag.mjs
   route.mjs      trace a route against scene/collide.ts and the landmarks
   airtime.mjs    dust motes per frame along a take
   audiotake.mjs  record the procedural audio, aligned to the picture
+  expose.mjs     the luminance arc, and the four measures a still is judged on
   deliver.mjs    encode the mp4s a social timeline will re-encode well
   digestcheck.mjs  did the tree that rendered a take change since?
 ```
