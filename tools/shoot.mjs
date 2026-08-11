@@ -61,7 +61,7 @@ const outDir = path.join(ROOT, 'shots', tag);
 if (!args.includes('--keep')) fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 
-await run({ width: W, height: H }, async ({ page, errs, gl }) => {
+await run({ width: W, height: H }, async ({ page, errs, gl, readShaderErrors }) => {
   await page.evaluate(([fov, js]) => {
     const s = window.__scene;
     if (fov) { s.camera.fov = fov; s.camera.updateProjectionMatrix(); }
@@ -121,12 +121,17 @@ await run({ width: W, height: H }, async ({ page, errs, gl }) => {
   console.log(`\n  steady: ${perf.fps} fps   calls=${perf.calls} tris=${(perf.triangles / 1000).toFixed(0)}k`);
   console.log(`  adapter: ${gl.renderer}`);
 
+  /* Read after every stop has rendered. Three link-checks a program on its
+   * first draw, so a material that only appears at the far end of the walk
+   * does not report until that stop has been captured. */
+  const shaderErrors = await readShaderErrors();
+
   fs.writeFileSync(
     path.join(outDir, 'report.json'),
     JSON.stringify({
       tag, when: new Date().toISOString(), viewport: [W, H],
       gl, camera: { yaw: YAW, pitch: PITCH, fov: FOV || 45 },
-      perf, results, errors: [...new Set(errs)],
+      perf, results, errors: [...new Set(errs)], shaderErrors,
     }, null, 2),
   );
   /* Say what was written, and fail if it was not.

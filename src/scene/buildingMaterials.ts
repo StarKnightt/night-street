@@ -30,7 +30,12 @@ import { BUILD_LINE } from '@/world/block';
 
 /* ── Shared plumbing ────────────────────────────────────────────────────── */
 
-const FACADE_VARYINGS = /* glsl */ `
+/* Exported so System 3's street-level materials share them rather than copy
+ * them. CANYON already carries the note about what two byte-identical copies
+ * of a shared shader fragment cost: the next person to tune one produces a
+ * visible seam along every junction between the two surfaces, and a shopfront
+ * meets the wall it is set into along its entire perimeter. */
+export const FACADE_VARYINGS = /* glsl */ `
 varying vec3 vWPos;
 varying vec3 vWN;
 varying vec3 vWT;
@@ -45,7 +50,7 @@ varying vec3 vWB;
  * points keeps it stable on horizontal surfaces — copings, sills and roof
  * decks — where cross(N, up) collapses to zero and an undefined tangent turns
  * every analytic normal into a NaN. */
-const FACADE_VERTEX = /* glsl */ `
+export const FACADE_VERTEX = /* glsl */ `
 #include <begin_vertex>
 vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vWN = normalize(mat3(modelMatrix) * objectNormal);
@@ -110,7 +115,7 @@ vWB = cross(vWT, vWN);
  * parapet — which is the single most recognisable thing about a street canyon
  * at this hour and was entirely missing before.
  */
-const skyLift = (gain: number) => /* glsl */ `
+export const skyLift = (gain: number) => /* glsl */ `
 #include <lights_fragment_end>
 reflectedLight.indirectDiffuse =
   canyonSky(reflectedLight.indirectDiffuse, vWN, vWPos.y) * ${gain.toFixed(2)};
@@ -151,7 +156,7 @@ reflectedLight.indirectDiffuse +=
 `;
 
 /** Perturb the shading normal by an analytic height gradient, in metres. */
-const FACADE_NORMAL = /* glsl */ `
+export const FACADE_NORMAL = /* glsl */ `
 normal = normalize(vWN - vWT * gSlope.x - vWB * gSlope.y);
 `;
 

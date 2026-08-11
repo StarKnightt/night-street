@@ -1932,8 +1932,10 @@ Screed screed(vec2 p, float px){
 
 const WALK_FRAG_HEAD = /* glsl */ `
 vec2 gScreedN = vec2(0.0);
+float gGraze = 0.0;
 uniform float uBuildLine;
 uniform float uKerbEdge;
+uniform vec2 uSunXZ;
 ${WORLD_VARYINGS}
 
 /* Joint layout.
@@ -2093,6 +2095,79 @@ const WALK_FRAG_BODY = /* glsl */ `
   Screed sc = screed(p, wpx);
   gScreedN = sc.n;
 
+  /* Grazing self-shadow, and it is the missing half of this surface.
+   *
+   * Directly sunlit flags were coming out as a flat cream field with no
+   * joints, no grain and no grime, while flags forty pixels away in shade
+   * carried the lot. Measured, the sunlit patch has a standard deviation of
+   * 4.3 counts on a mean of 180 and the shaded patch 3.6 on a mean of 30 —
+   * the same absolute texture, one twelfth of the relative contrast. So the
+   * detail was never removed. It is all still there in albedo, and albedo is a
+   * multiplicative term, which means it delivers a constant *ratio* of
+   * variation into the tone curve; AgX's shoulder then flattens that ratio
+   * about five times harder up at the sunlit level than it does down in the
+   * shade. The closing pass that moved paving relief into albedo to kill the
+   * white-granule blowout did fix the blowout, and this is its bill.
+   *
+   * Raising the albedo amplitude would be the wrong remedy twice over: it
+   * would have to be enormous to survive the shoulder, and it would move the
+   * shaded side, which is signed off. What is actually absent from the model
+   * is a real effect, and one that exists only in the condition that is
+   * broken. A sun four degrees up casts a two-millimetre shadow off a
+   * half-millimetre grain — four grain diameters — so raking light does not
+   * illuminate concrete evenly, it shadows most of it and skims the rest, in
+   * streaks running along the sun's azimuth. That is a bounded multiplier on
+   * the *direct* term alone, so it cannot touch a shaded pixel: a shaded pixel
+   * has no direct term to multiply. It also cannot blow anything out, because
+   * it only ever subtracts. */
+  {
+    vec2 sd = normalize(uSunXZ);
+    /* Sampled in a frame stretched seven to one along the sun, because a
+     * shadow twenty times longer than the grain that casts it does not read as
+     * speckle, it reads as streaks. */
+    vec2 q = vec2(dot(p, sd) * 0.14, dot(p, vec2(-sd.y, sd.x)));
+    float gv2 = 1.0 - sstep(0.35, 1.1, wpx / 0.0055);
+    float shade = sstep(0.34, 0.88, unit(wfbm(q * 195.0, 3))) * gv2;
+    // The voids and popouts throw shadows an order of magnitude longer.
+    float hv = 1.0 - sstep(0.35, 1.1, wpx / 0.030);
+    shade = max(shade, sstep(0.70, 0.96, unit(wfbm(q * 33.0 + 9.0, 2))) * hv * 0.9);
+    /* Broad wear, and this is the component that survives to forty metres.
+     *
+     * The two above are grain and voids, and both are correctly withdrawn once
+     * they fall under a pixel — but the review's frame is a sunlit footway at
+     * that distance, so withdrawing them leaves nothing at all. Paving does not
+     * wear flat: it dishes, it settles, it lifts at one corner of a flag, all at
+     * the scale of a slab, and against a four-degree key a three-millimetre
+     * dish across three hundred is a shadow you can see from the far end of the
+     * street. Metre-scale, so it is still above the footprint where the fine
+     * work has gone. */
+    float wv = 1.0 - sstep(0.35, 1.1, wpx / 0.14);
+    vec2 qw = vec2(dot(p, sd) * 0.55, dot(p, vec2(-sd.y, sd.x)));
+    shade = max(shade, sstep(0.46, 0.92, unit(wfbm(qw * 6.5 + 27.0, 3))) * wv * 0.52);
+    /* And the joints, which is the feature the review actually named.
+     *
+     * A joint is a five-millimetre recess, and at 4.2 degrees five millimetres
+     * of depth throws sixty-eight of shadow — thirteen times the width of the
+     * groove. So a slab joint in raking light is not a thin dark albedo line,
+     * it is a bold band lying downsun of itself, and that is why the flags read
+     * in shade, where the groove is doing the work honestly, and vanish in sun,
+     * where the groove is all there is and the tone curve has flattened it. The
+     * second sample is taken up-sun of this fragment: it asks not "am I in a
+     * joint" but "was the light that should have reached me blocked by one".
+     * Three of them, at increasing distance and decreasing weight, because one
+     * lands the shadow as a dotted line — the groove is well under a pixel at
+     * this range and a single point sample of it drops in and out along its
+     * own length. Three samples across the penumbra fill it in and also make
+     * it the width it should be, which is thirteen grooves. */
+    vec2 sID2;
+    float js = j.x;
+    js = max(js, walkJoints(p - sd * 0.022, sID2).x * 0.95);
+    js = max(js, walkJoints(p - sd * 0.046, sID2).x * 0.84);
+    js = max(js, walkJoints(p - sd * 0.070, sID2).x * 0.66);
+    shade = max(shade, js);
+    gGraze = clamp(shade, 0.0, 1.0);
+  }
+
   vec3 c = diffuseColor.rgb;
   c *= clamp(1.0 + sc.t * 0.90, 0.10, 2.1);
   // Down in the joint: dark, but not black — there is grit in there catching
@@ -2208,6 +2283,12 @@ float aoGap = max(uBuildLine - abs(vWPos.x), 0.0);
 reflectedLight.indirectDiffuse =
   canyonSky(reflectedLight.indirectDiffuse, vWNormal, vWPos.y)
   * mix(0.26, 1.0, sstep(0.0, 0.95, aoGap)) * 1.20;
+/* Direct only. See the long note where gGraze is built: the shaded half of
+ * this surface is signed off and must not move, and applying the term here is
+ * what guarantees it cannot — there is no direct light in shadow to attenuate.
+ * It is also the reason this is a shadowing term and not a brighter albedo. */
+reflectedLight.directDiffuse *= 1.0 - gGraze * 0.55;
+reflectedLight.directSpecular *= 1.0 - gGraze * 0.70;
 `;
 
 const WALK_NORMAL_HOOK = /* glsl */ `
@@ -2296,6 +2377,9 @@ export function makeWalkMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
     };
     // The front edge of the flag course, over the back of the kerb.
     shader.uniforms.uKerbEdge = { value: DIMS.roadHalf + DIMS.kerbDepth };
+    shader.uniforms.uSunXZ = {
+      value: new THREE.Vector2(SUN_DIR[0], SUN_DIR[2]).normalize(),
+    };
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `${WORLD_VARYINGS}\nvoid main() {`)
       .replace('#include <begin_vertex>', VERTEX_HOOK);

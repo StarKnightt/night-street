@@ -75,6 +75,59 @@ function prism(
   q([u0, y0 - t, dA], [u0, y0, dA], [u0, y0, dB], [u0, y0 - t, dB]);
 }
 
+/* ── The ground storey, shared with System 3 ────────────────────────────── */
+
+/**
+ * The two levels that bound a shopfront: the top of the plinth it stands on
+ * and the head of the opening, both in world height.
+ *
+ * Exported because System 3 has to land its stall risers, glazing and fascias
+ * inside exactly the holes System 2 punched. These were inline constants in
+ * `emitBuilding` and duplicating them in the shopfront builder would have been
+ * a guaranteed future misalignment — a stall riser 40 mm below the plinth it
+ * sits on is daylight through the bottom of every shop on the street.
+ */
+export function groundLevels(b: Bldg): { plinthTop: number; openTop: number } {
+  return { plinthTop: b.base + b.plinth, openTop: b.base + b.gh - b.fascia };
+}
+
+/** The shopfront openings in a ground storey, in facade u, with their recess. */
+export function groundOpenings(b: Bldg): { u0: number; u1: number; rec: number }[] {
+  const out: { u0: number; u1: number; rec: number }[] = [];
+  for (let i = 0; i < b.bays; i++) {
+    const a = 0.25 + i * b.bayW + b.pier * 0.5;
+    const z = 0.25 + (i + 1) * b.bayW - b.pier * 0.5;
+    if (z - a > 1.15) out.push({ u0: a, u1: z, rec: 0.15 + h2(b.seed * 100, a) * 0.10 });
+  }
+  return out;
+}
+
+/**
+ * The centre of every masonry pier in a ground storey, the two ends included.
+ *
+ * Wall furniture at street level has to stand on one of these. A meter box or
+ * a conduit drop placed at a hashed u along the elevation lands in front of a
+ * shopfront window about two thirds of the time, which was invisible while the
+ * openings were closed by a flat placeholder panel and is a box floating in
+ * mid-air over the glass the moment System 3 glazes them.
+ */
+export function pierCentres(b: Bldg): number[] {
+  const holes = groundOpenings(b);
+  if (holes.length === 0) return [b.L * 0.5];
+  const out = [holes[0].u0 * 0.5];
+  for (let i = 1; i < holes.length; i++) out.push((holes[i - 1].u1 + holes[i].u0) * 0.5);
+  out.push((holes[holes.length - 1].u1 + b.L) * 0.5);
+  return out;
+}
+
+/** Snap a wall-furniture position to the nearest pier centre. */
+function onPier(b: Bldg, u: number): number {
+  const piers = pierCentres(b);
+  let best = piers[0];
+  for (const p of piers) if (Math.abs(p - u) < Math.abs(best - u)) best = p;
+  return best;
+}
+
 /**
  * A horizontal band of wall with rectangular holes punched in it.
  *
@@ -425,10 +478,17 @@ function emitFurniture(c: WinCtx): void {
     }
   }
 
-  // A meter box or a stand pipe at street level.
+  /* A meter box or a stand pipe at street level, and it goes on a pier.
+   *
+   * These used to be placed at a hashed u anywhere along the elevation, which
+   * put them in front of a ground floor opening most of the time. That was
+   * invisible while the openings were closed by a flat panel 150 mm back and
+   * is a steel box hanging in mid-air over a shop window now that System 3
+   * glazes them. A meter cupboard goes on solid wall in any case — there is
+   * nothing behind a shopfront to fix one to. */
   if (h2(s, 3.3) > 0.45) {
     M.attr('aMetal', s * 13, 5);
-    const u = 0.6 + h2(s, 8.1) * Math.max(0.5, b.L - 1.6);
+    const u = onPier(b, 0.6 + h2(s, 8.1) * Math.max(0.5, b.L - 1.6)) - 0.21;
     mf.box(u, u + 0.42, b.base + 0.85, b.base + 1.42, d, d + 0.17);
     // The door and its frame: two rebates, and at this sun angle the vertical
     // one on the sunward side is a hard black line the height of the box.
@@ -437,7 +497,7 @@ function emitFurniture(c: WinCtx): void {
   }
   if (h2(s, 4.9) > 0.62) {
     M.attr('aMetal', s * 19, 3);
-    const u = 0.6 + h2(s, 2.2) * Math.max(0.5, b.L - 1.6);
+    const u = onPier(b, 0.6 + h2(s, 2.2) * Math.max(0.5, b.L - 1.6));
     mf.box(u - 0.055, u + 0.055, b.base + 0.1, b.base + 1.05, d, d + 0.11);
     mf.box(u - 0.09, u + 0.09, b.base + 1.05, b.base + 1.18, d, d + 0.14);
   }
@@ -460,7 +520,15 @@ function emitFurniture(c: WinCtx): void {
    * the shader that cannot produce a mirror highlight. */
   if (h2(s, 6.6) > 0.5) {
     M.attr('aMetal', s * 23, 3);
-    const y = b.base + 2.55 + h2(s, 1.1) * 0.8;
+    /* Above the shopfront, not across it.
+     *
+     * At b.base + 2.55 to 3.35 this run was inside the ground floor opening —
+     * the head of one is 2.9 to 4.1 m up — so it crossed the glazing rather
+     * than the wall, and its drop then ran down the middle of a shop window to
+     * a meter that was itself floating in front of the glass. First floor
+     * level is also where surface conduit is actually clipped on a building
+     * with shops under it, because that is the lowest solid wall there is. */
+    const y = originY + 0.30 + h2(s, 1.1) * 0.85;
     const cOff = 0.045;
     const uA = 0.45 + h2(s, 4.4) * 0.8;
     const uB = b.L - 0.45 - h2(s, 8.8) * 1.4;
@@ -470,7 +538,9 @@ function emitFurniture(c: WinCtx): void {
     }
     // Junction box at one end, and a drop out of it to a switch or a meter.
     mf.box(uA - 0.10, uA + 0.02, y - 0.075, y + 0.13, d, d + 0.10);
-    const u = uA + 0.35 + h2(s, 5.5) * Math.max(0.4, uB - uA - 0.9);
+    // The drop runs down a pier for the same reason the meter box stands on
+    // one: below the fascia there is nothing else to clip it to.
+    const u = onPier(b, uA + 0.35 + h2(s, 5.5) * Math.max(0.4, uB - uA - 0.9)) - 0.025;
     mf.box(u, u + 0.05, b.base + 0.4, y, d + cOff, d + cOff + 0.052);
     for (let yy = b.base + 0.7; yy < y - 0.2; yy += 1.4) {
       mf.box(u - 0.024, u + 0.074, yy, yy + 0.05, d, d + cOff + 0.008);
@@ -650,8 +720,7 @@ function emitBuilding(b: Bldg, W: Emit, G: Emit, T: Emit, M: Emit): void {
    * that rhythm is what sets the scale of the whole elevation and because
    * without it the ground floor is a blank wall — which is far more wrong
    * than an empty shopfront. */
-  const plinthTop = b.base + b.plinth;
-  const openTop = originY - b.fascia;
+  const { plinthTop, openTop } = groundLevels(b);
 
   /* The plinth, and the reason it grew.
    *
@@ -683,23 +752,26 @@ function emitBuilding(b: Bldg, W: Emit, G: Emit, T: Emit, M: Emit): void {
     [[0, plinthTop], [0, plinthTop + 0.08], [b.L, plinthTop + 0.08], [b.L, plinthTop]],
   );
 
-  const groundHoles: [number, number][] = [];
-  for (let i = 0; i < b.bays; i++) {
-    const a = 0.25 + i * b.bayW + b.pier * 0.5;
-    const z = 0.25 + (i + 1) * b.bayW - b.pier * 0.5;
-    if (z - a > 1.15) groundHoles.push([a, z]);
-  }
+  const openings = groundOpenings(b);
+  const groundHoles: [number, number][] = openings.map((o) => [o.u0, o.u1]);
 
   W.attr('aRole', ROLE.WALL);
   band(wf, plinthTop, openTop, d, 0, b.L, groundHoles);
 
-  for (const [a, z] of groundHoles) {
-    const rec = 0.15 + h2(b.seed * 100, a) * 0.10;
+  for (const { u0: a, u1: z, rec } of openings) {
     W.attr('aRole', ROLE.REVEAL);
     wf.jamb(a, d - rec, d, plinthTop, openTop, +1);
     wf.jamb(z, d - rec, d, plinthTop, openTop, -1);
     wf.deck(a, z, d - rec, d, openTop, false);
     wf.deck(a, z, d - rec, d, plinthTop, true);
+    /* Closed with a flat recessed panel only where nothing better is coming.
+     *
+     * On the two rows the camera walks between, System 3 builds a real
+     * shopfront into this opening — stall riser, glazing, a room behind it —
+     * and it builds the back of that room, so the hole is closed there too.
+     * Leaving the panel in as well would put a wall 150 mm in front of every
+     * shop window in the street. */
+    if (b.street) continue;
     W.attr('aRole', ROLE.SHUTTER);
     wf.panel(a, z, plinthTop, openTop, d - rec);
   }

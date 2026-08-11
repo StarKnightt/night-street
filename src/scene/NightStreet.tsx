@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { Street } from './Street';
 import { Rig } from './Rig';
 import { installSoftSunShadows } from './softShadow';
+import { installShaderErrorWatch } from './shaderWatch';
+import { CityAudio, footstep } from '@/audio/CityAudio';
 
 /* Before anything can compile a material. The patch rewrites shader chunks, and
  * a chunk is only consulted while a program is being built, so installing it
@@ -40,6 +42,9 @@ export default function NightStreet() {
         shadows={{ type: THREE.BasicShadowMap }}
         camera={{ fov: 45, near: 0.05, far: 400 }}
         onCreated={({ gl, camera }) => {
+          /* First, before any material in the scene has had a chance to link.
+           * A program three has already checked can never be reported. */
+          installShaderErrorWatch(gl);
           gl.outputColorSpace = THREE.SRGBColorSpace;
           /* AgX rather than ACES.
            *
@@ -66,7 +71,8 @@ export default function NightStreet() {
         }}
       >
         <Street />
-        <Rig />
+        <Rig onFootstep={footstep} />
+        <CityAudio />
       </Canvas>
       <Hud />
     </div>

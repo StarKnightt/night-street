@@ -114,7 +114,9 @@ export async function capture(page, file) {
  * guarantee teardown.
  *
  * @param {{width?:number,height?:number,cpu?:boolean,timeout?:number,url?:string}} opts
- * @param {(ctx:{page:any,url:string,errs:string[],gl:object}) => Promise<void>} body
+ * @param {(ctx:{page:any,url:string,errs:string[],gl:object,
+ *            readShaderErrors:() => Promise<object[]>}) => Promise<void>} body
+ * @returns {Promise<{errs:string[],gl:object,shaderErrors:object[]}>}
  */
 export async function run(opts, body) {
   const {
@@ -155,14 +157,14 @@ export async function run(opts, body) {
     console.error('  Start the dev server first, in its own terminal:  npm run dev');
     console.error('  (One dev server, port 3000. The harness will not start a second one.)');
     process.exitCode = 1;
-    return { errs: ['dev server not reachable'], gl: null };
+    return { errs: ['dev server not reachable'], gl: null, shaderErrors: [] };
   }
 
   const browser = await chromium.launch({ headless: true, args: cpu ? CPU_ARGS : GPU_ARGS });
   closeables.push(browser);
 
   const errs = [];
-  let code = 0, gl = null;
+  let code = 0, gl = null, shaderErrors = [];
   try {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
     // No page operation may block indefinitely, whatever the caller asked for.
@@ -213,7 +215,16 @@ export async function run(opts, body) {
     // Let the first-frame shader compiles and the texture bakes finish before
     // anything is measured.
     await page.waitForTimeout(1200);
-    await body({ page, url, errs, gl });
+    /* Handed to the body so a tool that writes a report of its own can put the
+     * ledger in it. The authoritative read is the one below, after the body. */
+    const readShaderErrors = () => page.evaluate(() => window.__shaderErrors || []);
+    await body({ page, url, errs, gl, readShaderErrors });
+
+    /* Read the shader-error ledger last, so it covers every program linked by
+     * every viewpoint the body visited. Three checks a program lazily on its
+     * first draw, so a material that only appears at one stop of the walk does
+     * not report until that stop has actually been rendered. */
+    shaderErrors = await page.evaluate(() => window.__shaderErrors || []);
   } catch (err) {
     console.error('\n✗ capture failed:', (err && err.message) || err);
     code = 1;
@@ -225,6 +236,41 @@ export async function run(opts, body) {
     console.log('\n─── page errors ───');
     [...new Set(errs)].slice(0, 15).forEach((e) => console.log(' ', e));
   }
-  process.exitCode = code;
-  return { errs: [...new Set(errs)], gl };
+
+  /* A failed GLSL link is a hard failure of the run.
+   *
+   * This is deliberately not folded into the console-error list. A program
+   * that fails to link renders as a flat untextured fallback and reads as a
+   * lighting bug, and the round check has historically been "zero console
+   * errors" — which a link failure can pass, because three reports it lazily
+   * from the first draw that uses the program and only if nothing has taken
+   * over its reporting hook. That is exactly how a dead pavement program
+   * survived two review rounds. So it gets its own banner and its own
+   * non-zero exit, and no caller has to remember to look. */
+  if (shaderErrors.length) {
+    code = 1;
+    console.error('\n' + '═'.repeat(72));
+    console.error(`✗✗✗  ${shaderErrors.length} SHADER PROGRAM(S) FAILED TO LINK`);
+    console.error('     Affected surfaces are drawing an untextured fallback.');
+    console.error('     Do NOT review this build; the pixels are not the build.');
+    console.error('═'.repeat(72));
+    for (const e of shaderErrors) {
+      console.error(`\n  ── program: ${e.program}`);
+      if (e.programLog) console.error(`     link: ${e.programLog}`);
+      for (const [stage, text] of [['vertex', e.vertex], ['fragment', e.fragment]]) {
+        if (!text) continue;
+        console.error(`     ${stage}:`);
+        for (const line of String(text).split('\n')) console.error('       ' + line);
+      }
+    }
+    console.error('\n' + '═'.repeat(72) + '\n');
+  } else {
+    console.log('  shader programs: all linked');
+  }
+
+  /* Never clear a failure the body already recorded. `process.exitCode = code`
+   * used to overwrite it, so a run whose captures did not reach disk said so
+   * on stdout and then exited zero. */
+  process.exitCode = code || process.exitCode || 0;
+  return { errs: [...new Set(errs)], gl, shaderErrors };
 }

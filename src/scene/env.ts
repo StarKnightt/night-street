@@ -403,3 +403,23 @@ export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
     dispose() { equirect.dispose(); target.dispose(); },
   };
 }
+
+/* Horizon radiance in the two directions the haze blends between.
+ *
+ * Exported because the shopfront glazing resolves its own reflected ray
+ * against a hand-built model of the street, and a reflected ray has to be
+ * fogged by the same air everything else is fogged by. A ray running down the
+ * canyon travels forty metres before it meets anything, which is most of the
+ * way to the horizon glow, and that is the term that decides whether a
+ * shopfront at low sun reads as a mirror or as a hole. Sampling the sky twice
+ * more at module load costs microseconds and means the reflection cannot
+ * drift away from the street it is reflecting.
+ */
+function horizonRadiance(phi: number): [number, number, number] {
+  const o: [number, number, number] = [0, 0, 0];
+  skyRadiance(Math.PI * 0.5 - 0.012, phi, o, false);
+  return o;
+}
+const SUN_AZ_XZ = Math.atan2(SUN_DIR[2], SUN_DIR[0]);
+export const HORIZON_SUNWARD = horizonRadiance(SUN_AZ_XZ);
+export const HORIZON_AWAY = horizonRadiance(SUN_AZ_XZ + Math.PI);

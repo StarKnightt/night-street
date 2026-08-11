@@ -66,6 +66,16 @@ export type Bldg = {
   bays: number; bayW: number; winW: number; winH: number; sill: number; reveal: number;
   /** Ground floor opening rhythm — piers between, System 3 fills the rest. */
   pier: number; fascia: number; plinth: number;
+  /* Does this building front the street the camera walks down?
+   *
+   * Only the two rows at the building line do. Everything else — the backland
+   * ranges, the far side of the cross street, the blocks behind it and the
+   * terminating wall — is seen at twenty metres or more and through a gap, and
+   * putting a modelled shopfront on any of it would be several thousand
+   * triangles of joinery rendering four pixels. Those keep the flat recessed
+   * panel System 2 closes their openings with; System 3 reads this flag and
+   * builds real shopfronts on the rest. */
+  street: boolean;
   pal: Palette;
   seed: number;
   /** -1 for none, otherwise the bay the fire escape is centred on. */
@@ -192,6 +202,7 @@ function row(
       pier: 0.42 + rng() * 0.40,
       fascia: 0.62 + rng() * 0.34,
       plinth: 0.34 + rng() * 0.30,
+      street: false,
       pal, seed: rng(),
       escape: -1,
       pipes: rng() < 0.72 ? (rng() < 0.5 ? 1 : 2) : 0,
@@ -342,6 +353,11 @@ export function layoutBlock(baseAt: (x: number, z: number) => number): Layout {
     { floors: [4, 5], width: [8.0, 16.0], seed: 40639 },
     (u) => baseAt(-B, zTail + u),
   );
+
+  /* The two rows the camera actually walks between, and the only two that get
+   * System 3's shopfronts. */
+  for (const b of east) b.street = true;
+  for (const b of west) b.street = true;
 
   /* Fire escapes go on the shaded row, and that is the point of them.
    *
