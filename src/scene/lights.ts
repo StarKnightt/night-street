@@ -153,10 +153,39 @@ export function lampHead(i: number): [number, number, number] {
  */
 export const NEON_RED = atDisplay(225, [1.0, 0.16, 0.06]);    // -> (224, 153, 126)
 export const NEON_GREEN = atDisplay(215, [0.12, 1.0, 0.28]);  // -> (171, 215, 176)
-/* The OPEN sign is behind glass and is seen through a pane carrying the
- * reflection of a sunlit wall opposite, so it is authored a stop over the
- * bar's tubes to survive being composited under that. */
-export const NEON_OPEN = atDisplay(232, [1.0, 0.19, 0.09]);
+/* The OPEN sign, and the number here is the tube's *mean*, not its peak.
+ *
+ * It was 232, authored a stop over the bar's tubes on the reasoning that it is
+ * behind a pane carrying the reflection of a sunlit wall and has to survive
+ * being composited under that. The reasoning is sound and the arithmetic was
+ * not, because it left out the thing that makes a tube look like a tube.
+ *
+ * The letterform branch in lightMaterials.ts redistributes the authored
+ * radiance across the stroke by the chord a view ray cuts through the phosphor
+ * shell: the core comes out at 0.676x and the rails at 3.38x, flux unchanged.
+ * So 232 is not what the sign shows, it is the average of what the sign shows,
+ * and the rails are 3.38 x 6.06 = 20.5 of radiance. That arrives at
+ * (250, 212, 195) before anything is added to it, and with the near-field halo
+ * and the pane's own reflection on top the strokes pin against white over
+ * thousands of pixels. Measured on shots/np-before: 2046 pixels over display
+ * 200 inside a 141 x 77 box, peak (253, 255, 255) — the blue channel, on a
+ * tube whose blue is authored at nine per cent of its red. A clipped pixel has
+ * no colour, which is why the sign read as a white decal with an orange rim
+ * and why no amount of adjusting the chroma could have changed it.
+ *
+ * TECHNIQUE §3.7 asks for display 200-235 "over a few hundred pixels", and the
+ * honest way to hit that is to put the *rails* at the top of the band rather
+ * than the mean. At 196 the three parts of the stroke land at:
+ *
+ *   core   0.676x  ->  (175, 102,  80)
+ *   mean   1x      ->  (192, 120,  97)
+ *   rail   3.38x   ->  (234, 176, 154)
+ *
+ * which is in the band from end to end, keeps its colour everywhere, and is
+ * still the brightest object on the street after the sun. The halo and the
+ * analytic wash both scale off this constant, so they come down with it.
+ */
+export const NEON_OPEN = atDisplay(196, [1.0, 0.19, 0.09]);
 
 /* Traffic signal aspects. These are LEDs behind a lens rather than discharge
  * tubes, and they are the most saturated and the brightest artificial thing in
