@@ -1271,6 +1271,60 @@ export const PARKED: readonly CarSpec[] = [
   },
 ];
 
+/* ── Footprints, for anything that has to avoid a car ───────────────────── */
+
+/**
+ * A parked car in plan, as the two shapes a walker can actually walk into.
+ *
+ * `body` is the painted skin: `wide` across and `len` along, which is exactly
+ * the extent the section is emitted at — the `hw` curve peaks at `wide / 2` on
+ * every one of the five shapes, and the body runs local z = 0 at the nose to
+ * z = `len` at the tail with its centre at `spec.z`. `mirror` is the door
+ * mirror, which stands 150 mm proud of the flank at 0.97 m and is therefore
+ * the first thing a shoulder meets when squeezing past.
+ *
+ * This is exported rather than copied because `SHAPES` is the only place the
+ * bodies are dimensioned, and a collider carrying its own `hw: 0.875` would
+ * agree with the geometry right up until somebody retunes a car and would then
+ * be wrong silently — the walker would clip a flank or stop a hand's width off
+ * one, and nothing would fail. `tools/obstacles.mjs` already carries such a
+ * copy and says so in its header; `scene/collide.ts` derives from here.
+ */
+export type CarSolid =
+  | {
+    what: string; kind: 'body';
+    /** Centre of the body in plan, and its heading; 0 points the nose down -Z. */
+    x: number; z: number; yaw: number;
+    /** Half extents across the body and along it. */
+    hw: number; hl: number;
+  }
+  | { what: string; kind: 'mirror'; x: number; z: number; r: number };
+
+export function carSolids(specs: readonly CarSpec[] = PARKED): CarSolid[] {
+  const out: CarSolid[] = [];
+  for (const spec of specs) {
+    const s = SHAPES[spec.kind];
+    const tag = `${spec.kind} ${spec.note.slice(0, 1)}`;
+    out.push({
+      what: tag, kind: 'body',
+      x: spec.x, z: spec.z, yaw: spec.yaw,
+      hw: s.wide * 0.5, hl: s.len * 0.5,
+    });
+    /* The same three numbers the mirror boxes above are built from, so the
+     * two cannot disagree: the stalk hangs off the A-pillar at screen[0], the
+     * shell reaches 155 mm past 99 per cent of the half width there, and it is
+     * 150 mm long. Taken as a disc of the shell's plan diagonal. */
+    const fr = place(spec, s);
+    const mu = s.screen[0] * s.len + 0.10;
+    const wOut = at(s.hw, s.screen[0]) * 0.99;
+    for (const sgn of [-1, 1]) {
+      const p = fr.p(sgn * (wOut + 0.105), 0, mu);
+      out.push({ what: `${tag} mirror`, kind: 'mirror', x: p[0], z: p[2], r: 0.087 });
+    }
+  }
+  return out;
+}
+
 /* ── Assembly ───────────────────────────────────────────────────────────── */
 
 export type BuiltCars = {

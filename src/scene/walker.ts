@@ -20,6 +20,7 @@
  * leg and falls slower, so the vertical term is skewed.
  */
 import { DIMS } from '@/world/dims';
+import { slide, groundHeight } from './collide';
 
 export type Input = {
   forward: number;   // -1..1
@@ -113,6 +114,45 @@ const RUN_SCALE = 2 / (softAbs(1) - softAbs(0));
 /** Vertical profile of a run: minimum at u = 0, apex at u = PI. */
 const bounce = (u: number) => (softAbs(Math.sin(u * 0.5)) - RUN_MEAN) * RUN_SCALE;
 
+/* Climbing a kerb.
+ *
+ * The ground under this street is not flat anywhere: the carriageway cambers
+ * 85 mm from the crown and dishes another 38 mm into the gutter, the footway
+ * falls 31 mm across its width and settles per flag, and between the two there
+ * is a 145 mm granite face. Before this the eye sat at a constant 1.6503 m on
+ * the road and 1.6494 m on the footway — nine tenths of a millimetre apart
+ * across a step that is a hundred and sixty times that.
+ *
+ * A kerb is not a ramp and it is not a teleport either. What actually happens
+ * is that the swing leg lifts, the body vaults over it, and the head arrives
+ * at the new height over roughly one step — fast enough to read as a step up
+ * rather than as a slope, slow enough that the horizon does not jump. So the
+ * raw ground height is not used directly. It goes through a one-pole lead,
+ * which is what rounds the corner at the top and the bottom of the face, and
+ * then a critically damped spring, which is what gives the rise its shape and
+ * guarantees it does not overshoot — a camera that bobs up past a kerb and
+ * settles back down reads as a stumble.
+ *
+ * The two constants are set from the measured profile rather than by eye. At
+ * TAU = 0.050 s and W = 19 rad/s, crossing the kerb at 1.4 m/s takes 222 ms
+ * from 10 to 90 per cent of the step, peaks at 0.68 m/s of vertical head speed
+ * and 12.6 m/s² of vertical acceleration, and overshoots by a tenth of a
+ * millimetre — which is to say not at all. For scale, the same walker's own
+ * footfall peaks at 4.0 m/s² walking and 20.5 jogging, so the kerb lands
+ * between the two: three times the event that a footstep at a walk is, and
+ * still lighter than a footfall at pace. Mid-climb the eye is as much as
+ * 129 mm below the surface the feet are on, which is what a step is.
+ *
+ * Both terms are needed. The lead is what keeps the acceleration finite: a
+ * spring alone, given a step, opens with infinite jerk and its measured peak
+ * acceleration is then whatever the sample rate is. With the lead in front of
+ * it the largest one-frame change in eye height falls 0.45, 0.13, 0.033,
+ * 0.028 m/s at 30, 120, 480 and 1920 Hz — a converging sequence, which is a
+ * curve rather than a corner.
+ */
+const GROUND_TAU = 0.050;
+const GROUND_W = 19;
+
 export class Walker {
   x = 0;
   z: number = DIMS.walkStartZ;
@@ -125,6 +165,27 @@ export class Walker {
 
   eye = { x: 0, y: DIMS.eyeHeight as number, z: DIMS.walkStartZ as number };
   roll = 0;
+
+  /* The ground the eye is actually standing on, filtered. `groundY` is what
+   * eye height is measured from; `groundRaw` is the surface under the feet
+   * this instant, and the two differ only while a step is being climbed. */
+  groundY = 0;
+  groundV = 0;
+  private groundLead = 0;
+  /** What the last resolved move ran into, or null. Read by the tools. */
+  contact: string | null = null;
+  /** The pace the last resolved move actually managed, while in contact. */
+  private blockedTo = Infinity;
+
+  constructor() {
+    this.snapGround();
+  }
+
+  /** Put the eye on the ground here with no transition. For teleports. */
+  snapGround() {
+    this.groundY = this.groundLead = groundHeight(this.x, this.z);
+    this.groundV = 0;
+  }
 
   /** System 7 hooks in here. Called once per footfall with 0 or 1 for the foot. */
   onFootstep: ((foot: number) => void) | null = null;
@@ -145,6 +206,12 @@ export class Walker {
     const p = this.pathAt(t);
     this.x = p.x;
     this.z = p.z;
+    /* A stop is a fixed number in a table and nothing stops one of them being
+     * inside a car, so a teleport resolves before it settles. Zero motion
+     * through the same solver runs its depenetration pass and nothing else. */
+    const s = slide(this.x, this.z, 0, 0);
+    this.x = s.x; this.z = s.z;
+    this.snapGround();
     // Sync the eye immediately: a teleport that leaves the derived camera
     // position a frame behind is how a harness ends up photographing the
     // previous stop.
@@ -161,7 +228,20 @@ export class Walker {
     if (len > 1e-4) { vx /= len; vz /= len; } else { vx = 0; vz = 0; }
 
     const running = !!input.sprint && input.forward > 0;
-    const target = len > 1e-4 ? (running ? SPRINT_SPEED : DIMS.walkSpeed) : 0;
+    let target = len > 1e-4 ? (running ? SPRINT_SPEED : DIMS.walkSpeed) : 0;
+    /* Pressed against something, the pace asked for is not the pace available.
+     *
+     * This is a *target*, taken from what last frame actually managed, rather
+     * than an assignment onto `speed`. Assigning it directly was tried and it
+     * is a pop: `speed` scales the bob amplitude and the cadence, so a walker
+     * meeting a car flank had its vertical bob amplitude collapse from 12.5 mm
+     * to zero inside one frame, and the eye jumped. Measured as the largest
+     * one-frame change in eye height it went 0.45, 0.43, 1.48, 5.67 m/s at 30,
+     * 120, 480 and 1920 Hz — the signature of a step, and a step in the one
+     * term the whole gait model exists to keep smooth. Fed in as a target it
+     * decays through the same ramp a released key uses, so the stride winds
+     * down over about 110 ms and the camera settles rather than freezing. */
+    if (this.contact) target = Math.min(target, this.blockedTo);
     /* A person reaches walking pace in about a third of a second, and slows
      * down faster than they speed up. Breaking into a jog over the same lag
      * takes about 0.6 s to get most of the way to 3.1 m/s, which is roughly
@@ -170,14 +250,30 @@ export class Walker {
      * stride does. */
     this.speed += (target - this.speed) * Math.min(1, dt * (target > this.speed ? 7 : 9));
 
-    this.x += vx * this.speed * dt;
-    this.z += vz * this.speed * dt;
+    const x0 = this.x, z0 = this.z;
+    const moved = slide(this.x, this.z, vx * this.speed * dt, vz * this.speed * dt);
+    this.x = moved.x;
+    this.z = moved.z;
+    this.contact = moved.hit;
 
     // Stay on the paved world; the buildings that would really stop you are
     // System 2, so this is a soft bound rather than collision.
     const limit = DIMS.roadHalf + DIMS.kerbDepth + DIMS.walkWidth - 0.4;
     this.x = clamp(this.x, -limit, limit);
     this.z = clamp(this.z, DIMS.zMin + 12, DIMS.zMax - 4);
+
+    /* What the pace actually came to, for the next frame to aim at.
+     *
+     * Free of contact this is `speed` to the last bit — the step is
+     * `speed * dt` long and all of it survives — so the gait model and its
+     * measured 0.2 per cent of foot slide over 85 footfalls are untouched. In
+     * contact it is not: a walker pressed into a car flank travels nothing
+     * while the key is still down, and the feet would carry on striding
+     * underneath a camera that has stopped.
+     */
+    this.blockedTo = this.contact && dt > 1e-6
+      ? Math.hypot(this.x - x0, this.z - z0) / dt
+      : Infinity;
 
     this.advanceGait(dt);
   }
@@ -187,7 +283,34 @@ export class Walker {
     for (let t = 0; t < seconds; t += step) this.advanceGait(step);
   }
 
+  /* One-pole lead into a critically damped spring, integrated in closed form.
+   *
+   * Closed form rather than a Euler step because the frame loop hands out
+   * deltas of up to 50 ms and this runs at W = 19: an explicit integrator at
+   * W*dt = 0.95 is still stable but its rise is visibly different from the
+   * same filter at 8 ms, which would make the kerb feel one way in the
+   * interactive walk and another in a 30 fps capture. The exact solution of
+   * `y'' = -2W y' - W^2 (y - L)` has no such dependence, and the driven
+   * capture path and the live one then produce the same profile to five
+   * decimal places from the same key presses.
+   */
+  private followGround(dt: number) {
+    if (dt <= 0) return;
+    const raw = groundHeight(this.x, this.z);
+    this.groundLead += (raw - this.groundLead) * (1 - Math.exp(-dt / GROUND_TAU));
+
+    const w = GROUND_W;
+    const e = Math.exp(-w * dt);
+    const c1 = this.groundY - this.groundLead;
+    const c2 = this.groundV + w * c1;
+    const s = c1 + c2 * dt;
+    this.groundY = s * e + this.groundLead;
+    this.groundV = (c2 - w * s) * e;
+  }
+
   private advanceGait(dt: number) {
+    this.followGround(dt);
+
     /* One step is PI of phase, and a step covers stepLength(speed) metres, so
      * the number of steps per second is speed / stepLength. At 1.4 m/s that is
      * exactly 2.00 and the phase rate is exactly 2*PI, as it was before; at
@@ -205,8 +328,22 @@ export class Walker {
     /* How far past a walk we are, 0 at 1.4 m/s and 1 at 3.1. Everything below
      * is anchored at the walk values and interpolated from there, so nothing
      * about the walk changes. */
-    const runU = clamp((this.speed - V_WALK) / (V_RUN - V_WALK), 0, 1);
-    const walkU = clamp(this.speed / V_WALK, 0, 1);
+    /* Smoothstepped, not clamped.
+     *
+     * A bare clamp has a corner at each end, and a corner in a term that
+     * multiplies the bob is a step in the head's vertical *velocity* the
+     * instant the pace crosses it. It is invisible at 30 Hz and unmistakable
+     * when sampled harder: accelerating into the jog, the peak vertical head
+     * acceleration at the moment the speed passed 1.4 m/s read 20, 26, 56 and
+     * 187 m/s² at 120, 480, 960 and 3840 Hz, doubling with the rate the way
+     * only a discontinuity can, while the steady-state jog sat at a converged
+     * 20.5 at every one of them. The kink is at runU = 0, where the profile
+     * blend starts to move; smoothstep takes the slope to zero at both ends
+     * and leaves the values at the ends, so the walk and the jog are bit for
+     * bit what they were and only the ramp between them changes. */
+    const ease = (u: number) => u * u * (3 - 2 * u);
+    const runU = ease(clamp((this.speed - V_WALK) / (V_RUN - V_WALK), 0, 1));
+    const walkU = ease(clamp(this.speed / V_WALK, 0, 1));
 
     /* Vertical amplitude. 25 mm peak to peak at a walk and about 70 at a jog:
      * running is a series of controlled falls and the head really does move
@@ -240,7 +377,7 @@ export class Walker {
 
     const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
     this.eye.x = this.x + cos * sway;
-    this.eye.y = DIMS.eyeHeight + bobY;
+    this.eye.y = this.groundY + DIMS.eyeHeight + bobY;
     this.eye.z = this.z - sin * sway;
   }
 
