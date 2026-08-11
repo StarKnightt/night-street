@@ -1,6 +1,4 @@
 import * as THREE from 'three';
-import { layoutBlock, BUILD_LINE, BLOCK_DEPTH } from '@/world/block';
-import { walkHeight } from '@/world/geometry';
 
 /* Direction-dependent haze.
  *
@@ -18,27 +16,6 @@ import { walkHeight } from '@/world/geometry';
  * per material, and the alternative — an onBeforeCompile on each — would have
  * to be repeated on the road, the footway, the kerb, the castings and the
  * plates and would drift out of step the first time one of them changed.
- *
- * System 6 added four things to it and deliberately did not add a fifth:
- *
- *   a phase function     two-term Henyey-Greenstein in place of a one-sided
- *                        power, so the air behind the camera is a veil rather
- *                        than a discontinuity, and so the width of the forward
- *                        lobe is a number with a meaning.
- *   height falloff       the closed-form exponential-height integral, referred
- *                        to the camera so that it redistributes rather than
- *                        rescales. The largest depth cue this canyon lacked.
- *   a near-field floor   a saturating term that supplies the first stretch,
- *                        because FogExp2 is quadratic and asserts that the
- *                        first ten metres of a city street are a vacuum.
- *   a lit-air wedge      two analytic ray-slab intersections against the
- *                        shadow-boundary planes swept from the sunward gaps in
- *                        the frontage. This is the whole of the volumetric
- *                        budget and the argument for it is at WEDGE below.
- *
- * The fifth would be a screen-space god-ray pass, and §4.3 of the technique
- * brief is right that it is wrong for this geometry. That reasoning is recorded
- * at WEDGE rather than here, so that it sits beside what was built instead.
  */
 export function installHaze(sunDir: THREE.Vector3,
                             near: THREE.Color, sunward: THREE.Color) {
@@ -72,59 +49,6 @@ export function installHaze(sunDir: THREE.Vector3,
 
   const SUN = v3(sunDir, 'x', 'y', 'z');
   const SUNC = v3(sunward, 'r', 'g', 'b');
-
-  /* ── System 6: where the lit air is ──────────────────────────────────────
-   *
-   * Derived from the same layout the buildings are built from, not measured off
-   * a screenshot and not typed in. layoutBlock is pure and already runs twice in
-   * this project (Buildings.tsx and tools/sys5.ts); a third call at install time
-   * costs about a millisecond and means the wedge cannot drift away from the
-   * frontage that casts it, which is the failure mode of every hand-placed
-   * constant this project has had to unpick.
-   *
-   * The geometry. A gap in the sunward frontage presents two *vertical* edges to
-   * a nearly horizontal beam, and the surface that separates lit air from shaded
-   * air is the plane swept along SUN_DIR from each of those edges. Both planes
-   * contain the sun direction and the world vertical, so both are vertical, so
-   * the whole test is two-dimensional in xz: a point is in lit air when its
-   * signed distance along the shared horizontal normal falls between the two.
-   *
-   * Which two edges is not symmetric, and block.ts:249-257 already did this
-   * arithmetic for the ground: a ray grazing the *near* corner of the opening
-   * clears the frontage plane at x = BUILD_LINE, while one grazing the *far*
-   * corner must also clear the back of the block at x = BUILD_LINE + BLOCK_DEPTH
-   * or it buries itself in the next building along. Taking the two offsets from
-   * those two different planes reproduces block.ts's own stated bands — the
-   * carriageway lit between z = -49 and -32, and between -84 and -73 — from the
-   * gap list rather than from its comment.
-   */
-  const nl = Math.hypot(sunDir.z, sunDir.x);
-  const nx = sunDir.z / nl, nz = -sunDir.x / nl;
-  const dAt = (x: number, z: number) => nx * x + nz * z;
-
-  const { gaps } = layoutBlock((x, z) => walkHeight(x, z));
-  const SHAFTS = gaps
-    /* Sunward only — the service alley on the shaded row is a dark slot and
-     * block.ts says so — and only the two that fall inside the walk. The far
-     * cross street at -118 casts a real wedge, but every fragment of it is past
-     * the range at which the closeout below has already forced the haze to
-     * full, so it would cost two planes' worth of arithmetic to change nothing.
-     * That also keeps the count at the two atmosphere.js:299-305 argues for:
-     * "half a dozen of them at once at similar weights reads as staging, since
-     * real crepuscular rays are rare enough that one strong one is an event." */
-    .filter((g) => g.side > 0 && g.z1 > -100)
-    .map((g) => {
-      const a = dAt(BUILD_LINE, g.z1);
-      const b = dAt(BUILD_LINE + BLOCK_DEPTH, g.z0);
-      return [Math.min(a, b), Math.max(a, b)] as const;
-    })
-    .slice(0, 2);
-  while (SHAFTS.length < 2) SHAFTS.push([1e9, 1e9] as const);   // never entered
-
-  const WEDGE_N = `vec2(${nx.toFixed(6)}, ${nz.toFixed(6)})`;
-  const WEDGE_D = `vec4(${SHAFTS[0][0].toFixed(4)}, ${SHAFTS[0][1].toFixed(4)}, ` +
-    `${SHAFTS[1][0].toFixed(4)}, ${SHAFTS[1][1].toFixed(4)})`;
-  const WEST_LINE = (-BUILD_LINE).toFixed(3);
 
   /* The haze colour has to *be* the sky, not an approximation of it.
    *
@@ -192,119 +116,6 @@ vec3 hazeSky( vec3 dir ) {
 }
 `;
 
-  /* A real phase function, in place of a one-sided power.
-   *
-   * pow(max(mu,0), 2.2) was doing the right job and could not do two things.
-   * It is exactly zero over the whole anti-sun hemisphere, with a derivative
-   * kink at ninety degrees, so the air behind you is not a thin veil — it is
-   * the base density and nothing else, and there is a discontinuity in the
-   * middle of every pan. And its width was a free parameter, which is another
-   * way of saying nobody could say whether it was right.
-   *
-   * Two-term Henyey-Greenstein instead: a forward lobe at g = 0.42 carrying
-   * 0.78 of the weight, plus a backscatter term at g = -0.20. Both numbers are
-   * chosen, and the second one is the interesting half.
-   *
-   * Single-scatter Mie for urban aerosol is g ~ 0.75-0.8, and using it here
-   * would be wrong twice over. The apparent lobe in air thick enough to see is
-   * broadened by multiple scattering, and — the part specific to this scene —
-   * the narrow part of the forward peak is *already in the picture*. hazeSky
-   * above carries the aureole as exp(-ang*19.0)*5.60, ported from env.ts, so
-   * the tight lobe arrives in the haze's colour. If it were also in the density
-   * it would be counted twice and the result is the "hard-edged glowing disc
-   * that reads as a lens artifact" this file already warns against. So the
-   * density term carries the broad asymmetry only, and 0.42 is what is left of
-   * 0.78 once the aureole is removed from it.
-   *
-   * The negative-g term is the backscatter enhancement real haze has, and it
-   * is why looking away from the sun gives a veil rather than clear air.
-   *
-   * Normalised so that the two ends land where the tuned version landed: 1.0
-   * at the minimum of the phase (which is at mu ~ -0.6, not at -1) and 3.4
-   * looking straight down the beam. Measured against the old curve with
-   * tools/agx.mjs the two agree within 13% everywhere except the 20-45 degree
-   * band, where this one is narrower by about a tenth — which is the aureole
-   * no longer being paid for twice.
-   */
-  const PHASE = /* glsl */ `
-float hazePhase( float mu ) {
-  // 4pi * HG, so an isotropic medium would return 1.0.
-  float a = 1.1764 - 0.84 * mu;                 // g1 = 0.42
-  float b = 1.0400 + 0.40 * mu;                 // g2 = -0.20
-  float p = 0.78 * 0.8236 * inversesqrt( a * a * a )
-          + 0.22 * 0.9600 * inversesqrt( b * b * b );
-  // 1.0 at the phase minimum, 3.4 down the beam. tools/agx.mjs prints the pair.
-  return 1.0 + 0.8496 * ( p - 0.5901 );
-}
-`;
-
-  /* Lit air, analytically, and the case against building a volumetric renderer
-   * to get it.
-   *
-   * At 4.2 degrees the beam runs *along* this canyon rather than across it, so
-   * a general shaft is parallel to the view, has no cross-section in frame, and
-   * integrates to a wash — and a ray lying near the ground spends its whole
-   * length in the densest air there is, which is how jungle-trail's raymarch
-   * turned a dark textured bank into flat beige at 2.4 times the in-scatter of
-   * the real beams. The forward lobe above is already the correct and far
-   * cheaper representation of that wash. What a march would add here is the one
-   * thing the wash cannot express, and it is a much smaller thing than it looks:
-   * the *edge* where a gap in the frontage stops letting light through.
-   *
-   * That edge is a plane, and it can be written down. So this is the whole of
-   * the volumetric budget: two ray-slab intersections, no march, no
-   * half-resolution buffer, no depth-aware upsample, no interleaved noise, and
-   * no second render target. It is also exact rather than sampled — the segment
-   * of the view ray that lies in lit air is solved, not stepped, so it cannot
-   * band and cannot alias, and it is automatically occluded because the segment
-   * is clipped at the distance of the fragment that is running the shader.
-   *
-   * Three gates, each earning its place:
-   *
-   *   height   above the shade line the sun clears the parapet and *all* the
-   *            air is lit, so there is no edge and nothing to draw; below the
-   *            road there is no air. Evaluated at the midpoint of the lit
-   *            segment, which is a real approximation and shows up as a soft
-   *            vertical gradient rather than as a wrong edge.
-   *   west     the shaft dies on the shaded frontage. There is no lit air
-   *            behind it, and the apron plane runs 320 m out past it.
-   *   length   clamped. A view direction lying in the slab's own plane has an
-   *            unbounded intersection with it, which is jungle-trail's
-   *            ground-parallel ray by another route.
-   */
-  const WEDGE = /* glsl */ `
-const vec2 uWedgeN = ${WEDGE_N};
-const vec4 uWedgeD = ${WEDGE_D};
-
-/* Entry and exit parameter of the view ray through one boundary slab. */
-vec2 wedgeSpan( vec2 o, vec2 v, float d0, float d1, float tMax ) {
-  float pn = dot( v, uWedgeN );
-  float on = dot( o, uWedgeN );
-  if ( abs( pn ) < 1e-4 ) {
-    return ( on > d0 && on < d1 ) ? vec2( 0.0, tMax ) : vec2( 0.0 );
-  }
-  float ta = ( d0 - on ) / pn;
-  float tb = ( d1 - on ) / pn;
-  return vec2( max( min( ta, tb ), 0.0 ), min( max( ta, tb ), tMax ) );
-}
-
-float wedgeOne( vec3 o, vec3 v, float d0, float d1, float tMax ) {
-  vec2 s = wedgeSpan( o.xz, v.xz, d0, d1, tMax );
-  float len = min( s.y - s.x, 25.0 );
-  if ( len <= 0.0 ) return 0.0;
-  vec3 m = o + v * ( 0.5 * ( s.x + s.y ) );
-  float gy = ( 1.0 - smoothstep( 6.5, 13.5, m.y ) ) * smoothstep( -0.8, 0.3, m.y );
-  float gx = smoothstep( ${WEST_LINE} - 1.5, ${WEST_LINE} + 1.5, m.x );
-  return len * gy * gx;
-}
-
-/** Metres of the view ray, out to tMax, that lie in air the sun still reaches. */
-float wedgeLength( vec3 o, vec3 v, float tMax ) {
-  return wedgeOne( o, v, uWedgeD.x, uWedgeD.y, tMax )
-       + wedgeOne( o, v, uWedgeD.z, uWedgeD.w, tMax );
-}
-`;
-
   S.fog_pars_fragment = `
 #ifdef USE_FOG
   uniform vec3 fogColor;
@@ -319,29 +130,11 @@ float wedgeLength( vec3 o, vec3 v, float tMax ) {
   const vec3 uHazeSun = ${SUN};
   const vec3 uHazeSunColor = ${SUNC};
 ${SKY}
-${PHASE}
-${WEDGE}
 #endif
 `;
 
   S.fog_fragment = `
 #ifdef USE_FOG
-  /* COLOUR SPACE, stated at the top of the pass as §2 of the technique brief
-   * requires, because this chunk is the one place in the project that has
-   * already got it wrong once.
-   *
-   *   in    gl_FragColor  display-encoded sRGB, 0..1. three includes this chunk
-   *                       after tonemapping_fragment and colorspace_fragment,
-   *                       and sensor.ts prepends itself to the latter, so the
-   *                       value arriving here has been through AgX, the sensor
-   *                       pedestal and the sRGB encode already.
-   *   local hazeLin, beamLin, mixLin   linear scene radiance, sRGB primaries.
-   *   out   gl_FragColor  display-encoded sRGB.
-   *
-   * Exactly one tone map and one encode happen in this chunk, on the combined
-   * radiance, immediately before the mix. Nothing linear crosses that line.
-   */
-
   /* Path length along the ray, not depth along the view axis, and this is the
    * cause of every straight terminator left in the set.
    *
@@ -364,58 +157,11 @@ ${WEDGE}
    * far the light actually travelled, not on its component along one axis — so
    * this is a correctness fix that happens to remove an artifact. */
   float hazeDist = length( vHazeWorld - cameraPosition );
-
-  /* Height falloff, and it is the largest depth cue this canyon was missing.
-   *
-   * FogExp2 is uniform in altitude, so a parapet twelve metres up was hazed
-   * exactly as much as the pavement at the same distance, and the one thing a
-   * street canyon has more of than anything else is vertical. Real aerosol sits
-   * in a layer: dust, exhaust and moisture are all densest at the ground and
-   * thin out over a scale height of a few tens of metres.
-   *
-   * The closed-form integral of exponential-height density along a ray, divided
-   * through by the density at the camera so that a level ray is left at exactly
-   * 1.0. That normalisation is the point: without it every fog value in the
-   * project moves by nine per cent the moment this is switched on, and the haze
-   * is the one thing in the set that reviewers have consistently credited.
-   * Referred to the camera, this is a pure redistribution — the road is
-   * unchanged and the rooflines hold.
-   *
-   * 18 m scale height. A parapet 12 m above the eye then carries 73 per cent of
-   * the optical depth of something level with the camera at the same range. */
-  float dy = vHazeWorld.y - cameraPosition.y;
-  float kdy = 0.05556 * dy;
-  float heightFactor = ( abs( kdy ) < 1e-3 ) ? 1.0 : ( 1.0 - exp( - kdy ) ) / kdy;
-  float hazeOptical = hazeDist * heightFactor;
-
   #ifdef FOG_EXP2
-    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * hazeOptical * hazeOptical );
-    float hazeSigma = fogDensity;
+    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * hazeDist * hazeDist );
   #else
-    float fogFactor = smoothstep( fogNear, fogFar, hazeOptical );
-    float hazeSigma = 1.0 / max( fogFar - fogNear, 1.0 );
+    float fogFactor = smoothstep( fogNear, fogFar, hazeDist );
   #endif
-
-  /* A near-field floor, because fog that is exactly zero at zero distance is a
-   * statement that the first ten metres of a city street are a vacuum.
-   *
-   * FogExp2 is quadratic in distance, not Beer-Lambert, and the difference is
-   * entirely in the near field: at three metres this density returns 0.05 per
-   * cent where a true exponential extinction at the same coefficient returns
-   * 2.1 per cent. The quadratic profile is deliberate and tuned and stays —
-   * what is added is a saturating term that supplies the first stretch and then
-   * stops, so it cannot touch the long-range behaviour the rectangle fix
-   * depends on.
-   *
-   * Sized rather than picked. Measured through tools/agx.mjs, at 3 m this puts
-   * 0.5 per cent of a haze that reads 191 over a near road that reads 17, which
-   * is nine tenths of one code value. That is the honest size of the effect and
-   * it is worth saying plainly: air at three metres does almost nothing, and the
-   * crushed near field in the crop is veiling glare in the lens, which is
-   * System 8's, not air, which is this file's. Where it does register is 10-40 m
-   * — the opposite footway, the far kerb, the parked car three cars down — and
-   * there it is worth two to four code values of separation that were not there. */
-  fogFactor = 1.0 - ( 1.0 - fogFactor ) * ( 1.0 - 0.045 * ( 1.0 - exp( - hazeOptical * 0.04 ) ) );
 
   /* Forward scattering. The lobe is deliberately broad: a narrow one puts a
    * hard-edged glowing disc in the haze that reads as a lens artifact rather
@@ -423,7 +169,7 @@ ${WEDGE}
    * sun-facing half of the view. */
   vec3 vDir = normalize( vHazeWorld - cameraPosition );
   float mu = clamp( dot( vDir, uHazeSun ), -1.0, 1.0 );
-  float forward = hazePhase( mu );              // 1.0 behind, 3.4 down the beam
+  float forward = pow( max( mu, 0.0 ), 2.2 );   // matches the sky's azimuthal falloff
 
   /* The air in front of this fragment, lit by the sky it is looking into. Equal
    * to the background along the same ray, so a fully hazed object disappears
@@ -456,6 +202,10 @@ ${WEDGE}
    * needed and the sunward haze is simply the sky.
    */
   vec3 hazeLin = hazeSky( vDir );
+  #if defined( TONE_MAPPING )
+    hazeLin = toneMapping( hazeLin );
+  #endif
+  vec3 haze = linearToOutputTexel( vec4( hazeLin, 1.0 ) ).rgb;
 
   /* Almost all of the haze lives in the sun-ward direction.
    *
@@ -464,12 +214,8 @@ ${WEDGE}
    * texture — a uniform density high enough to look like golden hour when
    * facing the sun was milky everywhere and flattened the material work into
    * fog. The asymmetry does the job instead: this multiplies the depth term by
-   * up to five looking down the beam and by nothing at all looking away.
-   *
-   * hazePhase now returns the multiplier itself rather than a nought-to-one
-   * lobe that had to be scaled here, because the two ends of it are the thing
-   * being calibrated and they should be written where they can be read. */
-  fogFactor = clamp( fogFactor * forward, 0.0, 1.0 );
+   * up to five looking down the beam and by nothing at all looking away. */
+  fogFactor = clamp( fogFactor * ( 1.0 + forward * 2.4 ), 0.0, 1.0 );
 
   /* Aerial perspective has to actually complete, and this is the other half of
    * the hard-edged rectangle.
@@ -490,67 +236,10 @@ ${WEDGE}
    * opaque; there is no honest reading in which it is eleven per cent clear. So
    * the residual transmittance is closed out over the last stretch. It is a
    * statement about long range only — by sixty metres nothing has changed, so the
-   * near and middle field, where all the material work lives, is untouched.
-   *
-   * Keyed on hazeDist and not on the height-corrected hazeOptical, deliberately.
-   * The height falloff is a statement about how much aerosol is in the way; this
-   * is a statement that at a hundred and sixty metres nothing has a silhouette,
-   * and a parapet at a hundred and sixty metres has no more of one than the road
-   * under it. Letting the height term reach this line would hand the backdrop
-   * blocks back the residue they were losing their straight edges to. */
+   * near and middle field, where all the material work lives, is untouched. */
   fogFactor = mix( fogFactor, 1.0, pow( smoothstep( 60.0, 165.0, hazeDist ), 1.6 ) );
 
-  /* ── the lit-air wedge, composited as a second species of air ─────────────
-   *
-   * There are now two kinds of air in front of this fragment: the ambient haze
-   * above, lit by the sky, and the stretch of it that is standing in the beam
-   * coming through a gap in the sunward frontage. They have different colours
-   * and different amounts, and the one thing that must not happen is for the
-   * second one to be added to a display-encoded buffer — that is instance 2 in
-   * the register of this project's expensive bugs and the reason the block above
-   * exists at all.
-   *
-   * So they are combined as radiances, before anything is tone-mapped: two
-   * absorbing species over one background, an in-scatter weighted mean of the
-   * two colours, and exactly one trip through the tone curve and the encode for
-   * the result. With no wedge in the ray this reduces algebraically to the line
-   * that was here before.
-   *
-   * fBeam is genuine extinction over the lit segment — 1 - exp(-sigma * length)
-   * at the same density the rest of the file uses — so a ten-metre crossing is
-   * seven per cent of the pixel and a grazing one is more. The beam's own colour
-   * is not invented either: horizonSun in env.ts, (3.4, 1.42, 0.42), *is* this
-   * sun's light scattered by this air at saturation, so sunlit air converges on
-   * it by construction and the wedge cannot end up a different colour from the
-   * sky it is a piece of.
-   *
-   * The phase function scales the colour and not the amount, because that is
-   * where it belongs: the beam deposits the same energy in the same air however
-   * you look at it, and what changes with angle is how much of it comes back
-   * toward the lens.
-   *
-   * The last gate is the one jungle-trail paid two paragraphs for. Looking down
-   * the beam the wedge has no cross-section, the intersection lengthens without
-   * limit, and the honest representation of that geometry is the forward lobe
-   * above — which is already doing it. So the wedge fades out over the last ten
-   * degrees and hands the job over rather than double-counting it. */
-  float beamLen = wedgeLength( cameraPosition, vDir, hazeDist );
-  float viewGate = 1.0 - smoothstep( 0.80, 0.985, abs( mu ) );
-  float fBeam = ( 1.0 - exp( - hazeSigma * beamLen ) ) * viewGate;
-  vec3  beamLin = vec3( 3.4000, 1.4200, 0.4200 ) * ( forward * 0.2941 );
-
-  float fTotal = 1.0 - ( 1.0 - fogFactor ) * ( 1.0 - fBeam );
-  vec3  mixLin = ( hazeLin * fogFactor + beamLin * fBeam ) / max( fTotal, 1e-4 );
-
-  /* Tone-mapped and encoded here and only here. Everything above this line is
-   * linear scene radiance; everything below it is display-encoded sRGB, which is
-   * what gl_FragColor already holds. */
-  #if defined( TONE_MAPPING )
-    mixLin = toneMapping( mixLin );
-  #endif
-  vec3 haze = linearToOutputTexel( vec4( mixLin, 1.0 ) ).rgb;
-
-  gl_FragColor.rgb = mix( gl_FragColor.rgb, haze, clamp( fTotal, 0.0, 1.0 ) );
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, haze, fogFactor );
 #endif
 `;
 

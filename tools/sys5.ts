@@ -1,6 +1,13 @@
 /* CPU-only census and siting report for System 5. Not part of the build.
  *
- *   node --experimental-strip-types --import ./tools/ts-hooks-reg.mjs tools/sys5.mts
+ * Transpile it first rather than running it through node's type stripper, which
+ * cannot handle the enums in the world modules this imports:
+ *
+ *   npx tsc -p tsconfig.sys5.json
+ *   node -e "const M=require('module'),p=M._resolveFilename;\
+ *     M._resolveFilename=function(r,...a){if(r.startsWith('@/'))\
+ *     r=require('path').resolve('.sys5/src',r.slice(2));return p.call(this,r,...a)};\
+ *     require('./.sys5/tools/sys5.js')"
  *
  * Everything System 5 places is a pure function of the two world seeds, so the
  * positions the capture stops have to be aimed at can be derived here rather

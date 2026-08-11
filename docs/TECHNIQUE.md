@@ -76,51 +76,92 @@ Details in §5.5.
 
 # 1. The display response — read this first
 
-**This curve has caused two independent fourfold errors in one week.** Both
-were made by setting a linear radiance by eye against a tone-mapped frame.
-Every emissive value, every reflection constant and every light level in
-Systems 5, 6 and 8 must be set by inverting a target display value through it.
+**This has caused four independent errors in one week, in both directions.**
+Every one was made by setting a linear radiance against a tone-mapped frame:
+three by eye, and one by inverting a formula that turned out to be a fit to a
+single contaminated measurement. Every emissive value, every reflection constant
+and every light level in Systems 5, 6 and 8 must be set by inverting a target
+display value — and the inversion has to be the real transform, not a curve
+fitted to it.
+
+## ~~display = 0.284 · L^0.4545~~ — WITHDRAWN, do not use
+
+That formula stood in this section until it was disproved twice on the same
+night, and it is wrong by about a factor of two in display across the whole
+usable range, worse than that in the shadows and in the highlights. It was the
+sRGB gamma with its scale fitted to one point — `streetMaterials.ts:790`,
+"feeding the pane a known constant of 1.6 returns display 90" — and that point
+was measured *through a sheet of glass*, so what the fit actually captured was
+the pane's Fresnel reflectance of about a sixth. If you find the constant 0.284
+or the exponent 0.4545 anywhere in the tree, it is a leftover and it is wrong.
+
+The full derivation, the evidence and the two constants still carrying
+over-corrected values are in `NOTES.md`, under "The display response — the
+authoritative answer". Read that before authoring a level.
+
+## Use the transform
 
 ```
-display = 0.284 · L^0.4545
-
-inverted:   L = ( display₈ / 255 ÷ 0.284 ) ^ 2.2
+node tools/agx.mjs                 the curve and its inversion, tabulated
+node tools/agx.mjs 3.4 1.42 0.42   one radiance -> the 8-bit code it arrives at
+node tools/tonecheck.mjs           the evidence, re-derived from frames on disk
 ```
 
-Measured and recorded at `src/scene/streetMaterials.ts:777` and
-`src/scene/carMaterials.ts:144`.
+`tools/agx.mjs` ports three's `AgXToneMapping` at `toneMappingExposure = 0.296`
+and the sRGB encode term for term out of `node_modules`, and inverts them
+numerically. **Add the sensor pedestal** — `--sensor`, or
+`display(rgb, { sensor: true })` — for anything the renderer draws, because
+`sensor.ts` patches `colorspace_fragment` globally and every fragment in the
+scene carries it.
 
-| target 8-bit value | required linear radiance L |
+Validated against nine sky pixels across three cameras, where the scene radiance
+is known in closed form, to a mean absolute error of **0.0 counts**; and against
+a lamp bowl at L ≈ 11 in colour, to within a couple. It is not a fit.
+
+| target 8-bit value | required linear radiance L (neutral) |
 | --- | --- |
-| 100 | 2.03 |
-| 128 | 3.50 |
-| 150 | 4.96 |
-| 170 | 6.54 |
-| **191** (sunlit fascia, measured) | **8.44** |
-| 210 | 10.4 |
-| 230 | 12.7 |
-| 245 | 14.6 |
+| 24 | 0.029 |
+| 48 | 0.085 |
+| 80 | 0.209 |
+| 112 | 0.439 |
+| 128 | 0.625 |
+| **160** | **1.27** |
+| 191 (a sunlit fascia, measured) | 2.71 |
+| 208 | 4.41 |
+| 224 | 7.83 |
+| 240 | 19.1 |
 
-**The shape of that table is the single most reusable fact in this document.**
+**For greys only.** AgX runs per channel through two chroma matrices, so a
+saturated colour does not map like a neutral of the same peak magnitude. Pass
+the triple to `agx.mjs`.
 
-Going from display 100 to display 150 costs a **144% increase in radiance**.
-Going from display 191 to display 210 costs **23%**.
+## The shape of that table is the single most reusable fact in this document
 
-Near the shoulder a surface can be four times too dark in linear light and look
-approximately right on screen. That is not a hypothetical:
+Going from display 128 to 160 costs a **104% increase** in radiance. Going from
+208 to 224 costs **77%**, and from 224 to 240 costs **144%** — the shoulder
+never stops charging, it just stops showing.
 
-- `streetMaterials.ts:766–781` — the shopfront reflection's sunlit wall was
-  carrying 2.3 against a true 8.5. "The bright band was not two thirds of a
-  sunlit wall, it was a quarter of one, and four fifths of that error was
-  hidden by the shoulder."
-- `carMaterials.ts:133–148` — the car body's street probe was carrying "2.30
-  against a true 6.3 — the same 2.3 the shopfront had, from the same mistake
-  made independently."
+Run it the other way and it is worse, because the *slope* changes tenfold.
+Adding 0.015 of radiance — a street lamp at 5.5% of the sun — to a patch of
+carriageway is worth **+7 counts** where that patch is in shade at L = 0.038 and
+**+1** where it is in a sun band at L = 0.43. Both are measured off the same
+material in the same capture set.
+
+Two consequences:
+
+- Near the shoulder a surface can be four times too bright or too dark in linear
+  light and look approximately right on screen. Both of the "fourfold errors"
+  this section used to warn about were real, and both were then over-corrected
+  by about four times in the other direction, and neither round could be settled
+  by looking. See `NOTES.md`.
+- Nothing in this project can be darker than about **code 15**. The sensor
+  pedestal alone encodes to that, so anything authored below L ≈ 0.008 arrives
+  at the floor.
 
 Corollary for System 5: making an artificial source *look* brighter than a
-sunlit fascia is cheap in radiance terms and therefore easy to overshoot
-without noticing. Making a subordinate source read as present at all is
-expensive. Work from the table in both directions.
+sunlit fascia is cheap in radiance terms and therefore easy to overshoot without
+noticing. Making a subordinate source read as present at all is expensive, and
+how expensive depends entirely on what it is being added to. Invert, don't look.
 
 ---
 

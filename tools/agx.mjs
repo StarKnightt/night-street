@@ -156,7 +156,9 @@ export function phase(mu, g1 = 0.42, w1 = 0.78, g2 = -0.20) {
 
 /* ── report ──────────────────────────────────────────────────────────────── */
 
-if (import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'))) {
+// argv[1] is undefined under `node --input-type=module -e`, and without the
+// fallback importing this file from an inline script throws before it exports.
+if (import.meta.url.endsWith((process.argv[1] ?? '\u0000').replace(/\\/g, '/'))) {
   const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
   const sensor = process.argv.includes('--sensor');
 

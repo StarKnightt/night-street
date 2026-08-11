@@ -158,7 +158,27 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * occlusion and the ground-storey darkening with it, so the two hand-tuned
    * multipliers that used to follow are gone — they were a second helping of
    * an occlusion the measurement already includes. */
-  vec3 wall = mix(vec3(1.27, 0.92, 0.82), vec3(2.99, 1.92, 1.60),
+  /* And these two are the *shaded* frontage, which is what this gradient has
+   * always been and never carried.
+   *
+   * Rendering the pane as an opaque mirror of the raw probe settled it: a side
+   * window's ray leaves at forty or fifty degrees, clears the ground storey,
+   * and lands ten metres up the terrace opposite, where this function returned
+   * 2.99 linear. The same wall measures 0.31 in the same frame. The sunlit
+   * term below is separate and correctly large, and it only fires for a ray
+   * travelling -X, so every ray heading across the street at a car on the west
+   * kerb was being handed sunlit masonry brightness for a frontage that is in
+   * its own shadow at this hour.
+   *
+   * That is the System 3 finding running the other way. Last round every
+   * constant here was four times too dim because it had been set against a
+   * tonemapped frame; the correction raised them all, and raised the shaded
+   * case onto the sunlit one. It is also the whole of the car glass defect: at
+   * 3.07 the probe was brighter than anything in the frame except the sun-
+   * struck stucco, so a pane reflecting it could only ever be luminous, and
+   * flat with it, because a constant is what a wall with no lighting variation
+   * across it returns. */
+  vec3 wall = mix(vec3(0.335, 0.243, 0.216), vec3(1.05, 0.675, 0.562),
                   smoothstep(1.4, 6.0, yHit));
   wall = mix(wall, vec3(6.27, 2.97, 1.73),
              smoothstep(litLine - 1.0, litLine + 3.0, yHit));
@@ -332,6 +352,18 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
   vec3 hazeC = mix(vec3(0.85, 0.80, 0.95), vec3(4.18, 2.50, 2.03),
                    smoothstep(-0.25, 0.90, az));
   float ext = 1.0 - exp(-pow(dHit * 0.0150, 1.75));
+  /* And it is the length of the path the ray *actually* travelled, which is
+   * not dHit once the occlusion above has fired.
+   *
+   * This is where the flank's value was still coming from and the two terms
+   * were fighting: a horizontal ray leaving a door skin runs to the end of the
+   * canyon, so dHit is seventy metres, so the grazing test occludes it down to
+   * a fifteenth — and then this line mixed 88 per cent of the sunward haze
+   * back over the top of it and handed back 3.7 linear, which is most of a
+   * cream door. A ray that died on the back of the next parked car at five
+   * metres has five metres of air in front of it, not seventy. Undoing the
+   * extinction in step with the occlusion is what makes the two agree. */
+  ext *= 1.0 - graze * 0.92;
   hit = mix(hit, hazeC, clamp(ext, 0.0, 0.88));
 
   /* Roughness. A matt panel does not return the image, it returns the
@@ -448,6 +480,12 @@ totalEmissiveRadiance += gEmit;
  * down and deepened, because at 0.08 in the blue channel it was reading as
  * powder, which is not a colour cars come in.
  */
+/* Diagnostic scale on the resolved reflection, so the question "how much of a
+ * flank's value is the probe and how much is the sun" can be answered by
+ * measurement rather than by argument. Ships at 1. */
+const DBGR = 1.0;
+const DBGP = 0;
+
 const PAINT_DECL = /* glsl */ `
 vec3 carPaint(float g, out float metalFlake){
   float i = floor(clamp(g, 0.0, 0.999) * 10.0);
@@ -616,6 +654,30 @@ const PAINT_BODY = /* glsl */ `
         + clamp(tk, -2.5, 2.5) * exp(-tk * tk) * 0.130);
       // Sharper clearcoat right on the crease, which is where it is polished.
       rgh -= 0.05 * exp(-ts * ts) * flankness;
+
+      /* And the door skin's own curvature, which the two creases above cannot
+       * substitute for. They are local: each perturbs the normal over fifty
+       * millimetres and leaves the rest of the panel pointing where the loft
+       * left it, which is straight out. A flank whose normal is constant puts
+       * every pixel on it at the same angle to a four-degree sun, so the whole
+       * side of the car satisfies the mirror condition at once and the
+       * clearcoat returns one enormous lobe — measured at 4.27 linear across
+       * the middle of the hero's door, brighter than the sunlit pavement it is
+       * parked on and peaking in the wrong place entirely.
+       *
+       * A real door skin is convex over its height: the normal points up and
+       * out at the shoulder and rolls to down and out at the sill, perhaps
+       * thirty-five degrees across the panel. That sweep is what makes the
+       * highlight a streak — only the one height whose normal bisects eye and
+       * sun is hot, and everything above and below it falls away. It is also
+       * the only version of this that produces the dark band the critique
+       * asked for, because a band that is dark by construction cannot be
+       * drawn with a bump function that integrates to zero.
+       *
+       * Low frequency by nature: the whole sweep happens over most of a metre,
+       * which is the case NOTES.md exempts when it warns about relief at this
+       * sun elevation. */
+      gTiltY += flankness * clamp((hh - (beltY - 0.20)) * 0.60, -0.30, 0.30);
 
       /* The waist moulding: a hard dark line along the beltline, under the
        * DLO. On most of these it is the rubber weatherstrip and on some it is
@@ -1111,7 +1173,7 @@ vCarB = aCarB;
 vCarC = aCarC;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('void main() {',
-        `${NOISE}\n${CAR_PARS}\n${CAR_FRAG_DECL}\n${CANYON}\n${STREET_PROBE}\n${PAINT_DECL}\nvoid main() {`)
+        `#define DBGR ${DBGR.toFixed(2)}\n${NOISE}\n${CAR_PARS}\n${CAR_FRAG_DECL}\n${CANYON}\n${STREET_PROBE}\n${PAINT_DECL}\nvoid main() {`)
       .replace(HOOK, `${HOOK}\n${PAINT_BODY}`)
       .replace('#include <normal_fragment_maps>', `${FACADE_NORMAL}
 normal = normalize(normal + vec3(0.0, gTiltY, 0.0));
@@ -1121,8 +1183,8 @@ normal = normalize(normal + vec3(0.0, gTiltY, 0.0));
 {
   vec3 Vw = normalize(vWPos - cameraPosition);
   vec3 Rw = reflect(Vw, normalize(normal));
-  gReflC = streetProbe(vWPos, Rw, gCoatRough * 1.6) * gSpecAO;
-  gRefl = streetProbe(vWPos, Rw, gReflBlur) * gSpecAO;
+  gReflC = streetProbe(vWPos, Rw, gCoatRough * 1.6) * gSpecAO * DBGR;
+  gRefl = streetProbe(vWPos, Rw, gReflBlur) * gSpecAO * DBGR;
 }`)
       .replace('#include <lights_fragment_maps>', CAR_MAPS(2.00))
       .replace('#include <emissivemap_fragment>', CAR_EMISSIVE)
@@ -1223,11 +1285,19 @@ const GLASS_BODY = /* glsl */ `
   float rgh = clamp(0.035 + film * 0.13, 0.032, 0.30);
   gRefl = streetProbe(vWPos, R, clamp(rgh * 2.0, 0.0, 0.85));
   /* Film scatters the reflection rather than removing it, so it loses contrast
-   * toward the haze rather than going dark. Multiplying it down is the
-   * behaviour of a filter and not of dirt. */
-  vec3 hazeC = mix(vec3(0.85, 0.80, 0.95), vec3(4.18, 2.50, 2.03),
-    smoothstep(-0.25, 0.90, dot(normalize(vec2(R.x, R.z) + 1e-5), normalize(uSun.xz))));
-  gRefl = mix(gRefl, hazeC * 0.85, film * 0.32);
+   * rather than going dark. Multiplying it down is the behaviour of a filter
+   * and not of dirt.
+   *
+   * What it loses contrast *toward* was wrong, and it was worth about a third
+   * of this pane's brightness on its own. It mixed toward the sunward haze —
+   * 4.18 linear, the far end of the street — on every dirty pane whatever
+   * direction it faced, so a filthy side window pointing at a shaded frontage
+   * came back carrying a third of the brightest thing in the scene. Dirt
+   * scatters into the neighbourhood the pane can actually see, and this
+   * function already computes exactly that: it is what the blur parameter
+   * returns at full weight. */
+  vec3 scat = streetProbe(vWPos, R, 1.0);
+  gRefl = mix(gRefl, scat, film * 0.45);
   /* The same occlusion the paint carries, and for the same reason.
    *
    * streetProbe is an empty canyon and a side window is not looking at one: it
@@ -1239,7 +1309,15 @@ const GLASS_BODY = /* glsl */ `
    * turns on and the one this scene can settle, because both are in the same
    * frame. A car window is not a better mirror than a shop window; it is a
    * smaller, dirtier, more curved one with more standing in its way. */
-  gRefl *= 0.30;
+  gRefl *= 0.30 * DBGR;
+#if DBGP
+  /* The pane rendered as an opaque mirror of the raw probe, which is the only
+   * way to read what streetProbe actually returns along a given ray instead of
+   * inferring it from a composited pixel. */
+  gRefl /= max(0.30 * DBGR, 1e-4);
+  gFres = 1.0;
+  diffuseColor.a = 1.0;
+#endif
   /* Drain some of the saturation, exactly as the sash glass and the shopfront
    * glazing do. A pane with city film on it is not a first-surface mirror:
    * most of what leaves it toward the eye has been scattered rather than
@@ -1319,7 +1397,7 @@ void main() {`)
       .replace('#include <begin_vertex>', `${FACADE_VERTEX}\nvFuv = uv;\nvGl = aGl;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('void main() {',
-        `${NOISE}\n${CAR_PARS}\nvarying vec4 vGl;\n${CANYON}\n${STREET_PROBE}\nvoid main() {`)
+        `#define DBGR ${DBGR.toFixed(2)}\n#define DBGP ${DBGP}\n${NOISE}\n${CAR_PARS}\nvarying vec4 vGl;\n${CANYON}\n${STREET_PROBE}\nvoid main() {`)
       .replace(HOOK, `${HOOK}\n${GLASS_BODY}`)
       .replace('#include <normal_fragment_maps>', FACADE_NORMAL)
       .replace('#include <lights_fragment_maps>', `

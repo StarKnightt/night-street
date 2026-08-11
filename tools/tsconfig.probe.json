@@ -1,0 +1,17 @@
+{
+  "//": "Scratch config for tools/sys5probe.ts. Separate from tsconfig.sys5.json only because that one enumerates its inputs and this entry point pulls in the scene materials transitively. Not part of the build; .sys5 is gitignored.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "../.sys5",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": false,
+    "jsx": "react-jsx",
+    "baseUrl": "..",
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["./sys5probe.ts"]
+}
