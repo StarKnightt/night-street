@@ -73,6 +73,12 @@ await run({ width: 1600, height: 900 }, async ({ page }) => {
     res.fogBack = await measure(200, 200);
 
     s.setPaused(false);
+    // Read the scene's size from one clean frame. gl.info accumulates across
+    // the fifteen hundred renders above, which is a per-run total and not a
+    // per-frame one, and printing that as "draw calls" is a lie a tired reader
+    // will believe.
+    gl.info.reset();
+    frame();
     return { res, calls: gl.info.render.calls, tris: gl.info.render.triangles };
   }, { yaw: YAW_SUN });
 
