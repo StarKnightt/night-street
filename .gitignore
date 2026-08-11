@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# capture harness output (645MB of PNGs, regenerable via npm run shoot)
+/shots/
