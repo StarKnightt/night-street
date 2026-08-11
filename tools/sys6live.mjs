@@ -97,6 +97,7 @@ const CONFIGS = [
   ['nophase',  'nophase'],
   ['nowedge',  'nowedge'],
   ['nodust',   'nodust'],      // the mote field only
+  ['noshadow', 'noshadow'],    // motes present but not gated on the sun
   ['off',      'off'],         // stock three fog maths, haze and wedge removed
 ];
 

@@ -39,7 +39,32 @@ import { SUN_DIR } from './env';
  * at PEAK, where the number lives.
  */
 const COUNT = 2200;
-const BOX = new THREE.Vector3(26, 7.5, 34);
+
+/* The field is a slab, not a cube, and that is a measurement result.
+ *
+ * It used to be a 26 x 7.5 x 34 box wrapped around the camera in all three
+ * axes, and the consequence was arithmetic rather than aesthetic. Wrapping y
+ * around a camera at eye height puts the motes in world y -2.1 to 5.4, while
+ * the two gates that decide whether a mote is visible are both stated in
+ * *world* y: the lit slab ramps in at 0.9, and the above-eye-level gate has
+ * closed by about 1.6. So the usable band was 0.7 m out of 7.5, and 91 per
+ * cent of the field was permanently invisible — either underground, or in the
+ * dark air below the beam, or up where it would have read as a star.
+ *
+ * Measured before the change: 165 of 2200 motes carried any brightness at all,
+ * and at 1600x900 the entire field moved 34 pixels. That is not a dim effect,
+ * it is an absent one, and no amount of level would have fixed it because the
+ * motes were not in the beam to begin with.
+ *
+ * So x and z still wrap around the camera — the walk has to be unbounded in
+ * the directions it moves — and y does not. Height above a street is a
+ * property of the street, not of where the viewer's head is, and the lit slab
+ * is world-anchored, so the field should be too. The band below sits the whole
+ * population inside the gates instead of scattering it either side of them.
+ * The count is unchanged, per the technique brief §4.4. */
+const BOX = new THREE.Vector3(26, 0, 34);
+const Y_LOW = 0.25;
+const Y_SPAN = 2.35;   // 0.25 .. 2.60 m above the carriageway
 
 /* Motes are a display increment, and this is its ceiling in 8-bit counts.
  *
@@ -53,7 +78,7 @@ const PEAK = 0.165;   // ~42 counts at the centre of a fully lit mote
 const VERT = /* glsl */ `
 uniform float uTime;
 uniform vec3  uBox;
-uniform vec3  uCam;
+uniform vec2  uYBand;    // (low, span) of the world-anchored dust slab
 uniform vec3  uSun;
 uniform float uPixel;
 uniform mat4  uShadowMat;
@@ -89,17 +114,43 @@ void main() {
   p.y += cos(uTime * 0.07 + aSeed.y * 6.283) * 0.18 + uTime * 0.045 + cy * 0.30;
   p.z += sin(uTime * 0.06 + aSeed.z * 6.283) * 0.28 + cz * 1.15;
 
-  // Wrap the box around the camera so the field is effectively unbounded.
-  vec3 rel = p - uCam;
-  rel = mod(rel + uBox * 0.5, uBox) - uBox * 0.5;
-  vec3 world = uCam + rel;
+  /* Wrap the box around the camera so the field is effectively unbounded.
+   *
+   * Keyed on three's own cameraPosition, not on a uniform this component
+   * pushes from useFrame, and that is a bug fix rather than a tidy-up.
+   *
+   * A uniform written in useFrame is only correct as of the last animation
+   * frame. Every capture in this project teleports and renders inside a single
+   * synchronous evaluate — goTo, setYaw, warp, renderOnce — so no rAF runs
+   * between the move and the draw, and the box stayed wrapped around wherever
+   * the camera had been. Measured: camera at z = -28, uCam still at the walk's
+   * start at z = +4, so the entire field sat 32 m behind the viewer and every
+   * captured frame contained exactly zero motes. tools/sys6live.mjs reported
+   * ?haze=nodust as a 0.0 change in every region at every stop including
+   * p99.9 and max, which is what an absent layer looks like and is not what a
+   * dim one looks like.
+   *
+   * cameraPosition is uploaded by the renderer from the camera being drawn
+   * with, on every render, so it cannot be stale by construction. The effect
+   * would have been correct in the interactive walk and absent in every frame
+   * anyone reviewed it from — which is the worst available failure mode, and
+   * the reason this is keyed off the renderer's value instead. */
+  vec2 rel = p.xz - cameraPosition.xz;
+  rel = mod(rel + uBox.xz * 0.5, uBox.xz) - uBox.xz * 0.5;
+  /* y wraps inside a world-anchored band instead, which also keeps the slow
+   * thermal rise honest: the drift term above lifts a mote indefinitely, and
+   * without a wrap the whole field would climb out of the beam within a
+   * minute of walking. Here it recirculates, which is what convection does. */
+  vec3 world = vec3(cameraPosition.x + rel.x,
+                    uYBand.x + mod(p.y - uYBand.x, uYBand.y),
+                    cameraPosition.z + rel.y);
 
   vec4 mv = modelViewMatrix * vec4(world, 1.0);
   gl_Position = projectionMatrix * mv;
 
   /* Forward scattering: bright when looking through the mote toward the sun,
    * nearly nothing when the sun is behind the viewer. */
-  vec3 vdir = normalize(world - uCam);
+  vec3 vdir = normalize(world - cameraPosition);
   float mu = max(dot(vdir, uSun), 0.0);
   float scatter = pow(mu, 5.0);
 
@@ -137,8 +188,8 @@ void main() {
    *   uShadowOn is 0 until the map exists, and the gate is then 1.0. A missing
    *   or disposed shadow map makes the motes un-gated, never absent.
    *
-   *   Outside the shadow frustum the gate is 1.0 as well. The mote box is
-   *   26 x 7.5 x 34 about the camera and the sun's frustum is finite, so the
+   *   Outside the shadow frustum the gate is 1.0 as well. The mote slab is
+   *   26 x 34 m about the camera and the sun's frustum is 44 x 26, so the
    *   corners of the field do fall outside it; treating outside as unlit would
    *   put a moving rectangular hole in the dust.
    *
@@ -172,10 +223,23 @@ void main() {
    * being dust and become out-of-focus bokeh, which asserts a shallow depth of
    * field this scene does not have and reads as lens dirt.
    *
-   * The distribution is now power-law rather than uniform. aSeed.z is uniform,
-   * so squaring it biases the field toward sub-pixel motes with a few
-   * conspicuous ones, which is both what a real size distribution looks like
-   * and what stops the field reading as 2200 copies of one object. */
+   * The distribution is power-law rather than uniform: aSeed.z squared biases
+   * the field toward small motes with a few conspicuous ones, which is what a
+   * real size distribution looks like and what stops the field reading as 2200
+   * copies of one object.
+   *
+   * uPixel had to go up for that to mean anything, and this is not a licence to
+   * grow the motes. Measured at 7.5, the requested size was 0.80 px at the 5th
+   * percentile, 0.80 at the median and 0.87 at the 95th — the entire population
+   * was pinned against the bottom of the clamp, so every mote was the same size
+   * and the distribution above was computing a number that the clamp then threw
+   * away. It was inert in exactly the way this project keeps shipping.
+   *
+   * The policy is the clamp, and the clamp has not moved: 0.8 px to 3.4 px,
+   * with the same reasoning as before — sized generously they stop being dust
+   * and become out-of-focus bokeh, which asserts a shallow depth of field this
+   * scene does not have. What changes is that the field now occupies that band
+   * instead of collapsing onto its floor. */
   float sz = aSeed.z * aSeed.z;
   gl_PointSize = clamp(uPixel * (0.75 + 1.9 * sz) / max(-mv.z, 0.6), 0.8, 3.4);
 }
@@ -197,17 +261,18 @@ void main() {
 `;
 
 /** Matches haze.ts's switch, so one query string configures the whole system. */
-function dustOff(): boolean {
+function dustFlag(name: string): boolean {
   if (process.env.NODE_ENV === 'production') return false;
   if (typeof window === 'undefined') return false;
   const q = new URLSearchParams(window.location.search).get('haze');
-  return !!q && q.split(',').map((s) => s.trim()).includes('nodust');
+  return !!q && q.split(',').map((s) => s.trim()).includes(name);
 }
 
 export function Dust() {
-  const camera = useThree((s) => s.camera);
+  // The camera and the renderer are deliberately not read here: both are
+  // reached through the draw itself, so that nothing this component sets can
+  // be a frame out of date. See the vertex shader and bind() below.
   const scene = useThree((s) => s.scene);
-  const gl = useThree((s) => s.gl);
   const ref = useRef<THREE.Points>(null);
   const sun = useRef<THREE.DirectionalLight | null>(null);
 
@@ -216,7 +281,7 @@ export function Dust() {
     const seed = new Float32Array(COUNT * 3);
     for (let i = 0; i < COUNT; i++) {
       pos[i * 3] = (Math.random() - 0.5) * BOX.x;
-      pos[i * 3 + 1] = Math.random() * BOX.y;
+      pos[i * 3 + 1] = Y_LOW + Math.random() * Y_SPAN;
       pos[i * 3 + 2] = (Math.random() - 0.5) * BOX.z;
       seed[i * 3] = Math.random();
       seed[i * 3 + 1] = Math.random();
@@ -235,10 +300,10 @@ export function Dust() {
       uniforms: {
         uTime: { value: 0 },
         uBox: { value: BOX.clone() },
-        uCam: { value: new THREE.Vector3() },
+        uYBand: { value: new THREE.Vector2(Y_LOW, Y_SPAN) },
         uSun: { value: new THREE.Vector3(...SUN_DIR) },
-        uPixel: { value: 7.5 },
-        uPeak: { value: dustOff() ? 0 : PEAK },
+        uPixel: { value: 16.0 },
+        uPeak: { value: dustFlag('nodust') ? 0 : PEAK },
         uShadowMat: { value: new THREE.Matrix4() },
         uShadowMap: { value: null },
         uShadowOn: { value: 0 },
@@ -251,53 +316,76 @@ export function Dust() {
     return { geometry: g, material: m };
   }, []);
 
-  useFrame((_, dt) => {
-    const u = material.uniforms;
-    u.uTime.value += dt;
-    u.uCam.value.copy(camera.position);
+  /* Only the clock advances per animation frame. Everything the frame's
+   * correctness depends on is bound in onBeforeRender below, for the reason
+   * given in the vertex shader: a capture teleports and draws inside one
+   * synchronous evaluate, so anything written here is a frame out of date at
+   * the moment it matters. A stale clock just means a still frame has still
+   * motes, which is what a still frame should have. */
+  useFrame((_, dt) => { material.uniforms.uTime.value += dt; });
 
-    /* Re-find the sun every frame rather than caching it.
+  /* Bound during the draw, by the renderer, from the state being drawn.
+   *
+   * onBeforeRender runs inside gl.render for this object, so a value set here
+   * is correct whether the frame came from the animation loop or from a
+   * one-shot renderOnce(). The shadow matrix is held by reference rather than
+   * copied, so the shadow pass's own update earlier in the same render is
+   * already reflected. */
+  const bind = useMemo(() => (r: THREE.WebGLRenderer) => {
+    const u = material.uniforms;
+
+    /* Re-find the sun rather than caching it in an effect.
      *
      * System 5 is still moving, and its light is mounted and unmounted by
-     * React; a reference captured once in an effect goes stale the first time
-     * that component reloads and then silently gates against a disposed map.
-     * A scene walk over a few dozen objects per frame costs nothing measurable
-     * and cannot go stale. */
+     * React; a reference captured once goes stale the first time that
+     * component reloads and then silently gates against a disposed map. A
+     * scene walk over a few dozen objects costs nothing measurable next to the
+     * draw it precedes, and cannot go stale. */
     if (!sun.current || !sun.current.parent) {
-      sun.current = null;
+      let found: THREE.DirectionalLight | null = null;
       scene.traverse((o) => {
         const l = o as THREE.DirectionalLight;
-        if (!sun.current && l.isDirectionalLight && l.castShadow) sun.current = l;
+        if (!found && l.isDirectionalLight && l.castShadow) found = l;
       });
+      sun.current = found;
     }
+
     /* depthTexture first, and this is not a defensive fallback — it is the
      * whole answer, and getting it wrong would have been invisible.
      *
      * For every shadow type except VSM, three renders the sun's depth into the
      * render target's *depthTexture* and leaves the colour attachment unused;
-     * `WebGLLights` binds `shadow.map.depthTexture || shadow.map.texture` and
+     * WebGLLights binds `shadow.map.depthTexture || shadow.map.texture` and
      * softShadow.ts then reads `.r` off it. Reaching for `shadow.map.texture`,
      * which is the obvious property name and the one this file first used,
      * samples that empty colour buffer instead. It throws nothing, links
      * cleanly and returns a constant — so every mote would have been gated
-     * identically and the effect would have looked like a level being wrong
-     * rather than like a texture being the wrong one. The order below mirrors
-     * three's own so it stays correct if System 5 changes shadow type. */
+     * identically and it would have read as a level being wrong rather than as
+     * a texture being the wrong one. The order below mirrors three's own so it
+     * stays correct if System 5 changes shadow type. */
     const s = sun.current;
     const sm = s && s.shadow ? s.shadow.map : null;
     const map = sm ? (sm.depthTexture || sm.texture) : null;
-    if (map) {
+    // ?haze=noshadow ungates the field, so the gate can be differenced against
+    // itself rather than only against no dust at all.
+    if (map && s && !dustFlag('noshadow')) {
       u.uShadowMap.value = map;
-      u.uShadowMat.value.copy(s!.shadow.matrix);
+      u.uShadowMat.value = s.shadow.matrix;
       u.uShadowOn.value = 1;
-      u.uRevDepth.value = (gl as unknown as { reversedDepthBuffer?: boolean })
+      u.uRevDepth.value = (r as unknown as { reversedDepthBuffer?: boolean })
         .reversedDepthBuffer ? 1 : 0;
     } else {
       u.uShadowOn.value = 0;
     }
+  }, [material, scene]);
 
-    if (ref.current) ref.current.position.set(0, 0, 0);
-  });
-
-  return <points ref={ref} geometry={geometry} material={material} frustumCulled={false} />;
+  return (
+    <points
+      ref={ref}
+      geometry={geometry}
+      material={material}
+      frustumCulled={false}
+      onBeforeRender={bind}
+    />
+  );
 }
