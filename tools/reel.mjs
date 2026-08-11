@@ -146,6 +146,60 @@ const SHOTS = [
     ],
   },
   {
+    /* The walk the collider makes available: one that leans on things.
+     *
+     * The shot above is hand-routed around every solid object on the street,
+     * because when it was cut that was the only option — there was no
+     * collision anywhere in the walker and the route was the only thing
+     * keeping the camera out of a parked car. It took three attempts. This one
+     * goes the other way and aims to make contact, because a scene that claims
+     * to be walkable has to be seen to be walked rather than flown through:
+     *
+     *   t 3.5   up over the kerb from the carriageway, a 145 mm step
+     *   t 6.5   the near side of the fire hydrant at z = -7.0, 300 mm off its
+     *           centre, which is 106 mm inside it — the shoulder catches and
+     *           the slide puts the walker round it
+     *   t 20    squeezing between the kerb and hatch B's door mirror, which
+     *           pushes the walker off the kerb and down into the gutter
+     *   t 23    out across the carriageway
+     *
+     * Nothing is aimed dead centre. A head-on contact with a post is an
+     * unstable equilibrium — the tangential part of the contact is exactly
+     * zero — so the walker stands against it until it is steered, which is
+     * what a person walking into a hydrant does and is no use as a shot.
+     *
+     * **`--dry` flags this shot and is wrong about it.** It reports 0.50 s
+     * within a body radius of the hatch at z = -25.4, closest 0.169 m. That is
+     * the mirror squeeze, and the mirror is why: `obstacles.mjs` carries the
+     * car bodies only, and a door mirror stands 150 mm proud of the flank at
+     * 0.97 m. The walker is resting on the mirror at exactly one body radius,
+     * which puts it 169 mm off the *flank* — clear of everything that is
+     * actually there and inside a table that does not know the mirror exists.
+     * `scene/collide.ts` derives both from `carSolids()` and reports no
+     * penetration anywhere on this route.
+     *
+     * Designed against `node tools/collide.mjs route`, which traces this same
+     * route through the same `Walker` in a second.
+     */
+    name: 'brush',
+    t: 0,
+    place: [-2.50, 2.0],
+    seconds: 30,
+    keys: ['KeyW'],
+    look: [
+      [0.0, 0.000, -0.05],
+      [1.0, 0.000, -0.05],
+      [3.2, 0.330, -0.06],
+      [5.0, 0.000, -0.05],
+      [8.0, 0.000, -0.06],
+      [13.0, -0.030, -0.05],
+      [18.0, 0.010, -0.06],
+      [23.0, -0.320, -0.07],
+      [27.0, -0.050, -0.05],
+      [30.0, 0.000, -0.05],
+    ],
+  },
+  {
     /* The same walk, stepped eight times finer than it is played.
      *
      * This is the instrument for "does anything shimmer that a still cannot

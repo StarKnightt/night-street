@@ -425,5 +425,86 @@ if (want('sweep')) {
   console.log(`  ${(100 * inside / count).toFixed(1)}% of the block is now out of bounds (${solids().length - 2} solids)`);
 }
 
+/* ── 7. A candidate route, traced ───────────────────────────────────────── */
+
+if (only === 'route') {
+  /* The delivered walk was hand-drawn to miss every solid object on the
+   * street, because missing them was the only option. With a collider there
+   * is a better shot available: one that leans on things. This traces a
+   * candidate second by second so a route can be designed against numbers
+   * rather than against a fifteen-minute capture, and then pasted into
+   * `SHOTS` in reel.mjs.
+   *
+   * `look` is reel.mjs's format exactly — [second, yaw, pitch] keyframes,
+   * smoothstepped and delivered through `walker.look()` as a pixel delta — so
+   * what is traced here is what the reel will shoot.
+   */
+  const shot = {
+    name: 'brush',
+    /* 300 mm off the centre of the hydrant, which is 106 mm inside it: the
+     * shoulder catches its near side and the slide puts the walker round it.
+     * Dead centre is not a brush — it is an unstable equilibrium, the
+     * tangential component of the contact is exactly zero, and the walker
+     * stands against a 176 mm post until it is steered. Which is what a person
+     * walking into a hydrant does, and is no use as a route. */
+    place: [-2.50, 2.0],
+    seconds: 30,
+    look: [
+      [0.0, 0.000, -0.05],
+      [1.0, 0.000, -0.05],
+      [3.2, 0.330, -0.06],    // up over the kerb onto the footway
+      [5.0, 0.000, -0.05],
+      [8.0, 0.000, -0.06],    // the hydrant at z = -7.0, 300 mm off its centre
+      [13.0, -0.030, -0.05],
+      [18.0, 0.010, -0.06],   // the sign post at z = -25.5, 230 mm off its centre
+      [23.0, -0.320, -0.07],  // off the kerb and out into the road
+      [27.0, -0.050, -0.05],
+      [30.0, 0.000, -0.05],
+    ],
+  };
+
+  const smooth = (u) => u * u * (3 - 2 * u);
+  const lookAt = (keys, sec) => {
+    if (sec <= keys[0][0]) return [keys[0][1], keys[0][2]];
+    for (let i = 1; i < keys.length; i++) {
+      if (sec > keys[i][0]) continue;
+      const [t0, y0, p0] = keys[i - 1], [t1, y1, p1] = keys[i];
+      const u = smooth((sec - t0) / Math.max(1e-6, t1 - t0));
+      return [y0 + (y1 - y0) * u, p0 + (p1 - p0) * u];
+    }
+    const l = keys[keys.length - 1];
+    return [l[1], l[2]];
+  };
+
+  const FPS = 30;
+  const w = new Walker();
+  w.x = shot.place[0]; w.z = shot.place[1];
+  w.yaw = shot.look[0][1]; w.pitch = shot.look[0][2];
+  w.snapGround();
+  console.log(`\n  ROUTE — ${shot.name}, ${shot.seconds}s at ${FPS} Hz\n`);
+  console.log(`  ${pad('t', 6)}${pad('x', 8)}${pad('z', 9)}${pad('clear', 8)}${pad('eye y', 8)}touching`);
+  const touches = new Map();
+  let worst = { d: 9 };
+  for (let f = 0; f < shot.seconds * FPS; f++) {
+    const sec = f / FPS;
+    const [yw, pw] = lookAt(shot.look, sec);
+    w.look((w.yaw - yw) / 0.0022, (w.pitch - pw) / 0.0022);
+    w.update(1 / FPS, { forward: 1, strafe: 0, sprint: false });
+    const c = nearest(w.x, w.z);
+    if (c.d < worst.d) worst = { ...c, x: w.x, z: w.z, t: sec };
+    if (w.contact) touches.set(w.contact, (touches.get(w.contact) || 0) + 1);
+    if (f % FPS === 0) {
+      console.log(
+        `  ${pad(sec.toFixed(0), 6)}${pad(w.x.toFixed(2), 8)}${pad(w.z.toFixed(2), 9)}` +
+        `${pad(c.d.toFixed(3), 8)}${pad(w.eye.y.toFixed(3), 8)}${w.contact || ''}`,
+      );
+    }
+  }
+  console.log(`\n  closest ${worst.d.toFixed(3)} m to ${worst.what} at t ${worst.t.toFixed(1)}`);
+  console.log(`  penetration ${mm(BODY_R - worst.d)} mm`);
+  for (const [k, n] of touches) console.log(`  brushed ${pad(k, 18)} for ${(n / FPS).toFixed(2)} s`);
+  if (!touches.size) console.log('  ! nothing was touched — this is the old kind of route');
+}
+
 console.log(bad ? `\n  ${bad} FAILURES\n` : '\n  all clear\n');
 process.exit(bad ? 1 : 0);
