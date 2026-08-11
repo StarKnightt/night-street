@@ -538,12 +538,31 @@ export class CityAudio {
   }
 
   private renderIr(ctx: AudioContext): void {
+    /* Rendered at the context's rate, not at `SR.ir`.
+     *
+     * Every other buffer in this engine is generated at whatever rate suits
+     * the material and played through an AudioBufferSourceNode, which
+     * resamples on the way out — which is why the bed can be 12 kHz and the
+     * neon 24 kHz for free. ConvolverNode is the one node in the graph that
+     * does not: it throws `NotSupportedError` outright if the impulse
+     * response's rate differs from the context's.
+     *
+     * It did. `SR.ir` is 24000 and the context comes up at 48000, so
+     * `build()` threw on this line, and it threw *before* the bed, the
+     * spot sources and the footsteps were built — so the entire audio system
+     * was silent, on every machine, in every capture. Nothing above the
+     * pageerror log said so, and the numeric verification this engine passed
+     * ran against the DSP functions rather than against the graph.
+     *
+     * 1.25 s of stereo at 48 kHz is a 60000-tap convolution per channel,
+     * which is what a browser's partitioned convolver is for. */
+    const sr = ctx.sampleRate;
     const irPair = streetIR({
-      sr: SR.ir, seed: IR.seed, nearWall: IR.nearWall, farWall: IR.farWall,
+      sr, seed: IR.seed, nearWall: IR.nearWall, farWall: IR.farWall,
       width: IR.width, eyeHeight: IR.eyeHeight, seconds: IR.seconds,
       rtLow: IR.rtLow, rtMid: IR.rtMid, rtHigh: IR.rtHigh, energyDb: IR.energyDb,
     });
-    const ir = ctx.createBuffer(2, irPair.left.length, SR.ir);
+    const ir = ctx.createBuffer(2, irPair.left.length, sr);
     ir.copyToChannel(irPair.left, 0);
     ir.copyToChannel(irPair.right, 1);
     this.count(ir);
