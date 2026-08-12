@@ -97,7 +97,9 @@ that same table rather than against a copy of it.
 **Gait.** Zero measurable foot slide at either pace: 0.700 m of stride measured
 against 0.700 m modelled, over 58 footfalls. `tools/gait.mjs` runs the gait model
 on the CPU with no browser and no GPU; `tools/motion.mjs` checks the delivered
-capture against it.
+capture against it. The speeds themselves read 1.40 m/s walking and 3.10 m/s
+sprinting off the walker's own position over three-second intervals, a ratio of
+2.21 against the 2.21 modelled.
 
 **Dust.** The motes are real objects with parallax rather than a noise overlay,
 which is a claim worth testing because the cheap version looks similar in a
@@ -115,36 +117,50 @@ the take if they drift past 60 ms.
 ## What is not good enough yet
 
 An honest list, because the alternative is that you find these yourself and
-wonder what else is being oversold.
+wonder what else is being oversold. The first two are measured against the
+deployed build; the rest are what the project currently records against itself
+in [`NOTES.md`](NOTES.md).
 
-**The road and paving system is the weakest part of the build.** The paving has
-no per-slab variance — every slab is the same slab — and no chamfered edges,
-which is the detail that makes real paving read as a set of separate stones
-rather than as a textured plane. This is the first thing a second pass should
-take.
+**The cold start is the worst thing about the hosted version.** Thirty-two
+seconds to the first frame on a desktop GPU, with the page unresponsive for most
+of it, is a genuinely bad first impression and it is the direct cost of
+generating everything at load. It could be improved — the bakes could be spread
+across frames so the page stays responsive, or cached into IndexedDB after the
+first visit, or moved into a worker — and none of that has been done.
 
-**The brick lacks albedo variance.** The relief, the mortar and the weathering
-are there; the colour differences between individual bricks are not. Brick in
-reality varies more between neighbours than almost any other common surface.
+**There are no touch controls at all.** Movement is read off keyboard events and
+looking requires a locked pointer, so the scene is not drivable on a phone in any
+sense. The hosted build detects this and says so rather than handing over a
+street you cannot walk down, but that is a sign on a locked door, not a fix.
 
 **The road's hue and saturation are still off.** The carriageway sits at about
 three degrees red with a saturation of 0.23 where real asphalt measures 0.05 to
-0.12. The colour grade takes the sunlit carriageway from 0.263 to 0.227 and that
+0.12. The colour grade takes the sunlit carriageway from 0.263 to 0.227, and that
 is as far as a grade can go without desaturating the sunlight itself, which is
-the look. The residual is in the albedo. One dead end is recorded so it is not
-retried: tinting the inter-chip cavities toward zenith blue made the saturation
-*worse*, because the chip scatter is sparse and leaves too few cavities to act
-on.
+the look. The residual is in the albedo. One dead end is recorded so that it is
+not retried: tinting the inter-chip cavities toward zenith blue made the
+saturation *worse*, because the chip scatter is sparse and leaves too few
+cavities to act on.
 
-**The road centreline is over-worn.** It reads as a crack rather than as paint.
+**The road centreline is over-worn** and reads as a crack rather than as paint.
 
-**There are no touch controls.** Movement is read off keyboard events and looking
-requires a locked pointer, so the scene is not drivable on a phone at all. The
-hosted build detects this and says so instead of handing over a street you cannot
-walk down.
+**The road and paving surfaces are the part under most active revision**, and
+the deferred list against them is the longest in the project: chip embedding and
+the contact meniscus on the asphalt, wheel tramline form, Voronoi crack
+distribution, stucco spall relief, and shopfront glazing depth.
 
-Further deferred items, each owned by a pass that has not run, are in
-[`NOTES.md`](NOTES.md).
+**Distance does not hold up as well as the near field.** Window contrast on the
+far backdrop blocks is only four to eight luminance units, too ghostly to read as
+windows; several mid-distance rooflines are flat, with no parapet or clutter; and
+the wall that terminates the street is carried entirely by haze, so it has
+nothing on it if the haze ever thins.
+
+**One tool is known to be wrong and has not been fixed.**
+`tools/obstacles.mjs` is a hand-copy of `world/cars.ts` that drifted — it is one
+car short and has the dumpster's half-extents transposed — so the fast route
+check clears walks that are not clear. `tools/route.mjs` exists because of it and
+traces against `scene/collide.ts` directly; `node tools/collide.mjs drift`
+reports the disagreements.
 
 ## The class of bug that cost this project most
 
