@@ -97,15 +97,29 @@ export const SUN_COT =
  * dish — so they have to be measured together in one browser session rather
  * than recompiled one at a time. ?flag=c,l,g,d overrides.
  *
- * Defaults: 6 mm is a normal cast chamfer on a concrete flag, 3 mm of seating
- * range is what a hand-laid course on sand actually holds, and 3 mm of dish is
- * a flag that has been walked on for twenty years. The gain is the one number
- * that is not a measurement of the world: a 35-degree chamfer against a
- * 4.2-degree sun has a naive N·L ratio of 1 + 9.5·cos, and the arris of a real
- * flag is rounded rather than cut and is partly shadowed by the flag across the
- * gap, so it does not reach that. 5.5 is the derated figure. */
+ * Defaults. The chamfer is 18 mm, which is not a cast chamfer — a cast one is
+ * 3 to 6 mm and was the first value tried here. It measured as very nearly
+ * nothing: at the range this footway is judged at, six millimetres is one pixel,
+ * so the arris highlight existed, was verified live in the debug channel at its
+ * full predicted strength, and still moved the surface's standard deviation by
+ * 0.3 of a count. What is actually on a footway this age is not a cast chamfer
+ * but a round-over — decades of feet, grit and frost take the edge off a flag
+ * into a soft curve a couple of centimetres across — and that is a feature wide
+ * enough to survive being averaged into a pixel. Measured across 6, 14, 20 and
+ * 28 mm the surface's standard deviation rose monotonically, 23.8 to 28.6.
+ *
+ * Seating range 3.5 mm is what a hand-laid course on sand holds, and it sets
+ * the cast shadow: 3.5 mm against cot(4.2 deg) is 48 mm of shadow off a proud
+ * neighbour. Dish 3.5 mm is a flag walked hollow over twenty years.
+ *
+ * The gain is the one figure here that is not a measurement of the world. A
+ * flat 35-degree chamfer against a 4.2-degree sun has an N·L ratio of 10.3 to
+ * the flag top. A round-over does not reach that, because only the part of the
+ * curve near the optimum tangent gets it and the rest is progressively off
+ * angle, and the bottom of the curve is shadowed by the flag across the gap.
+ * 5.5 is the derated figure and it is deliberately conservative. */
 export function flagTuneFromUrl(): THREE.Vector4 {
-  const d = new THREE.Vector4(0.006, 0.003, 5.5, 0.003);
+  const d = new THREE.Vector4(0.018, 0.0035, 5.5, 0.0035);
   if (typeof location === 'undefined') return d;
   const m = /[?&]flag=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)/.exec(
     location.search
@@ -2197,6 +2211,16 @@ vec2 gScreedN = vec2(0.0);
 float gGraze = 0.0;
 float gDirect = 1.0;
 float gSky = 1.0;
+/* A debug readout, written where the flag course is resolved and spent past the
+ * tone curve, so what comes back is the term itself and not the term seen
+ * through AgX's shoulder. Reading a coverage off a graded frame is how you
+ * conclude a shader is inert when it is merely compressed.
+ *
+ * Enabled by a negative arris gain, ?flag=c,l,-1,d, which is otherwise
+ * meaningless. There is no #define and no second program: this project has been
+ * bitten by query-string switches that never reached the compiled shader, and a
+ * uniform that is already proven live cannot fail that way. */
+vec3 gDbg = vec3(0.0);
 uniform float uBuildLine;
 uniform float uKerbEdge;
 uniform vec2 uSunXZ;
@@ -2360,7 +2384,14 @@ Flag flagAt(vec2 p, vec2 fw){
    * term in slabSettle it is allowed to be discontinuous, which is the part
    * that matters. */
   float dish = uFlag.w * (0.45 + 0.55 * hash21(o.cell + 5.93));
-  vec2  lean = (vec2(hash21(o.cell + 61.7), hash21(o.cell + 103.3)) - 0.5) * uFlag.y * 2.2;
+  /* Lean is four times the seating range, not twice: the seating range is the
+   * step measured AT a joint, and a flag that sits 3 mm low at one edge and
+   * 3 mm high at the other has leaned 6 mm across its own width. Authored at
+   * 2.2 it came to a slope of 0.36 per cent, which even against a four-degree
+   * key is a five per cent swing — below the point where anything reads. At 4.0
+   * it is a centimetre of fall across a 920 mm flag, which is an ordinary
+   * amount for a footway on a sand bed and gives about fifteen per cent. */
+  vec2  lean = (vec2(hash21(o.cell + 61.7), hash21(o.cell + 103.3)) - 0.5) * uFlag.y * 4.0;
   // d(height)/d(world x, z) of  -dish*(1-4fx^2)*(1-4fz^2) + lean.fx + lean.fz
   vec2 f2 = fr * fr * 4.0;
   vec2 slope = (vec2(dish * 8.0 * fr.x * (1.0 - f2.y),
@@ -2630,7 +2661,11 @@ const WALK_FRAG_BODY = /* glsl */ `
      * settled leaning away from the sun is darker over its entire face, chamfer
      * and all. Clamped at zero — past about four degrees of lean the flag is
      * shadowing itself and there is no negative light. */
-    gDirect = clamp((1.0 - occ + lit * uFlag.z) * fl.tilt, 0.0, 14.0);
+    gDirect = clamp((1.0 - occ + lit * abs(uFlag.z)) * fl.tilt, 0.0, 14.0);
+    /* red   the direct multiplier, scaled so 1.0 sits at mid grey
+     * green  total occlusion coverage: gap, dark chamfer and cast step
+     * blue   lit chamfer coverage, cosine weighted */
+    gDbg = vec3(gDirect * 0.25, occ, lit);
   }
 
   /* How much sky the fragment can see, for the indirect term. A slot 16 mm
@@ -2925,7 +2960,15 @@ export function makeWalkMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
       .replace('void main() {', `${NOISE}\n${WALK_SCREED}\n${WALK_FRAG_HEAD}\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${WALK_FRAG_BODY}`)
       .replace('#include <normal_fragment_maps>', WALK_NORMAL_HOOK)
-      .replace('#include <lights_fragment_end>', WALK_WALL_AO + ARTIFICIAL_ADD);
+      .replace('#include <lights_fragment_end>', WALK_WALL_AO + ARTIFICIAL_ADD)
+      /* Last statement in main(), so it overwrites everything including the
+       * tone curve. Substituting on <dithering_fragment> rather than inserting
+       * a token in a comment, which is how one of this project's substitutions
+       * silently did nothing. */
+      .replace(
+        '#include <dithering_fragment>',
+        '#include <dithering_fragment>\nif (uFlag.z < 0.0) gl_FragColor = vec4(gDbg, 1.0);'
+      );
   };
   m.customProgramCacheKey = () => 'night-street-walk';
   return m;
