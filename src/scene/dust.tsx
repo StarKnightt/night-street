@@ -1,7 +1,9 @@
 import * as THREE from 'three';
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { SUN_DIR } from './env';
+import { sunwardAirlight } from './haze';
+import { useHdr } from './pipeline';
 
 /* Dust and pollen in the air.
  *
@@ -23,20 +25,22 @@ import { SUN_DIR } from './env';
  * so a few thousand points cover an unbounded walk. Nothing is allocated per
  * frame and the whole thing is one draw call.
  *
- * COLOUR SPACE, per §2 of the technique brief.
+ * COLOUR SPACE, per §2 of the technique brief, and it has changed.
  *
- *   out  gl_FragColor  DISPLAY-ENCODED sRGB, added with the blend unit into a
- *        buffer that has already been through AgX, the sensor pedestal and the
- *        sRGB encode.
+ *   out  gl_FragColor  LINEAR SCENE RADIANCE, added with the blend unit into
+ *        the half-float target, before the tone curve. On ?nohdr, display-
+ *        encoded sRGB into the canvas, as it was.
  *
- * That is a deliberate choice and not the §2 mistake, which was mixing a linear
- * radiance into a display buffer as if the two were the same quantity. There is
- * no way to add a radiance before the curve from a separate additive draw —
- * the curve has already run by the time this geometry is composited — so the
- * quantity here is authored *as* a display increment and measured as one. When
- * System 8 introduces the linear HDR target (§5.1) this becomes a radiance and
- * the constant below has to be re-derived through tools/agx.mjs; that is noted
- * at PEAK, where the number lives.
+ * The old note here said this would happen: "when System 8 introduces the
+ * linear HDR target (§5.1) this becomes a radiance and the constant below has
+ * to be re-derived through tools/agx.mjs". It has, and it was — the working is
+ * at PEAK_L, and it turned out to be more interesting than a unit conversion,
+ * because a display increment is not one radiance but four depending on what
+ * it lands on.
+ *
+ * Nothing else about the draw changes. It is still one additive pass of
+ * 2200 points with no depth write, and it is still composited by the blend
+ * unit; what it composites into is now light rather than density.
  */
 const COUNT = 2200;
 
@@ -72,8 +76,47 @@ const Y_SPAN = 2.35;   // 0.25 .. 2.60 m above the carriageway
  * brightest mote pixels at the value below over the hazed carriageway, which is
  * where they are seen. Raising it is the obvious temptation and is what turns
  * dust into a snowstorm; §4.4 is explicit that the count and the size must not
- * go up, and level is the third way of making the same mistake. */
+ * go up, and level is the third way of making the same mistake.
+ *
+ * Only on ?nohdr. See PEAK_L. */
 const PEAK = 0.165;   // ~42 counts at the centre of a fully lit mote
+
+/* Motes are a radiance, and this is what the constant above turns into.
+ *
+ * The header of this file said this would have to be re-derived through
+ * tools/agx.mjs when the linear target arrived, and the reason is worth
+ * stating with the numbers, because it is the clearest example in the project
+ * of why an authored display increment is not a physical quantity.
+ *
+ * A fixed 42-count addition on top of a background is not one radiance, it is
+ * a different radiance at every background level. Through AgX at 0.296:
+ *
+ *     over code  90  it is  dL = 0.39
+ *     over code 110  it is  dL = 0.60
+ *     over code 130  it is  dL = 0.95
+ *     over code 150  it is  dL = 1.59
+ *
+ * So the old constant was quietly making motes over the bright end of the
+ * street four times more energetic than motes over the dark end, purely
+ * because of where they happened to land. In radiance a mote is a particle
+ * scattering the sun and its brightness has nothing to do with what is behind
+ * it, which is both correct and the reason the field will now read as being
+ * *in* the scene rather than on it.
+ *
+ * The value is a ratio to the sun rather than an absolute: `sunwardAirlight`
+ * is this sun scattered by this air at saturation — the brightest a piece of
+ * illuminated atmosphere can be — and a mote's peak pixel is a fifth of that.
+ * It lands inside the 0.60-0.95 band the old constant occupied where motes are
+ * actually seen.
+ *
+ * Through haze.ts rather than env.ts's `HORIZON_SUNWARD`, which is the same
+ * quantity with the solar aureole still in it and therefore a function of the
+ * sun's elevation. Reading the exported constant dimmed every mote by about
+ * two fifths when the sun rose from 4.2 degrees to 12 — a change that says
+ * nothing about how much dust is in the street. haze.ts's note on that
+ * function has the arithmetic.
+ */
+const MOTE_FRACTION = 0.20;
 
 const VERT = /* glsl */ `
 uniform float uTime;
@@ -148,11 +191,28 @@ void main() {
   vec4 mv = modelViewMatrix * vec4(world, 1.0);
   gl_Position = projectionMatrix * mv;
 
-  /* Forward scattering: bright when looking through the mote toward the sun,
-   * nearly nothing when the sun is behind the viewer. */
+  /* Forward scattering, which is the entire effect.
+   *
+   * Airborne dust at golden hour is strongly forward-scattering: a mote is
+   * dazzling looking into the sun and all but invisible looking away, and a
+   * field without that view dependence reads as snow. The lobe here is a
+   * Henyey-Greenstein at g = 0.76 normalised to 1 down the beam — the same
+   * family haze.ts uses for the medium, at a much higher asymmetry, because a
+   * mote is a large particle and the haze's g = 0.42 is a broadened
+   * multiple-scattering figure that does not apply to one.
+   *
+   * It replaces pow(max(mu,0), 5.0), which had almost exactly this shape over
+   * the forward hemisphere and two defects behind it: it is identically zero
+   * over the whole anti-sun half, so the field switches off with a derivative
+   * kink halfway through every pan, and being zero it could not express the
+   * thing that is actually true, which is that a mote seen against a dark
+   * frontage with the sun behind you still catches a little sky. The tail is
+   * 0.25 per cent of the peak. That is not visible on its own and it is the
+   * difference between a lobe and a cut. */
   vec3 vdir = normalize(world - cameraPosition);
-  float mu = max(dot(vdir, uSun), 0.0);
-  float scatter = pow(mu, 5.0);
+  float mu = dot(vdir, uSun);
+  float hg = 1.5776 - 1.52 * mu;                    // 1 + g^2 - 2g*mu, g = 0.76
+  float scatter = 0.0138 * inversesqrt(hg * hg * hg);
 
   /* Only in the beam. Low sun skims, so the lit slab is a band, not a volume.
    *
@@ -313,7 +373,8 @@ void main() {
   float r = dot(d, d);
   if (r > 0.25) discard;
   float a = smoothstep(0.25, 0.02, r);
-  // Display-encoded, added by the blend unit. See the header.
+  // Radiance, or a display increment on ?nohdr. Added by the blend unit;
+  // see the header. The tint is the sun's own, warmed by the air it crossed.
   gl_FragColor = vec4(vec3(1.0, 0.74, 0.42) * vGlow * a * uPeak, 1.0);
 }
 `;
@@ -373,7 +434,7 @@ export function Dust() {
         uYBand: { value: new THREE.Vector2(Y_LOW, Y_SPAN) },
         uSun: { value: new THREE.Vector3(...SUN_DIR) },
         uPixel: { value: 16.0 },
-        uPeak: { value: dustFlag('nodust') ? 0 : PEAK },
+        uPeak: { value: dustFlag('nodust') ? 0 : (useHdr() ? sunwardAirlight(SUN_DIR)[0] * MOTE_FRACTION : PEAK) },
         uShadowMat: { value: new THREE.Matrix4() },
         uShadowMap: { value: null },
         uShadowOn: { value: 0 },
@@ -393,6 +454,17 @@ export function Dust() {
    * the moment it matters. A stale clock just means a still frame has still
    * motes, which is what a still frame should have. */
   useFrame((_, dt) => { material.uniforms.uTime.value += dt; });
+
+  /* Published so the field can be switched off between two otherwise identical
+   * renders. The view dependence is the entire effect and it is the one claim
+   * a still frame cannot support, so it has to be measurable as a differenced
+   * pair — and a differenced pair against a *reload* would also difference the
+   * hash seeds and the clock. See tools/atmo.mjs. */
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+    (window as unknown as { __dust?: unknown }).__dust = { uniforms: material.uniforms };
+    return () => { delete (window as unknown as { __dust?: unknown }).__dust; };
+  }, [material]);
 
   /* Bound during the draw, by the renderer, from the state being drawn.
    *

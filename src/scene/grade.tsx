@@ -60,6 +60,9 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import { AGX_GLSL, makeSceneTarget, pipeFlags, useHdr } from './pipeline';
+import { Volumetric } from './volumetric';
+import { Bloom } from './bloom';
 
 /* The look, as coefficients, so that switching it off is a swap of the whole
  * set rather than a branch in the shader. */
@@ -174,6 +177,17 @@ precision highp float;
 varying vec2 vUv;
 uniform sampler2D tFrame;
 uniform vec2  uTexel;
+#ifdef HDR
+  uniform sampler2D tVol;      // half-res in-scatter, .a = the depth it marched to
+  uniform sampler2D tBloom;    // veiling glare, radiance
+  uniform sampler2D tDepth;
+  uniform vec2  uVolTexel;
+  uniform vec2  uDepthRange;
+  uniform float uRevDepth;
+  uniform float uExposure;
+  uniform float uBloom;
+  uniform float uVol;
+#endif
 uniform vec3  uSlope, uOffset, uPower, uShadow, uHigh;
 uniform vec2  uCross;
 uniform vec3  uPrint;
@@ -207,6 +221,49 @@ vec3 hash3(vec2 p) {
                         dot(p, vec2(39.3468, 11.135)),
                         dot(p, vec2(63.7264, 21.881)))) * 43758.5453) - 0.5;
 }
+
+#ifdef HDR
+__AGX__
+
+float viewZ(float d) {
+  d = mix(d, 1.0 - d, uRevDepth);
+  float n = uDepthRange.x, f = uDepthRange.y;
+  return (2.0 * n * f) / (f + n - (d * 2.0 - 1.0) * (f - n));
+}
+
+/* Depth-aware upsample of the half-resolution march.
+ *
+ * A plain bilinear lift of a volumetric buffer bleeds it across every
+ * silhouette in the frame — a shaft leaks a two-pixel halo onto the car in
+ * front of it, which is the single most recognisable artifact of a half-res
+ * volumetric and reads as a compositing error rather than as light. The four
+ * contributing texels each carry the depth they were marched to in .a, so a
+ * texel that belongs to a different surface can be rejected instead.
+ *
+ * The bilinear weights are kept and multiplied by the depth agreement rather
+ * than replaced by it, so in the overwhelmingly common case where all four
+ * agree this is exactly bilinear and costs three extra taps.
+ */
+vec3 volumeAt(float z) {
+  vec2 p = vUv / uVolTexel - 0.5;
+  vec2 i = floor(p), fr = fract(p);
+  vec3 sum = vec3(0.0);
+  float wsum = 0.0;
+  for (int y = 0; y < 2; y++) {
+    for (int x = 0; x < 2; x++) {
+      vec2 o = vec2(float(x), float(y));
+      vec4 s = texture2D(tVol, (i + o + 0.5) * uVolTexel);
+      float wb = mix(1.0 - fr.x, fr.x, o.x) * mix(1.0 - fr.y, fr.y, o.y);
+      // Tolerance proportional to range: half a metre at the kerb, five at the
+      // end of the street, which is roughly the depth complexity at each.
+      float w = wb / (1.0 + abs(s.a - z) / (0.02 * z + 0.4));
+      sum += s.rgb * w;
+      wsum += w;
+    }
+  }
+  return sum / max(wsum, 1e-4);
+}
+#endif
 
 void main() {
   /* ── 1. Defocus ─────────────────────────────────────────────────────────
@@ -258,7 +315,39 @@ void main() {
     src = texture2D(tFrame, vUv).rgb;
   }
 
+  /* ── 2. Scene-referred atmosphere and lens, then the one tone map ───────
+   *
+   * Everything between here and the AgX call is radiance, and everything after
+   * it is display-linear. That boundary is the entire reason pipeline.ts
+   * exists, and the order across it is the physical order: the air scatters
+   * light into the ray, the lens smears a fraction of what reaches it, and
+   * only then does a sensor with a finite range have an opinion about any of
+   * it.
+   *
+   * On the ?nohdr path none of this compiles and c is the decoded canvas,
+   * which is the pass exactly as the screenshot archive was judged through.
+   *
+   * The pedestal is sensor.ts's, moved. It is a black point in the signal a
+   * sensor hands over — display-referred by construction — and prepending it
+   * to colorspace_fragment would add four thousandths of *radiance* to every
+   * fragment when the scene renders into a linear target. The coefficients are
+   * unchanged and it lands at the same point in the chain it was calibrated
+   * for: after the tone curve, before the grade. */
+#ifdef HDR
+  float z = viewZ(texture2D(tDepth, vUv).r);
+  src = max(src + volumeAt(z) * uVol, 0.0);
+
+  /* Veiling glare, energy conserving. A lens redistributes light, it does not
+   * manufacture it, so the frame keeps 1 - uBloom of itself and the pyramid
+   * supplies the rest. Written as a mix rather than an add for that reason:
+   * an additive veil brightens the whole frame by its own mean, which on this
+   * scene is a fifth of a stop of exposure nobody asked for. */
+  src = mix(src, texture2D(tBloom, vUv).rgb, uBloom);
+
+  vec3 c = agx(src, uExposure) * 0.955 + vec3(0.0040, 0.0046, 0.0070);
+#else
   vec3 c = srgbToLin(src);
+#endif
 
   /* ── 3. Linear grade ────────────────────────────────────────────────────
    *
@@ -409,6 +498,8 @@ function gradeFromUrl(): Grade {
 export function Grade() {
   const { gl, scene, camera, size, viewport } = useThree();
   const g = useMemo(gradeFromUrl, []);
+  const flags = useMemo(pipeFlags, []);
+  const hdr = useMemo(useHdr, []);
   /* Nothing left to do — ?nograde, and the identity set. The pass still owns
    * the frame loop, because handing it back conditionally would mean the two
    * builds differ in more than their coefficients. */
@@ -432,9 +523,38 @@ export function Grade() {
     return t;
   }, []);
 
+  /* The linear pipeline's own resources. Allocated at 2x2 and sized by the
+   * same effect that sizes the framebuffer copy, so there is one place that
+   * knows the drawing buffer's dimensions. */
+  const rig = useMemo(() => {
+    if (!hdr) return null;
+    return {
+      scene: makeSceneTarget(2, 2),
+      vol: new Volumetric(2, 2),
+      bloom: new Bloom(2, 2),
+    };
+  }, [hdr]);
+  useEffect(() => () => {
+    rig?.scene.dispose();
+    rig?.scene.depthTexture?.dispose();
+    rig?.vol.dispose();
+    rig?.bloom.dispose();
+  }, [rig]);
+
   const uniforms = useMemo(() => ({
-    tFrame: { value: target },
+    tFrame: { value: (rig ? rig.scene.texture : target) as THREE.Texture },
     uTexel: { value: new THREE.Vector2() },
+    ...(rig ? {
+      tVol: { value: rig.vol.target.texture },
+      tBloom: { value: rig.bloom.texture },
+      tDepth: { value: rig.scene.depthTexture as THREE.Texture },
+      uVolTexel: { value: new THREE.Vector2() },
+      uDepthRange: { value: new THREE.Vector2(0.05, 400) },
+      uRevDepth: { value: 0 },
+      uExposure: { value: 1 },
+      uBloom: { value: flags.has('nobloom') ? 0 : BLOOM },
+      uVol: { value: flags.has('novol') ? 0 : 1 },
+    } : {}),
     uSlope: { value: new THREE.Vector3(...g.slope) },
     uOffset: { value: new THREE.Vector3(...g.offset) },
     uPower: { value: new THREE.Vector3(...g.power) },
@@ -446,7 +566,7 @@ export function Grade() {
     uGrain: { value: new THREE.Vector3(...g.grain) },
     uCoc: { value: new THREE.Vector3(g.coc, 1.65, 0) },
     uSeed: { value: 0 },
-  }), [g, target]);
+  }), [g, target, rig, flags]);
 
   const quad = useMemo(() => {
     const geo = new THREE.BufferGeometry();
@@ -463,13 +583,19 @@ export function Grade() {
      * second time. */
     const mat = new THREE.ShaderMaterial({
       vertexShader: VERT,
-      fragmentShader: FRAG,
+      fragmentShader: FRAG.replace('__AGX__', AGX_GLSL),
       uniforms,
+      defines: hdr ? { HDR: '' } : {},
       depthTest: false,
       depthWrite: false,
+      /* Without this three generates its own `toneMapping()` into the program
+       * prefix — the quad draws to the canvas, so the renderer's AgX applies —
+       * and the frame would be tone-mapped twice. The one in the body is
+       * placed deliberately; this one is not wanted. */
+      toneMapped: false,
     });
     return new THREE.Mesh(geo, mat);
-  }, [uniforms]);
+  }, [uniforms, hdr]);
 
   const cam = useMemo(() => new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), []);
   const post = useMemo(() => new THREE.Scene(), []);
@@ -494,12 +620,62 @@ export function Grade() {
    * wants the ungraded pass. Dev only, because the debug API is dev only. */
   useEffect(() => {
     if (process.env.NODE_ENV !== 'development') return;
+    /* Published before the guard below, not after it.
+     *
+     * These two used to sit at the bottom of this effect, past an early return
+     * that fires when `window.__scene` has not been created yet — and whether
+     * it has depends on whether Rig's effect happened to run before this one,
+     * which is mount order and not something either file controls. The result
+     * was a debug surface that existed on most loads and was absent on some,
+     * and a tool that reported "is Grade mounted?" about a mounted Grade. */
+    (window as unknown as { __grade?: unknown }).__grade = { grade: g, uniforms };
+    (window as unknown as { __vol?: unknown }).__vol = rig
+      ? { get cones() { return rig.vol.lastConeCount; },
+          get shadow() { return rig.vol.lastShadow; },
+          get air() { return rig.vol.lastAir; },
+          /* One texel of the march's own output, in its own units: rgb is the
+           * signed in-scatter it wrote and a is the view depth it marched to.
+           * Added because a gate on that depth failed silently and reading the
+           * canvas cannot distinguish "the gate is wrong" from "the gate is
+           * right and the term is small". */
+          probe(u: number, v: number) {
+            const t = rig.vol.target;
+            /* Uint16Array and a manual decode, because the target is
+             * HalfFloatType and three matches the readback buffer to the
+             * texture type — handing it a Float32Array returned four zeroes for
+             * every texel, which is indistinguishable from a march that wrote
+             * nothing and cost an hour to tell apart. */
+            const buf = new Uint16Array(4);
+            gl.readRenderTargetPixels(t, Math.round(u * t.width),
+              Math.round(v * t.height), 1, 1, buf);
+            const half = (h: number) => {
+              const s = h >> 15 ? -1 : 1, e = (h >> 10) & 31, f = h & 1023;
+              if (e === 0) return s * f * 2 ** -24;
+              if (e === 31) return f ? NaN : s * Infinity;
+              return s * (1 + f / 1024) * 2 ** (e - 15);
+            };
+            return { r: half(buf[0]), g: half(buf[1]), b: half(buf[2]), vz: half(buf[3]) };
+          } }
+      : null;
+
     const s = (window as unknown as { __scene?: Record<string, unknown> }).__scene;
     if (!s || typeof s.renderOnce !== 'function') return;
     const original = s.renderOnce as () => void;
     s.renderScene = original;
-    s.renderOnce = () => { original(); draw(); };
-    (window as unknown as { __grade?: unknown }).__grade = { grade: g, uniforms };
+    /* `original` is `apply(); gl.render(scene, camera)` and it renders into
+     * whatever target is currently bound, so binding one around it is enough
+     * to redirect it — no edit to Rig.tsx, and no second scene render. Letting
+     * it draw to the canvas instead would compile a *second* set of programs
+     * for every material in the scene, because three's program cache is keyed
+     * on tone mapping and the canvas is tone-mapped where the target is not.
+     * That is the 15-second cold start defect from docs/COLDSTART.md, in a new
+     * hat, and it would only appear when capturing. */
+    s.renderOnce = () => {
+      if (rig) gl.setRenderTarget(rig.scene);
+      original();
+      if (rig) gl.setRenderTarget(null);
+      draw();
+    };
     return () => { s.renderOnce = original; delete s.renderScene; };
   });
 
@@ -514,12 +690,24 @@ export function Grade() {
     target.image.height = h;
     target.dispose();
     uniforms.uTexel.value.set(1 / w, 1 / h);
-  }, [gl, size, viewport.dpr, target, uniforms]);
+    if (rig) {
+      rig.scene.setSize(w, h);
+      rig.vol.setSize(w, h);
+      rig.bloom.setSize(w, h);
+      uniforms.uVolTexel!.value.set(1 / rig.vol.target.width, 1 / rig.vol.target.height);
+      /* The depth texture is recreated by setSize, so the uniform has to be
+       * re-pointed. Holding the old one is a black depth buffer at every
+       * resize and a march that stops at the near plane. */
+      uniforms.tDepth!.value = rig.scene.depthTexture as THREE.Texture;
+      uniforms.tFrame.value = rig.scene.texture;
+      uniforms.tBloom!.value = rig.bloom.texture;
+    }
+  }, [gl, size, viewport.dpr, target, uniforms, rig]);
 
   /* The post pass on whatever is currently in the canvas. Separated from the
    * frame callback so that renderOnce can reach it too. */
   const draw = () => {
-    if (inert) return;
+    if (inert && !hdr) return;
 
     /* Pitch, for the ground-distance solve in the defocus. Taken off the
      * camera each time rather than assumed, because the eye is no longer at a
@@ -529,27 +717,78 @@ export function Grade() {
     uniforms.uCoc.value.set(g.coc, Math.max(camera.position.y, 0.2), Math.tan(-e.x));
     uniforms.uSeed.value = (frames.current++ % 1024) * 7.13;
 
-    gl.copyFramebufferToTexture(target);
+    if (rig) {
+      const pc = camera as THREE.PerspectiveCamera;
+      uniforms.uExposure!.value = gl.toneMappingExposure;
+      uniforms.uDepthRange!.value.set(pc.near, pc.far);
+      uniforms.uRevDepth!.value =
+        (gl as unknown as { reversedDepthBuffer?: boolean }).reversedDepthBuffer ? 1 : 0;
+
+      if (uniforms.uVol!.value > 0) {
+        rig.vol.render(gl, scene as THREE.Scene, pc,
+          rig.scene.depthTexture as THREE.Texture, frames.current);
+      }
+      if (uniforms.uBloom!.value > 0) rig.bloom.render(gl, rig.scene.texture);
+      gl.setRenderTarget(null);
+    } else {
+      gl.copyFramebufferToTexture(target);
+    }
     gl.render(post, cam);
   };
 
   useFrame(() => {
     /* Draw-call accounting, first, and this is not housekeeping.
      *
-     * three resets `renderer.info` at the top of every render, so with two
-     * renders per frame the counters a tool reads afterwards describe the
-     * second one — this pass's single triangle. Every report in the project
-     * that prints `calls=` and `tris=` would silently start saying 1 and 0,
-     * which is exactly the kind of instrument failure that gets read as a
-     * scene failure at four in the morning. Reset once, here, and let both
-     * renders accumulate into it. */
+     * three resets `renderer.info` at the top of every render, so with several
+     * renders per frame the counters a tool reads afterwards describe the last
+     * one — this pass's single triangle. Every report in the project that
+     * prints `calls=` and `tris=` would silently start saying 1 and 0, which is
+     * exactly the kind of instrument failure that gets read as a scene failure
+     * at four in the morning. Reset once, here, and let every render
+     * accumulate into it. */
     gl.info.autoReset = false;
     gl.info.reset();
 
-    // The scene pass, unchanged and to the canvas, so ?nograde is byte-exact.
+    /* First-frame evidence, recorded once and only in development.
+     *
+     * docs/COLDSTART.md's defect was that installHaze rewrote THREE.ShaderChunk
+     * from an effect, which lands *after* r3f has drawn — so the first frame
+     * anyone could see carried three's stock fog instead of this scene's
+     * atmosphere, and every material compiled twice. Street.tsx's fix moved the
+     * call into a useMemo. This is the assertion that it worked, taken at the
+     * only moment when the answer is meaningful: the top of the first render,
+     * before this line has drawn anything.
+     *
+     * Reading the guard flag rather than a timestamp, because the question is
+     * not when installHaze ran but whether the chunk was patched when the first
+     * program was built, and the flag is the thing the patch sets. */
+    if (process.env.NODE_ENV === 'development' && frames.current === 0) {
+      const chunks = THREE.ShaderChunk as unknown as Record<string, unknown>;
+      (window as unknown as { __firstFrame?: unknown }).__firstFrame = {
+        hazeInstalled: chunks.__hazeInstalled === true,
+        fogChunkPatched: String(chunks.fog_fragment).includes('hazeSky'),
+        sensorPatched: String(chunks.colorspace_fragment).includes('0.0070'),
+        hdr: !!rig,
+      };
+    }
+
+    /* The scene pass. Into the linear target by default; straight to the
+     * canvas on `?nohdr`, where the renderer tone-maps it and `?nograde` is
+     * byte-exact against the archive. */
+    if (rig) gl.setRenderTarget(rig.scene);
     gl.render(scene, camera);
+    if (rig) gl.setRenderTarget(null);
     draw();
   }, 1);
 
   return null;
 }
+
+/* The fraction of the frame the lens redistributes. §5.3's number.
+ *
+ * Held loosely on purpose: the lighting agent is restoring the sun to a
+ * calibrated hero setting and a veil tuned against the current one would have
+ * to be thrown away. Being a *fraction* rather than a threshold, it should
+ * largely track a sun change on its own, which is most of the argument for
+ * writing it this way. */
+const BLOOM = 0.045;

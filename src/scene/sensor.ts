@@ -23,6 +23,7 @@
  * raw ShaderMaterials that include no chunks at all.
  */
 import * as THREE from 'three';
+import { useHdr } from './pipeline';
 
 const SENSOR = /* glsl */ `
 {
@@ -165,10 +166,32 @@ void MOVED_TO_GRADE;
 
 let installed = false;
 
-/** Idempotent. Safe to call from a component body or an effect. */
+/**
+ * Idempotent. Safe to call from a component body or an effect.
+ *
+ * A third move, and the last one this term should need. The pedestal is
+ * display-referred — it is the black point of the signal a sensor hands over,
+ * not a property of the light in front of it — and it was being applied by
+ * patching `colorspace_fragment`, which is the right place only for as long as
+ * the scene pass ends in a display encode.
+ *
+ * With the linear HDR target in `pipeline.ts` it does not. Every material in
+ * the scene now writes radiance into a half-float buffer, three generates
+ * `linearToOutputTexel` as the identity for it, and this chunk would be adding
+ * four thousandths of *radiance* to every fragment — about a fifth of a stop
+ * on the darkest parts of the frame, applied before the tone curve rather than
+ * after it, and applied to the sky twice over because the fog chunk runs after
+ * this one.
+ *
+ * So on the linear path the patch is simply not installed, and `grade.tsx`
+ * applies the identical coefficients at the point in the chain they were
+ * calibrated for: immediately after AgX, immediately before the grade. On
+ * `?nohdr` nothing changes and this is where it happens, as before.
+ */
 export function installSensorFloor() {
   if (installed) return;
   installed = true;
+  if (useHdr()) return;
   THREE.ShaderChunk.colorspace_fragment =
     SENSOR + '\n' + THREE.ShaderChunk.colorspace_fragment;
 }
