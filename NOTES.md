@@ -118,6 +118,39 @@ releasing W in the interactive walk feel like stopping rather than like a pause
 button. Left undone deliberately: it changes the motion of every future capture
 and was found at 4:50 a.m. on delivery day.
 
+## Whole-frame luminance is the wrong instrument for "does it end in the light"
+
+The third instrument mistake of the night, and the same shape as the other two:
+a measurement that was correct about the thing it measured and was not
+measuring the thing being claimed.
+
+`walkH` was accepted on a whole-frame p90 that opened 154 and closed 160, and
+that number is real. The camera was nonetheless standing in shade. Only 11% of
+the top-decile pixels in its last frame were in the bottom third; the p90 was
+carried almost entirely by a sunlit wall in the upper left, while the road under
+the camera measured L 25 to 43 — about three counts off the sensor pedestal.
+"Ends in the light" is a claim about the ground you are standing on, and a
+statistic over the whole frame cannot distinguish that from a lit wall across
+the street.
+
+`expose --ground` crops to the bottom third before counting. On the same file it
+reads p50 89 at the opening and 65 at the ending, which says plainly what the
+p90 hid: the walk finishes on darker ground than it starts on. On `walkJ` it
+reads 75 and 74.
+
+The general lesson, and it is now three for three tonight — the convolver that
+threw before the graph existed, the deceleration that was modelled and then
+multiplied by zero, and this — is that the failures which survive verification
+are the ones where the instrument and the claim are subtly different objects.
+Numeric checking of the parts does not catch them. What catches them is asking
+what physical thing the number is supposed to stand for, and then measuring
+that thing directly.
+
+Corollary worth keeping: `sunsweep` in `tools/shots.mjs` walks the far block at
+a fixed heading so ground luminance can be read against position. It cost one
+70-second capture and turned "somewhere past the shade line" into a five-metre
+plateau at z -75..-79 with numbers on it. Sweeping is cheaper than arguing.
+
 ## Where an ending can go on this street, and why it is not the BAR sign
 
 Recorded because it is a property of the block rather than of one route, and

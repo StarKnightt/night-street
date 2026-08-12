@@ -452,6 +452,101 @@ export const SHOTS = [
     ],
   },
   {
+    /* The stop moved into the light, and the walk steered off the van.
+     *
+     * `walkH` holds at z -71.5, which the ground measurement says is shade: the
+     * bottom third of its last frame reads p50 65 against 89 at its opening, so
+     * the camera finishes standing on darker ground than it started on. Its p90
+     * of 160 was real and was carried by a sunlit wall in the upper left, which
+     * is not the same thing as ending in the light and does not read as it.
+     *
+     * `sunsweep` walks the far block at a fixed heading and reads the bottom
+     * third a second at a time. Ground p50 by z: -71.0 is 47, -73.7 is 66,
+     * -75.1 is 74, -76.5 is 75, -77.9 is 74, -79.3 is 74, -82.1 is 63. So there
+     * is a five-metre plateau from -75 to -79 and the old hold sat four metres
+     * short of the near edge of it. The same measurement run back along the
+     * opening gives 89 at -33.5, 79 at -35.2, 69 at -36.9, 72 at -38.4 and then
+     * 39 at -40.5 — the lit ground at this end stops abruptly just past -38.5.
+     *
+     * Those two curves fix the start. A thirty-second walk covers 42 m and the
+     * hold has to come out of the middle of it, so the stop can only be moved
+     * by moving the start; the last position that still opens on lit ground is
+     * about -38, and releasing at 27.6 from there rests the camera at -76.6,
+     * inside the plateau. Ground p50 goes 71 at the opening to 75 at the
+     * ending. It is a small rise rather than a large one, but it is a rise, and
+     * both ends are standing in sun instead of one end looking at it.
+     *
+     * Being level with the sunlit hatch is the point, not a hazard. It spans
+     * -78.5..-74.1, so from -76.6 it is alongside — every part of it sits past
+     * 37 degrees off the axis and therefore outside a 0.635 rad half-width, and
+     * it leaves the frame completely. At -71.5 the same car was two to seven
+     * metres *ahead* and was the thing the hold froze on for 1.4 s. Standing
+     * next to a weak asset hides it; walking towards one frames it.
+     *
+     * The ending heading follows from that. `walkH` turned 0.298 west to get
+     * the car out of shot and paid for it twice: at close range the west
+     * frontage brings its own defects — a static alpha-test dither column on a
+     * pilaster, a 400x450 px shopfront window that is flat grey card with no
+     * interior, two signs too small to resolve — and it threw away the haze
+     * glow down the street, which is where the top percentile of the frame
+     * lives. With the car gone by position rather than by heading, the camera
+     * can face very nearly down the street: 0.080 rad, a few degrees west of
+     * the axis, which keeps the frontage edge-on and distant, keeps the sunlit
+     * carriageway in the near field, and puts the glow back in the frame.
+     *
+     * The van is a composition fix and not an asset one. `walkG`'s table steers
+     * *west* across t 17-20, which is precisely where the route passes van F on
+     * the west kerb — 0.854 m at the closest, which puts a featureless white
+     * flank across 40% of the frame for about three seconds. Steering east
+     * through that stretch instead both opens the gap and turns the camera onto
+     * the side of the street that has the BAR blade and the railings on it, so
+     * the clearance is bought with a better view rather than a worse one. */
+    name: 'walkJ',
+    t: 0.265,
+    place: [0.80, -38.0],
+    seconds: 30,
+    keys: [],
+    hold: [['KeyW', 0, 27.6]],
+    look: [
+      [0.0, 0.000, -0.045],
+      [3.0, 0.030, -0.045],
+      [7.0, 0.050, -0.038],
+      [11.0, -0.025, -0.030],
+      [14.0, -0.055, -0.022],
+      [17.0, 0.045, -0.020],
+      [20.0, 0.090, -0.026],
+      [23.0, 0.045, -0.030],
+      [26.0, 0.020, -0.024],
+      [27.2, 0.045, -0.014],
+      [28.8, 0.080, 0.000],
+      [30.0, 0.080, 0.000],
+    ],
+  },
+  {
+    /* Where the light actually falls on the ground, swept rather than reasoned.
+     *
+     * The second critique's finding is that the hold at z -71.5 stands in shade
+     * and looks across at a sun band, and the measurement that shows it is the
+     * bottom third of the frame rather than the whole of it: `expose --ground`
+     * reads p50 89 at the opening and 65 at the ending, so the camera finishes
+     * standing on ground darker than it started on, whatever the p90 says.
+     *
+     * Rather than infer the fix from `world/block.ts`, walk it. Straight down
+     * the street at a fixed heading from z -71 to z -86, and read the ground
+     * luminance a second at a time; the z where the bottom third peaks is where
+     * the hold belongs. Heading is held at zero so that x does not drift and
+     * the sweep measures position alone. */
+    name: 'sunsweep',
+    t: 0.265,
+    place: [-0.30, -71.0],
+    seconds: 12,
+    keys: ['KeyW'],
+    look: [
+      [0.0, 0.000, -0.002],
+      [12.0, 0.000, -0.002],
+    ],
+  },
+  {
     /* The walk the collider makes available: one that leans on things.
      *
      * The shot above is hand-routed around every solid object on the street,

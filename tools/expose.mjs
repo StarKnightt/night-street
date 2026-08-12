@@ -39,6 +39,17 @@ if (!files.length) {
 const ati = argv.indexOf('--at');
 const AT = ati >= 0 ? argv[ati + 1].split(',').map(Number) : null;
 
+/* --ground: measure only the bottom third of the frame.
+ *
+ * Whole-frame statistics were the wrong instrument for the question "does the
+ * clip end in the light", and the second critique is right about why. A p90
+ * taken over the whole frame is satisfied by a sunlit wall in the top left
+ * while the camera stands on asphalt three counts off the sensor floor, and
+ * that is exactly what the previous ending did — 11% of its top-decile pixels
+ * were in the bottom third. A viewer reads the ground they are standing on as
+ * the light they are standing in. So measure it separately. */
+const CROP = argv.includes('--ground') ? ',crop=iw:ih/3:0:ih*2/3' : '';
+
 function frameHistogram(file, t) {
   return new Promise((resolve, reject) => {
     /* Expand to display range before counting.
@@ -52,7 +63,7 @@ function frameHistogram(file, t) {
      * with, so every number below is a display code value regardless of how
      * the file happens to be stored. */
     const ff = spawn('ffmpeg', ['-v', 'error', '-ss', String(t), '-i', file,
-      '-frames:v', '1', '-vf', 'scale=out_range=full', '-pix_fmt', 'gray',
+      '-frames:v', '1', '-vf', `scale=out_range=full${CROP}`, '-pix_fmt', 'gray',
       '-f', 'rawvideo', '-']);
     const chunks = [];
     ff.stdout.on('data', (d) => chunks.push(d));
@@ -69,7 +80,11 @@ function frameHistogram(file, t) {
       };
       let max = 255; while (max > 0 && h[max] === 0) max--;
       let clipped = 0; for (let v = 250; v < 256; v++) clipped += h[v];
-      resolve({ n, p50: pct(0.5), p99: pct(0.99), max, clipped: 100 * clipped / n });
+      /* p99.9 as well as p99, because the second critique read the ending off
+       * it and it is the right percentile for a highlight: p99 over a
+       * 2-megapixel frame is still 20,000 pixels and can be satisfied by a
+       * large dim-ish area, where p99.9 is 2,000 and tracks the specular. */
+      resolve({ n, p50: pct(0.5), p99: pct(0.99), p999: pct(0.999), max, clipped: 100 * clipped / n });
     });
   });
 }
@@ -77,12 +92,12 @@ function frameHistogram(file, t) {
 if (AT) {
   const w = Math.max(4, ...files.map((f) => f.length)) + 2;
   console.log(`\n  ${'file'.padEnd(w)}${'t'.padEnd(7)}${'p50'.padEnd(7)}${'p99'.padEnd(7)}` +
-    `${'max'.padEnd(7)}clipped`);
+    `${'p99.9'.padEnd(8)}${'max'.padEnd(7)}clipped`);
   for (const file of files) {
     for (const t of AT) {
       const s = await frameHistogram(file, t);
       console.log(`  ${file.padEnd(w)}${String(t).padEnd(7)}${String(s.p50).padEnd(7)}` +
-        `${String(s.p99).padEnd(7)}${String(s.max).padEnd(7)}${s.clipped.toFixed(3)}%`);
+        `${String(s.p99).padEnd(7)}${String(s.p999).padEnd(8)}${String(s.max).padEnd(7)}${s.clipped.toFixed(3)}%`);
     }
   }
   console.log();
@@ -93,7 +108,7 @@ function stats(file) {
   return new Promise((resolve, reject) => {
     const ff = spawn('ffmpeg', [
       '-v', 'error', '-i', file,
-      '-vf', 'scale=out_range=full,signalstats,metadata=print:file=-',
+      '-vf', `scale=out_range=full${CROP},signalstats,metadata=print:file=-`,
       '-f', 'null', '-',
     ]);
     let buf = '';
