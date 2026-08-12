@@ -217,11 +217,40 @@ await run({ width: 1280, height: 720 }, async ({ page, readShaderErrors }) => {
         return [buf[0], buf[1], buf[2]];
       };
 
-      /* Three lanes: the crown of the road, and one on each footway. The
-       * footway x comes from the lamp columns, which is where the fixtures
-       * actually are. */
-      const lampX = window.__sys5.dump().pt.slice(0, 7).map((p) => p.pos[0]);
-      const xL = Math.min(...lampX), xR = Math.max(...lampX);
+      /* Three lanes: the crown of the road, and one on each footway.
+       *
+       * The footway lanes used to be taken from the lamp heads, x = +-3.15,
+       * on the reasoning that the fixtures are over the footway. They are not
+       * — the head is cantilevered out over the kerb line, and a downward ray
+       * at 3.15 hits the kerb's chamfer at some z and MISSES THE SCENE
+       * ENTIRELY at others, falling through the seam between the carriageway
+       * and the footway slabs. tools/sunexp.mjs found nothing under x = 3.15
+       * at z 16, 13, 11, -31, -45 and -64, which is why the right-hand lane
+       * previously metered a tenth of what the arithmetic said directly
+       * beneath a working lantern. The light was fine; the meter was aimed
+       * into a gap and reading the haze behind it.
+       *
+       * So each lane is found by scanning outward from the kerb for an x that
+       * has ground under it at every z in the run, with an upward normal. */
+      const rc = new T.Raycaster();
+      const targets = [];
+      s.scene.traverse((o) => { if (o.isMesh && o.visible) targets.push(o); });
+      const down = new T.Vector3(0, -1, 0);
+      const solid = (x, z) => {
+        rc.set(new T.Vector3(x, 2.0, z), down);
+        const h = rc.intersectObjects(targets, false);
+        return h.length > 0 && h[0].face && h[0].face.normal.y > 0.9;
+      };
+      const findLane = (sign) => {
+        const probes = [];
+        for (let z = Z0; z >= Z1; z -= 4) probes.push(z);
+        for (let d = 3.2; d <= 7.0; d += 0.1) {
+          const x = sign * d;
+          if (probes.every((z) => solid(x, z))) return +x.toFixed(2);
+        }
+        return sign * 4.2;                       // nothing continuous; say so below
+      };
+      const xL = findLane(-1), xR = findLane(1);
 
       const rows = [];
       for (let z = Z0; z >= Z1; z -= DZ) {

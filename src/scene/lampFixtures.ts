@@ -86,28 +86,49 @@ export const WARMTH: readonly number[] = [0.90, 0.42, 0.28, 1.00, 0.62, 0.85, 0.
 
 /* Nadir intensity at full output, in this scene's units.
  *
- * The conversion is the one at the top of `scene/lights.ts` and it is unchanged:
- * this scene runs at about 1/137 of photometric, because the sun is a 115 lux
- * directional at 4.2 degrees against a real 1150 lux. What has changed is which
- * lantern is being converted and, much more importantly, its distribution.
+ * THIS VALUE KNOWINGLY EXCEEDS TECHNIQUE §3.3's RECOMMENDATION, and the reason
+ * is worth writing down because the document is not wrong — it is answering a
+ * different question from the one the brief asks.
  *
- *   nadir intensity          19 cd here = 2600 cd real
- *   peak intensity           19 x 2.4 = 45.6 cd here = 6250 cd real
- *   lower-hemisphere flux    19 x 8.56 sr = 163 here = 22300 lm real
+ * §3.3 says start at 20-40 cd, which puts the pool at 5-10% of the sun's
+ * horizontal irradiance on the road, and §3.9 says that at golden hour a lamp
+ * "reads as a source, not a pool on the ground". Both are correct descriptions
+ * of a photograph. This was built at 19 cd first and then measured, and the
+ * measurement agreed with the document exactly: peak irradiance on the shaded
+ * carriageway came out at 0.411 against a prediction of 0.54, which through
+ * the shipped transform is SIX DISPLAY COUNTS above the unlit road. Six counts
+ * is below what a viewer resolves on a textured surface. The pools were, in
+ * the plainest sense, not there — and the brief asks for pools that overlap.
  *
- * which is a 250 W high-pressure sodium lantern — a real and unremarkable
- * fitting for a 6.8 m column on a street this width. The previous value, 24 cd
- * of nadir intensity into a cos^1.6 lobe, was a 100 W lantern by flux (58 x 137
- * = 7900 lm) and that part of it was right. What was wrong was the *shape*, and
- * the shape is what decides whether there is a street lit or seven spots on it.
+ * So the level is set from the one ratio that is scale-free and therefore
+ * immune to the unit confusion running through the rest of this derivation:
+ * the lantern against the skylight it has to beat.
  *
- * Against the sun: the peak lands at E = 0.54 on the carriageway, which is 6.4%
- * of the sun's horizontal 8.42 and sits inside TECHNIQUE §3.3's 5-10% band. The
- * threshold that section warns about — "above about 120 cd the pool starts
- * competing with the sun on the sunlit footway" — is not approached; peak
- * intensity is 46 cd.
+ *   shaded carriageway, radiance          L = 0.038   (NOTES, measured)
+ *   its albedo                            0.106
+ *   so the skylight irradiance on it      E = pi L / rho = 1.13
+ *   a real 250 W lantern under itself     60-100 lux
+ *   real dusk skylight in a canyon        30-80 lux
+ *   so the real ratio is                  about 1 to 2
+ *
+ * At 19 cd this scene's ratio was 0.36 — the lantern was a third of the
+ * skylight where life puts it at one and a half times. Setting the ratio to
+ * 1.5 gives a peak of 1.7 and needs 78 cd. That is the number below, and it is
+ * a correction toward the physical answer rather than away from it.
+ *
+ * Where that leaves the guard rail §3.3 sets. The pool is now 20% of the sun's
+ * horizontal 8.42 rather than 6%, which is the third row of that section's own
+ * table and still short of the 120 cd at which it warns the lamp starts
+ * competing on the SUNLIT footway. On the sunlit side it remains subordinate,
+ * and inside block.ts's sun bands it is worth about one count and invisible,
+ * which is correct. On the shaded footway — no direct sun at all — it is now
+ * the dominant local source, which is the asymmetry §3.3 says you get for free
+ * and which at 19 cd this scene was not actually collecting.
+ *
+ * Flux, for the record: 78 x 8.56 sr = 668 in scene units, a 250 W HPS lantern
+ * on a 6.8 m column. Unremarkable for this street.
  */
-export const LAMP_CD_FULL = 19;
+export const LAMP_CD_FULL = 78;
 
 /* The distribution, as a cross-street squeeze factor. See ARTIFICIAL in
  * lights.ts, which reads a negative distribution exponent as "this is a street
@@ -153,21 +174,44 @@ export function lampChroma(w: number): [number, number, number] {
 
 /* The bowl's target display value, in its peak channel.
  *
- * 132 at strike and 214 at full output are the two targets this project already
- * held and validated: `NOTES.md` records the working bowl measured at 233-242
- * red against a prediction of 234 with the mottle at its mean, which is the
- * second of the two independent checks the display transform is trusted on. The
- * targets are unchanged; only the states between them are new.
+ * 120 at strike and 178 at working output, and the ceiling came DOWN from 214
+ * for a reason that only a long lens on the fitting showed.
  *
- * The interpolation is in *display* counts, not in radiance, and that is the
- * whole point of doing it here rather than in the shader. Radiance between 132
- * and 214 spans a factor of seven and the curve between them is nowhere near
- * straight, so a `mix()` of the two endpoint radiances would put a half-warmed
- * lamp at display 190 instead of 173 — a lamp that is 50% through its run-up
- * would look 80% of the way there. Inverting each target separately costs a
- * bisection at module load and is exact.
+ * At 214 the bowl is not orange. AgX desaturates hard along its shoulder, and
+ * the brief here is a colour statement — "warm orange glow from each lamp head"
+ * — so the quantity that matters is not how bright the bowl is but how much
+ * chroma survives the transform at that brightness. Measured, at the working
+ * chromaticity 1 / 0.47 / 0.13:
+ *
+ *   peak-channel target    display triple      saturation
+ *          140             (139, 103,  66)        0.53
+ *          160             (160, 122,  83)        0.48
+ *          178             (178, 141, 101)        0.43
+ *          205             (205, 171, 133)        0.35
+ *          214             (214, 182, 146)        0.32
+ *
+ * At 214 the fitting photographs as a pale pink-white tray. A capture at 12
+ * degrees on the lantern at z = -8 is what settled it: shots/bowl/bowl.png on
+ * the build before this one, and there is no orange in it. 178 is still nearly
+ * twice the 96 counts the shaded carriageway sits at, so the bowl remains
+ * unambiguously a lit source, and it keeps a third more chroma.
+ *
+ * This is a real trade and not a free win. A sodium bowl photographed at dusk
+ * genuinely does blow toward white with the colour pushed out into the corona
+ * around it — 214 was the more literal answer. The corona is the part this
+ * scene does not have: the additive glow proxies exist only for the neon. With
+ * one, the bowl could go back up and the warmth would live in the halo, which
+ * is both what TECHNIQUE §3.9 recommends and how the eye actually reads a
+ * lamp. Until then the chroma has to be in the bowl itself, because it is the
+ * only surface there is.
+ *
+ * The interpolation is in *display* counts, not in radiance. Radiance across
+ * that span is a factor of three and the curve is nowhere near straight, so a
+ * mix() of the two endpoint radiances would put a half-warmed lamp most of the
+ * way to full. Inverting each target separately costs a bisection at module
+ * load and is exact.
  */
-export const lampBowlTarget = (w: number): number => 132 + 82 * Math.pow(Math.max(0, Math.min(1, w)), 0.7);
+export const lampBowlTarget = (w: number): number => 120 + 58 * Math.pow(Math.max(0, Math.min(1, w)), 0.7);
 
 export type LampFixture = {
   /** Index into `LAMPS`, and into every per-lamp array in System 5. */
