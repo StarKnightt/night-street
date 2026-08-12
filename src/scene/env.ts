@@ -17,6 +17,7 @@
  * Both are generated as a small equirectangular float texture. No assets.
  */
 import * as THREE from 'three';
+import { bakeSkyCube } from './clouds';
 
 /* Resolution.
  *
@@ -218,6 +219,31 @@ function skyRadiance(theta: number, phi: number, out: [number, number, number], 
  * power in the analytic loop in scene/lights.ts, for one pow and no texture.
  */
 
+/* Which sky to draw, for measuring rather than for shipping.
+ *
+ * Every one of this project's expensive failures has been a term that was
+ * present, typechecked, read correctly and did nothing, and the only defence
+ * that has ever worked is a differenced pair off one build. So the two things
+ * the cloud pass changed can each be switched back:
+ *
+ *   ?sky=flat       the 512x256 equirect DataTexture, drawn the way three
+ *                   actually draws one — the exact background every frame in
+ *                   the archive was shot through, screen-space blit and all.
+ *   ?sky=noclouds   the cube, direction-mapped, carrying skyBase() and nothing
+ *                   else. Differencing this against `flat` isolates the
+ *                   projection fix; differencing it against the default
+ *                   isolates the clouds.
+ *
+ * Dev only, and absent from a production build, so the shipped path is one
+ * branch with a constant condition.
+ */
+function skyMode(): 'clouds' | 'noclouds' | 'flat' {
+  if (process.env.NODE_ENV === 'production') return 'clouds';
+  if (typeof window === 'undefined') return 'clouds';
+  const q = new URLSearchParams(window.location.search).get('sky');
+  return q === 'flat' ? 'flat' : q === 'noclouds' ? 'noclouds' : 'clouds';
+}
+
 export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
   const data = new Float32Array(W * H * 4);   // light probe, no disc
   const bg = new Float32Array(W * H * 4);     // what the camera sees
@@ -296,6 +322,35 @@ export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
   probeSrc.wrapS = THREE.RepeatWrapping;
   probeSrc.needsUpdate = true;
 
+  /* What the camera sees, and why it is a cube.
+   *
+   * The equirect above is kept — it is still what `?sky=flat` draws, and
+   * disposing of it costs nothing to hold — but it is not what ships, for a
+   * reason that is a bug rather than a preference and is written up at the top
+   * of clouds.ts: three does not direction-map an equirectangular `Texture`
+   * assigned to `scene.background`. `WebGLBackground.addToRenderList`
+   * dispatches on `isCubeTexture || CubeUVReflectionMapping`, and an equirect
+   * fails both, so it is drawn by `ShaderLib.background` — a screen-space quad
+   * sampling the texture at the quad's own uv, with no view direction in the
+   * shader at all. The panorama was being stretched flat across the viewport
+   * and nailed to the screen.
+   *
+   * A cube render target is `isCubeTexture`, so it takes the boxMesh path and
+   * is sampled by world direction. That is the whole of the fix, and the clouds
+   * are what it was worth fixing for.
+   *
+   * NOTE FOR THE LIGHTING: nothing below this line touches the probe. The
+   * environment map is still convolved from `data`, which is still written by
+   * the same `skyRadiance(..., false)` over the same 512x256 grid, so the
+   * irradiance the scene receives is not merely close to what it was — it is
+   * the same Float32Array, produced by the same code path, and cannot have
+   * moved. See tools/skycloud.mjs for the measurement that says so anyway.
+   */
+  const mode = skyMode();
+  const cube = mode === 'flat'
+    ? null
+    : bakeSkyCube(renderer, SUN_DIR, { size: 1536, clouds: mode === 'clouds' });
+
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
   const target = pmrem.fromEquirectangular(probeSrc);
@@ -345,11 +400,11 @@ export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
   void c;
 
   return {
-    background: equirect,
+    background: cube ? cube.texture : equirect,
     environment: target.texture,
     fogColor,
     fogSunColor,
-    dispose() { equirect.dispose(); target.dispose(); },
+    dispose() { equirect.dispose(); target.dispose(); cube?.dispose(); },
   };
 }
 
