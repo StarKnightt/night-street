@@ -22,9 +22,14 @@ import { layoutBlock } from '../src/world/block';
 import { upperWindows } from '../src/world/facade';
 import { walkHeight } from '../src/world/geometry';
 import { LAMPS, LAMP_H } from '../src/world/dims';
+import { lampFixtures, LAMP_OUTREACH } from '../src/scene/lampFixtures';
 
-const LAMP_STATE = [2, 1, 0, 2, 1, 2, 0];
-const OUTREACH = 1.15;
+/* Was a hand-typed copy of the lamp state table and of the outreach, which is
+ * the same shape of defect as tools/obstacles.mjs's missing car: a tool that
+ * checks the assembly against a transcription of its inputs cannot see the
+ * inputs drifting. It now reads the real table. */
+const FIXTURES = lampFixtures();
+const OUTREACH = LAMP_OUTREACH;
 const rgb = [1, 0.2, 0.1] as const;
 
 const lit = litUnits();
@@ -41,12 +46,12 @@ for (const u of lit) {
   );
 }
 
-const lamps = buildLamps(LAMP_STATE, OUTREACH);
+const lamps = buildLamps(FIXTURES);
 console.log('lamp triangles', lamps.triangles);
 for (let i = 0; i < LAMPS.length; i++) {
   const [x, , z] = LAMPS[i];
   console.log(
-    '  lamp', i, 'state', LAMP_STATE[i],
+    '  lamp', i, 'warmth', FIXTURES[i].warmth, 'cd', FIXTURES[i].intensity.toFixed(2),
     'column', x, z, 'lantern', (x - Math.sign(x) * OUTREACH).toFixed(2), LAMP_H, z,
     'foot', walkHeight(x, z).toFixed(3),
   );

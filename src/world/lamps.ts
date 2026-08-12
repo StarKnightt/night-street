@@ -25,7 +25,8 @@
 import * as THREE from 'three';
 import { Emit, Face, frame } from './emit';
 import { walkHeight } from './geometry';
-import { LAMPS, LAMP_H } from './dims';
+import { LAMP_H } from './dims';
+import { LAMP_OUTREACH, type LampFixture } from '@/scene/lampFixtures';
 
 /** Branches in the lamp shader. */
 export const LMP = {
@@ -82,16 +83,27 @@ export type BuiltLamps = {
 };
 
 /**
- * @param states one entry per LAMPS position: 0 unlit, 1 warming, 2 working.
- * @param outreach how far the lantern reaches toward the carriageway.
+ * @param fixtures the lantern table from `scene/lampFixtures.ts`.
+ *
+ * The bowl's radiance rides on the geometry as a vertex attribute rather than
+ * arriving as two uniforms and a state index. There are seven lamps and they
+ * are one mesh and one draw call, so a vec3 per vertex is free; what it buys is
+ * that each bowl's radiance is inverted through the real transform on the CPU
+ * at its own point on the run-up, instead of being a `mix()` of two endpoints
+ * in the shader. Between display 132 and 214 the radiance spans a factor of
+ * seven along a curve that is nowhere near straight, so the mix would have put
+ * a half-warmed lamp most of the way to full — the shipped emissive would then
+ * disagree with the candela the same warmth produced, which is the drift these
+ * two numbers were tied together to prevent.
  */
-export function buildLamps(states: readonly number[], outreach: number): BuiltLamps {
-  const E = new Emit({ aLamp: 4 });
+export function buildLamps(fixtures: readonly LampFixture[]): BuiltLamps {
+  const E = new Emit({ aLamp: 4, aBowl: 3 });
 
-  for (let i = 0; i < LAMPS.length; i++) {
-    const [x, , z] = LAMPS[i];
+  for (const fx of fixtures) {
+    const [x, , z] = fx.column;
+    const outreach = LAMP_OUTREACH;
     const seed = h2(x * 3.1 + 11.0, z * 0.77);
-    const state = states[i] ?? 0;
+    const warm = fx.warmth;
     /* The lantern reaches toward x = 0, so the local outward axis has to point
      * that way: frame() derives its normal as up x uDir, which for uDir along
      * -sign(x) in z gives a normal along -sign(x) in x. */
@@ -100,7 +112,8 @@ export function buildLamps(states: readonly number[], outreach: number): BuiltLa
     const y0 = walkHeight(x, z) - 0.02;
     const top = LAMP_H - 0.25;
 
-    const set = (part: number) => E.attr('aLamp', seed, part, y0, state);
+    E.attr('aBowl', fx.bowl[0], fx.bowl[1], fx.bowl[2]);
+    const set = (part: number) => E.attr('aLamp', seed, part, y0, warm);
 
     set(LMP.COLUMN);
     // Root flange, cast into the footway, with a fillet of mortar round it.
