@@ -298,7 +298,7 @@ things it found in files that are not the collision pass's to edit.
   (-5.0, -20) along the building line for ten seconds and asserts the
   tangential speed survives, which was true when the wall lane was thirteen
   clear metres. It is not any more: at z -29.4 there is a service cabinet
-  against the frontage and the walker stops on it. `tmp/wallslide.mjs` prints
+  against the frontage and the walker stops on it. `tools/wallslide.mjs` prints
   the rest point and shows that steering 0.9 rad off the wall frees it
   immediately, so the body is stopped and not wedged. Penetration everywhere on
   the street is 0.09 mm, which is the pre-existing dumpster figure. Do not
