@@ -2369,23 +2369,6 @@ Flag flagAt(vec2 p, vec2 fw){
   return o;
 }
 
-/* The point-sampled joint this replaces, still here because WALK_FRAG_BODY has
- * not been converted yet and a half-converted material does not link. It is
- * scheduled for deletion in the same commit that moves the body over to flagAt,
- * and nothing new should call it. */
-vec3 walkJoints(vec2 p, out vec2 slabId){
-  vec2 g = p / uSlab;
-  vec2 cell = floor(g);
-  vec2 f = abs(fract(g) - 0.5) * 2.0;
-  slabId = cell;
-  float half_ = 1.0 - (uJoint / uSlab);
-  float wobble = wfbm(p * 1.4, 2) * 0.010;
-  float d = max(f.x, f.y);
-  float joint = sstep(half_ - 0.02, half_ + 0.012, d + wobble);
-  float lip = sstep(half_ - 0.075, half_ - 0.012, d + wobble) * (1.0 - joint);
-  return vec3(joint, lip, d);
-}
-
 /* Corner chips. Flags lose their corners first — every one of them, on a busy
  * street — and the break exposes pale unweathered aggregate. Keyed to the
  * corner rather than scattered, because a chip in the middle of a flag is a
@@ -2416,9 +2399,22 @@ float gumSpots(vec2 p){
 const WALK_FRAG_BODY = /* glsl */ `
 {
   vec2 p = vWPos.xz;
-  vec2 slabId;
-  vec3 j = walkJoints(p, slabId);
-  float joint = j.x, lip = j.y, edge = j.z;
+  /* The pixel's footprint on the ground, per axis, in metres.
+   *
+   * fwidth of a world coordinate is the distance that coordinate moves between
+   * this fragment and the next, which for a ground plane is exactly the size of
+   * the patch of pavement this pixel is being asked to average. Keeping the two
+   * axes apart is the whole trick: looking down the street fw.y runs to most of
+   * a metre while fw.x is a couple of centimetres, so the joints crossing the
+   * street and the joints running with it need completely different filters,
+   * and the isotropic sum this material used to pass around got both wrong at
+   * once. */
+  vec2 fw = vec2(fwidth(p.x), fwidth(p.y));
+  float wpx = fw.x + fw.y;
+  Flag fl = flagAt(p, fw);
+  vec2 slabId = fl.cell;
+  float joint = fl.gap;
+  float edge = fl.edge;
   float chip = slabChips(p, slabId);
 
   float mixMask = sstep(0.30, 0.70, unit(wfbm(p * 0.09, 3)));
@@ -2453,9 +2449,26 @@ const WALK_FRAG_BODY = /* glsl */ `
    * of the mean, and the mean is held where it was so the overall level of the
    * footway does not move. The paler minority stays, at a size that reads as a
    * replaced flag rather than as a light box. */
+  /* Spread widened from 0.17 to 0.24 about the same mean.
+   *
+   * The mean is held deliberately — 0.60 + 0.085 was 0.685 and 0.56 + 0.12 is
+   * 0.68 — so the overall level of the footway does not move and the shaded
+   * side, which is signed off, stays where it is. What changes is only the
+   * flag-to-flag step, from about twelve per cent either side of the mean to
+   * about eighteen, which is where a real run of patched paving sits. This is
+   * the cheap half of per-flag variance; the expensive and much more convincing
+   * half is fl.tilt, which varies the light across each stone rather than its
+   * colour, and only exists under a raking sun. */
   float fresh = sstep(0.82, 0.94, id2);
-  diffuseColor.rgb *= 0.60 + 0.17 * id;
+  diffuseColor.rgb *= 0.56 + 0.24 * id;
   diffuseColor.rgb *= mix(1.0, 1.17, fresh);
+  /* Dished flags hold water and dirt in the middle and shed it at the edges, so
+   * an old flag is darker in its centre — the opposite of the joint grime, and
+   * the two together give each stone a soft radial gradient that reads as a
+   * separate object even before the light gets to it. Keyed to the same dish
+   * hash flagAt uses for the geometry, so the darkest flags are the ones that
+   * are physically most hollow. */
+  diffuseColor.rgb *= 1.0 - (1.0 - fl.edge) * (0.06 + 0.10 * hash21(slabId + 5.93));
   diffuseColor.rgb *= mix(vec3(0.94, 0.975, 1.055), vec3(1.025, 1.00, 0.975), id3 * 0.75);
   diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.13, 1.12, 1.10), step(0.90, id2) * 0.7);
 
@@ -2464,9 +2477,10 @@ const WALK_FRAG_BODY = /* glsl */ `
   float kerbSide = sstep(4.6, 3.95, abs(p.x));
   float footfall = sstep(0.25, 0.85, unit(wfbm(vec2(p.x * 0.55, p.y * 0.12), 3)));
   diffuseColor.rgb *= 1.0 - kerbSide * 0.30 - footfall * 0.14;
-  /* Joints hold grit and moss, not void. Rendered as a uniform-width black
-   * groove they read as a decal grid printed over the top of the surface. */
-  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.55 + vec3(0.012, 0.013, 0.011), j.x * 0.85);
+  /* The joint used to be darkened twice — here and again forty lines down where
+   * jointC is mixed in — which is a good part of why it read as a decal grid
+   * printed over the surface rather than as a gap between two stones. It is
+   * done once now, below, at a coverage rather than at a mask. */
 
   // Spalling: the concrete breaks away along the joints, so the erosion mask
   // keys off proximity to one.
@@ -2501,7 +2515,11 @@ const WALK_FRAG_BODY = /* glsl */ `
   float stainF = unit(wfbm(ps * 2.6, 4));
   float stain = sstep(0.62, 0.88, stainF) * (0.4 + 0.6 * unit(wfbm(ps * 9.0, 3)));
 
-  float wpx = fwidth(p.x) + fwidth(p.y);
+  /* wpx is declared once, at the top of this block, alongside the per-axis fw
+   * it is the sum of. It used to be declared here instead, and a second
+   * declaration further up would be a redeclaration in the same scope — which
+   * is a silent link failure and a flat untextured footway, the exact fault the
+   * note on cv in screed() describes. */
   Screed sc = screed(p, wpx);
   gScreedN = sc.n;
 
@@ -2562,34 +2580,66 @@ const WALK_FRAG_BODY = /* glsl */ `
     float wv = 1.0 - sstep(0.35, 1.1, wpx / 0.14);
     vec2 qw = vec2(dot(p, sd) * 0.55, dot(p, vec2(-sd.y, sd.x)));
     shade = max(shade, sstep(0.44, 0.90, unit(wfbm(qw * 6.5 + 27.0, 3))) * wv * 0.62);
-    /* And the joints, which is the feature the review actually named.
-     *
-     * A joint is a five-millimetre recess, and at 4.2 degrees five millimetres
-     * of depth throws sixty-eight of shadow — thirteen times the width of the
-     * groove. So a slab joint in raking light is not a thin dark albedo line,
-     * it is a bold band lying downsun of itself, and that is why the flags read
-     * in shade, where the groove is doing the work honestly, and vanish in sun,
-     * where the groove is all there is and the tone curve has flattened it. The
-     * second sample is taken up-sun of this fragment: it asks not "am I in a
-     * joint" but "was the light that should have reached me blocked by one".
-     * Three of them, at increasing distance and decreasing weight, because one
-     * lands the shadow as a dotted line — the groove is well under a pixel at
-     * this range and a single point sample of it drops in and out along its
-     * own length. Three samples across the penumbra fill it in and also make
-     * it the width it should be, which is thirteen grooves. */
-    vec2 sID2;
-    float js = joint;
-    js = max(js, walkJoints(p - sd * 0.022, sID2).x * 0.97);
-    js = max(js, walkJoints(p - sd * 0.046, sID2).x * 0.90);
-    js = max(js, walkJoints(p - sd * 0.070, sID2).x * 0.76);
-    js = max(js, walkJoints(p - sd * 0.098, sID2).x * 0.58);
-    shade = max(shade, js);
-    /* And the broken edges, which are recesses like the joints and were being
+    /* The broken edges, which are recesses like the joints and were being
      * treated as albedo alone: a spall is a piece missing, so in raking light
      * it is a hole with a shadow in it and not a grey patch. */
     shade = max(shade, spall * 0.80);
     gGraze = clamp(shade, 0.0, 1.0);
   }
+
+  /* ── The direct term across a joint ──────────────────────────────────────
+   *
+   * The joints used to be shaded by sampling the joint mask four times up-sun
+   * at 22, 46, 70 and 98 mm and taking the maximum, which asserted that every
+   * joint throws a shadow of one fixed length onto the flag behind it. Two
+   * things were wrong with that. A flush joint does not throw a shadow at all:
+   * a ray grazing the up-sun lip arrives at the down-sun lip a millimetre low,
+   * so it has already met the side of the gap and the far flag's top is fully
+   * lit. And each of those four samples was a point sample of a sub-pixel
+   * groove, so it inherited the dashing four more times over — that is the
+   * mechanism behind the row of dots a reviewer found across the sunlit
+   * pavement, and it is why the dots were evenly spaced.
+   *
+   * What is here instead is an area average, which is the only honest thing to
+   * report for a pixel that covers several features. Five things lie in a row
+   * across a joint: the flat top of the up-sun flag, that flag's chamfer
+   * turning away from the sun and going black, the open gap, the down-sun
+   * flag's chamfer turning into the sun and going very bright, then its flat
+   * top. Dark, then bright, in that order, on every joint in the frame — and a
+   * pixel gets the coverage-weighted mean of however many of those it spans.
+   *
+   * The arithmetic is a mixture and therefore a sum, not a product. Writing it
+   * as separate multiplies — one factor for the gap, another for the shadow,
+   * another for the arris — is wrong wherever a pixel holds more than one of
+   * them, which at four metres and beyond is every pixel on a joint: the bright
+   * chamfer and the black gap are 22 mm apart and get multiplied into each
+   * other instead of averaged, and the joint loses most of its contrast exactly
+   * where it should be gaining it. */
+  {
+    /* Coverages that receive no sun at all: the gap floor, the chamfer facing
+     * away, and the shadow of a neighbour that has settled higher. Saturating
+     * rather than summing, because near a corner two joints overlap. */
+    float occ = clamp(fl.gap + fl.dark + fl.shad * (1.0 - fl.gap), 0.0, 1.0);
+    /* The lit chamfer cannot also be occluded. fl.lit already carries the
+     * cosine, so a joint running along the sun's azimuth gets no highlight —
+     * correct, and something the symmetric grey line this replaces had no way
+     * of saying. */
+    float lit = fl.lit * (1.0 - occ);
+    /* And the flag's own plane. This multiplies rather than adds because it is
+     * a property of the whole flag, not of a band across it: a stone that has
+     * settled leaning away from the sun is darker over its entire face, chamfer
+     * and all. Clamped at zero — past about four degrees of lean the flag is
+     * shadowing itself and there is no negative light. */
+    gDirect = clamp((1.0 - occ + lit * uFlag.z) * fl.tilt, 0.0, 14.0);
+  }
+
+  /* How much sky the fragment can see, for the indirect term. A slot 16 mm
+   * across and 5 mm deep sees rather less than half the dome, and the chamfers
+   * at its lips see a little less than the open face. Small, but it is what
+   * stops the joints disappearing entirely on the shaded side of the street,
+   * where there is no direct light for the model above to act on and the old
+   * albedo line was doing all the work by itself. */
+  gSky = 1.0 - fl.gap * 0.55 - (fl.lit + fl.dark) * 0.16;
 
   vec3 c = diffuseColor.rgb;
   c *= clamp(1.0 + sc.t * 0.90, 0.10, 2.1);
@@ -2605,8 +2655,37 @@ const WALK_FRAG_BODY = /* glsl */ `
   float jointFill = unit(wfbm(vec2(p.x * 3.1, p.y * 3.1) + 43.0, 3));
   vec3 jointC = mix(vec3(0.0125, 0.0127, 0.0132), vec3(0.0335, 0.0318, 0.0282),
                     sstep(0.42, 0.86, jointFill));
-  c = mix(c, jointC, joint * 0.93);
-  c = mix(c, c * 1.24, lip * 0.55);          // the rounded, light-catching lip
+  /* Growth in the joint, which is the one green in a street like this.
+   *
+   * Algae and moss live in the silt in a joint wherever it stays damp, and what
+   * keeps a joint damp is not getting the sun on it: the strip against the
+   * building line, the shaded side of the street, the lee of anything standing
+   * on the footway. So it is keyed to the same wall proximity the grime strip
+   * uses, times a slow field so it comes and goes along the run rather than
+   * lining every joint uniformly. Held very desaturated on purpose — joint
+   * algae under a warm low sun photographs as a grey-green a few per cent off
+   * neutral, and anything more saturated than that reads as a golf course. */
+  float wallNear = 1.0 - sstep(0.10, 1.05, max(uBuildLine - abs(p.x), 0.0));
+  float growth = sstep(0.46, 0.88, unit(wfbm(p * 0.85 + 17.0, 3)))
+               * (0.30 + 0.70 * wallNear);
+  jointC = mix(jointC, vec3(0.0175, 0.0225, 0.0150), growth * 0.75);
+  /* Coverage, not a mask, and this is where the dashing actually dies.
+   *
+   * fl.gap is the fraction of this pixel the gap occupies, so at the range
+   * where a pixel covers ninety millimetres and the joint sixteen, the joint
+   * darkens that pixel by eighteen per cent of the way to jointC instead of
+   * either taking it all the way or missing it entirely. Continuous, soft, and
+   * exactly as faint as the geometry says it should be. */
+  c = mix(c, jointC, fl.gap * 0.93);
+  /* The chamfers in albedo. An arris is where the weathering film is thinnest —
+   * it gets walked on, brushed and rained on from two directions — so it shows
+   * paler concrete than the face. Both chamfers, because this is albedo and
+   * albedo does not know where the sun is; which of the two is bright is
+   * settled by gDirect above. */
+  c = mix(c, c * 1.20, (fl.lit + fl.dark) * 0.5);
+  /* And the silt that collects in the angle either side of the gap, over a
+   * slightly wider band than the chamfer itself. */
+  c = mix(c, c * 0.86, max(fl.nearJ - fl.gap, 0.0) * 0.5);
   c = mix(c, c * 0.62, spall * 0.5);
   // A fresh break shows the aggregate, which is paler than the weathered face.
   c = mix(c, c * 1.5, chip * 0.6);
@@ -2626,12 +2705,30 @@ const WALK_FRAG_BODY = /* glsl */ `
    * Albedo only, and faded out with range. A one-pixel bright line held to the
    * vanishing point is an aliasing generator, and this scene has already paid
    * for two of those. */
-  float arrD = length(vWPos - cameraPosition);
-  float arrisW = max(wpx * 1.6, 0.011);
-  float arris = (1.0 - sstep(0.0, arrisW, abs(abs(p.x) - uKerbEdge - 0.012)))
-              * (0.45 + 0.55 * unit(wfbm(vec2(p.y * 0.85, 3.0), 3)))
-              * (1.0 - sstep(9.0, 26.0, arrD));
-  c = mix(c, c * 1.34, arris * 0.80);
+  /* Coverage rather than a widened smoothstep, and the difference matters here
+   * more than anywhere else on the surface. This is a 12 mm bright line held to
+   * the vanishing point, which is the textbook aliasing generator, and the old
+   * remedy was to widen it with the footprint and then fade it out by 26 m —
+   * i.e. to give up on it at exactly the range where most of the footway is.
+   * bandCov keeps it at the correct contrast instead of the correct width: at
+   * 30 m it is a 12 mm band in a 40 mm pixel and lands at 30 per cent, which
+   * neither aliases nor disappears, so the fade can go.
+   *
+   * The asymmetry is free and it is worth having. The nose of the flag course
+   * faces away from the building, so on the +X footway it faces -X and on the
+   * -X footway it faces +X. With the sun's azimuth having a +X component, only
+   * one of the two footways gets the bright nose and the other gets a dark one
+   * — which is what a photograph of a street at this hour shows, and what the
+   * previous version, applying the same 1.34 to both sides, could not. */
+  float noseD = abs(p.x) - uKerbEdge - 0.012;
+  float nose = bandCov(noseD, -0.012, 0.0, max(fw.x * 0.5, 6.0e-5))
+             * (0.45 + 0.55 * unit(wfbm(vec2(p.y * 0.85, 3.0), 3)));
+  // Which way this footway's nose points, and how square-on the sun is to it.
+  float noseFace = -sign(p.x) * uSunXZ.x;
+  c = mix(c, c * 1.26, nose * 0.80);
+  // Direct light on the nose, on the same footing as the joint chamfers.
+  gDirect *= 1.0 + nose * max(noseFace, 0.0) * uFlag.z * 0.55;
+  gDirect *= 1.0 - nose * max(-noseFace, 0.0) * 0.55;
 
   // Damp seeping from the kerb joint and out of the flag joints. Concrete is
   // porous, so it takes water in and goes dark rather than glossy.
@@ -2652,8 +2749,10 @@ const WALK_FRAG_BODY = /* glsl */ `
    * ceramic, which is exactly what reviewers keep calling this surface — a
    * tiled lobby floor rather than a footway. Nothing here goes below chalky. */
   float rgh = mix(0.995, 0.955, rmap) + sc.r;
-  rgh = mix(rgh, 0.99, joint * 0.6);
-  rgh = mix(rgh, 0.94, lip * 0.5);           // worn smoother than the face
+  rgh = mix(rgh, 0.99, fl.gap * 0.6);
+  // The arris is the one part of a flag that gets polished, by every shoe that
+  // clips it. Coverage-weighted like everything else at this scale.
+  rgh = mix(rgh, 0.93, (fl.lit + fl.dark) * 0.45);
   rgh = mix(rgh, 0.30, gum * 0.85);          // gum stays glossy for years
   rgh = mix(rgh, 0.90, damp * 0.75);
   rgh = mix(rgh, 0.93, footfall * 0.4);      // polished by feet
@@ -2705,7 +2804,7 @@ const WALK_WALL_AO = /* glsl */ `
 float aoGap = max(uBuildLine - abs(vWPos.x), 0.0);
 reflectedLight.indirectDiffuse =
   canyonSky(reflectedLight.indirectDiffuse, vWNormal, vWPos.y)
-  * mix(0.26, 1.0, sstep(0.0, 0.95, aoGap)) * 1.20;
+  * mix(0.26, 1.0, sstep(0.0, 0.95, aoGap)) * 1.20 * gSky;
 /* Direct only. See the long note where gGraze is built: the shaded half of
  * this surface is signed off and must not move, and applying the term here is
  * what guarantees it cannot — there is no direct light in shadow to attenuate.
@@ -2718,8 +2817,15 @@ reflectedLight.indirectDiffuse =
  * the two, and deliberately: at 4.2 degrees the lobe on a footway is enormous
  * and it is the term that fills the joints back in after the diffuse has
  * emptied them. */
-reflectedLight.directDiffuse *= 1.0 - gGraze * 0.80;
-reflectedLight.directSpecular *= 1.0 - gGraze * 0.94;
+reflectedLight.directDiffuse *= (1.0 - gGraze * 0.80) * gDirect;
+/* The specular gets the same geometry and a stronger grain term.
+ *
+ * gDirect is not clamped to one and that is intentional on this line too: at
+ * 4.2 degrees the specular lobe on a footway is enormous and a chamfer tilted
+ * into the sun swings it far harder than the diffuse. It is the term that puts
+ * the bright side of a joint on the screen, and the joint is the feature the
+ * whole rewrite exists to make legible. */
+reflectedLight.directSpecular *= (1.0 - gGraze * 0.94) * gDirect;
 `;
 
 const WALK_NORMAL_HOOK = /* glsl */ `
@@ -2750,26 +2856,24 @@ const WALK_NORMAL_HOOK = /* glsl */ `
    * boundary across the footway. A continuous ramp cannot produce an edge. */
   mapN.xy *= normalScale * (1.0 - sstep(2.0, 15.0, wgd) * 0.92);
 
-  vec2 pj = vWPos.xz;
-  vec2 gj = pj / uSlab;
-  vec2 fj = fract(gj) - 0.5;
-  float wob = wfbm(pj * 1.4, 2) * 0.010;
-  float hj = 0.5 - (uJoint / uSlab) * 0.5;
-  /* The gap has two walls and a rounded lip, so the normal turns twice across
-   * it: outward as the flag rolls over into the joint, then hard back at the
-   * wall. One step, which is what was here before, is a scored line. */
-  float ax = abs(fj.x) + wob, az = abs(fj.y) + wob;
-  float sx = (sstep(hj - 0.055, hj, ax) - sstep(hj, hj + 0.02, ax) * 1.6) * sign(fj.x);
-  float sz = (sstep(hj - 0.055, hj, az) - sstep(hj, hj + 0.02, az) * 1.6) * sign(fj.y);
-  /* The joint relief is allowed to stay, because a joint is a sparse linear
-   * feature and not a full-field perturbation: there is one of them every
-   * 920 mm, so it cannot produce the field of blown granules that a per-pixel
-   * grain does. It does get the footprint gate that every other feature in
-   * this material already had, so it withdraws with range instead of holding
-   * its amplitude to the vanishing point. */
-  float jpx = fwidth(pj.x) + fwidth(pj.y);
-  float jv = 1.0 - sstep(0.35, 1.1, jpx / (uJoint * 2.2));
-  mapN.xy += vec2(sx, sz) * 0.55 * jv;
+  /* The joint no longer perturbs the normal at all, and removing it is a fix
+   * rather than a saving.
+   *
+   * There used to be a pair of smoothsteps here rolling the normal out into the
+   * gap and hard back at the wall, gated on the footprint. Every one of those
+   * smoothsteps was a point sample of a sub-pixel feature, so it dashed for the
+   * same reason the albedo line did — and worse, it dashed *independently*, on a
+   * different gate, so the normal turned in places the albedo did not and the
+   * joint broke into two interleaved rows of dots. It was also drawing the same
+   * joint the coverage model in WALK_FRAG_BODY now draws, so leaving it would
+   * emboss every joint twice.
+   *
+   * A normal cannot express this feature honestly in any case. Perturbing a
+   * normal says "the surface faces slightly that way", which the renderer then
+   * evaluates as a smooth shading term; what is actually there is a 16 mm slot
+   * with two walls, a floor, and a hard shadow edge, none of which is a smooth
+   * tilt and all of which is now stated as coverage and spent directly on the
+   * light. */
   mapN.xy += gScreedN * 0.55;
   normal = normalize( tbn * normalize(mapN) );
 
