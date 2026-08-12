@@ -731,7 +731,21 @@ function emitFurniture(c: WinCtx): void {
     const cn: [number, number, number] = [u, cy, cd - 0.05];
     for (let i = 0; i < 10; i++) {
       const a0 = (i / 10) * Math.PI * 2, a1 = ((i + 1) / 10) * Math.PI * 2;
-      mf.quadFree(cn, rim(a0, 1), rim(a1, 1), rim(a1, 1), [[0, 0], [1, 0], [1, 1], [1, 1]]);
+      /* a1 before a0. The fan was listed the other way round and the dished
+       * face has been a back face since it was built — only the rim ring
+       * rendered, because the rim is emitted in both directions and the face
+       * is not, so the dish read as an open hoop and nobody noticed.
+       *
+       * The trap is that (u, y, d) is left-handed: `frame()` derives the
+       * outward normal as up x uDir, and uDir x up is its negative, so a fan
+       * listed anti-clockwise as seen from outside — which is the intuitive
+       * order and the correct one in a right-handed frame — comes out facing
+       * into the building. `emit.ts` states the rule for a quad given corner
+       * by corner; a fan built from a centre and a swept radius has to work it
+       * out for itself, and this one worked it out backwards. Found by the
+       * facade fixtures pass, which hit the same thing on its own dish and
+       * wound that one the other way. */
+      mf.quadFree(cn, rim(a1, 1), rim(a0, 1), rim(a0, 1), [[0, 0], [1, 0], [1, 1], [1, 1]]);
       // The rim: a 25 mm lip standing off the dished face all the way round.
       mf.quadFree(rim(a0, 1), rim(a0, 0.90), rim(a1, 0.90), rim(a1, 1),
         [[i, 0], [i, 1], [i + 1, 1], [i + 1, 0]]);
@@ -1303,10 +1317,12 @@ function emitStreetFixtures(c: WinCtx): void {
    * the brickwork, and the coaxial downlead runs from it straight into a
    * hole drilled through the frame reveal.
    *
-   * Wound to face the street, which the roof one is not: its fan is listed
-   * anti-clockwise seen from outside, so its dished face is a back face and
-   * only the rim ring survives. Nothing here can afford that, since a first
-   * floor dish is four metres from the lens rather than fifty.
+   * Wound to face the street. The roof one was not — its fan was listed
+   * anti-clockwise seen from outside, so its dished face was a back face and
+   * only the rim ring survived, which at fifty metres is a hoop nobody
+   * questions. Nothing here could have afforded that at four metres, which is
+   * how the roof one came to be found. Both are now wound the same way and
+   * `tools/winding.mjs` checks them.
    */
   /* One dish, and a second on the buildings that were split into two flats,
    * which is why they are never on the same pier and never at the same
