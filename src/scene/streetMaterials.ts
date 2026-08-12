@@ -713,6 +713,41 @@ vec3 gTint = vec3(1.0);
 float gClear = 1.0;
 `;
 
+/* THE SPACE EVERY CONSTANT IN THE REFLECTED WORLD BELOW IS AUTHORED IN.
+ *
+ * Read this before changing `litWall`, `shadeWall`, `winC`, `glassC`, `road` or
+ * `skyC`. Three rounds of correction on these have stalled on the same
+ * ambiguity — the targets were display values read off a finished frame, the
+ * measurements were of a bare surface, and nobody had written down which one
+ * this shader wants. It is not a matter of taste; the shader answers it.
+ *
+ * The order of operations, all of it below or downstream of here:
+ *
+ *   1. these constants resolve into `hit`;
+ *   2. `gTint = mix(hit, hazeC, ext)` applies the AERIAL PERSPECTIVE over the
+ *      reflected path — 6 per cent at twelve metres, a third at forty;
+ *   3. `gTint` is mixed toward its own luminance for the film on the pane;
+ *   4. it is substituted for `indirectSpecular` and weighted by the pane's
+ *      two-interface FRESNEL, in linear light, in the shader tail;
+ *   5. the fragment's own aerial perspective to the camera, then the bloom, the
+ *      tone map and the grade, none of which this shader can see.
+ *
+ * So: A CONSTANT HERE IS THE LINEAR RADIANCE LEAVING THE REFLECTED SURFACE WITH
+ * NO AIR IN FRONT OF IT AND NOTHING APPLIED TO IT. It is not a display value,
+ * not a display value inverted through a curve, and not "what the pane should
+ * look like" — the pane's own appearance is this times a Fresnel of 0.08 to 0.2
+ * composited over a lit interior, two haze terms and a tone curve later.
+ * Authoring against a graded frame folds every one of those in a second time,
+ * which is how the sunlit wall in here came to be four times as bright as the
+ * sunlit wall it is a picture of.
+ *
+ * The measurement, therefore, is of the referent and not of the frame:
+ * `tools/reflsurf.mjs` finds each surface by raycast, meters it on
+ * `?nograde&nohdr&haze=off`, drops samples standing in a lamp pool, and prints
+ * each constant beside the surface it claims to depict. Every value in here is
+ * checkable against a thing that is also in the frame. If a correction is ever
+ * applied, it belongs in one commit with that tool's output quoted.
+ */
 const SHOP_GLASS_BODY = /* glsl */ `
 {
   vec2 uv = vFuv;

@@ -591,29 +591,24 @@ Nothing else in the frame moves by more than the one-count floor.
 - **The sky in `env.ts`.** It is not derived from a display value at all; it is
   the thing the transform was validated against.
 - **The cross-canyon bounce** `vec3(0.190, 0.104, 0.043)`, shared by
-  `MASONRY_END`, `streetEnd` and the prop kit. It came out of `shadesplit.mjs`'s
-  radiance decomposition, not out of an inverted display value, and it is an
-  irradiance rather than a radiance.
+  `MASONRY_END`, `streetEnd` and the prop kit — but not for the reason first
+  given here, which was that it came out of `shadesplit.mjs`'s decomposition. It
+  predates that tool by a day and a commit, and the decomposition could not have
+  isolated it anyway. Re-derived from geometry by `tools/bounce.mjs` against the
+  strip form factor: it is 0.3 to 0.9 of what the geometry supports, so
+  conservative rather than inflated, which is the opposite of the signature the
+  withdrawn fit leaves.
 
 ### Reported, not applied
 
-- **`litWall` is still 1.5x above its own stated target.** 442fbe5 scaled the
-  old triple by the *neutral* ratio at display 191, 2.50/8.44, rather than
-  re-inverting at the wall's chromaticity; the old triple was itself 1.54x above
-  what the fit gave for 191, and the rescale preserved that. It arrives at 205
-  where the comment says 191. Against the surface it depicts it is worse: the
-  sunlit frontage measures L = (0.96, 0.47, 0.30) with the haze off, so the
-  reflection is 4x its subject. Left alone because the current look is signed
-  off and because the 170-186 and 191 targets were both read off hazed, graded
-  frames while the measurement is of the bare surface — the shader adds its own
-  aerial perspective further down, so strictly both constants should be the
-  bare-surface radiance and both are above it.
-- **`winC` (3.60, 2.40, 1.25) and `glassC` (2.60, 1.75, 1.05)**, the lit windows
-  and the glazing opposite in the same block. Same commit, same sentence, no
-  stated target, so there is nothing to re-invert against — but they arrive at
-  202 and 190, which is to say a window across the road is being painted as
-  bright as a sunlit stucco wall, and the glazing is nominally a sixth of the
-  wall it mirrors. Both want a derivation rather than a correction.
+- **`litWall`, `winC` and `glassC` are 2x to 4x above the surfaces they depict,
+  and the ambiguity that stalled the last three attempts is now settled.** See
+  the next section: the space is written down, the instrument measures all of
+  them, and the numbers are not applied. `litWall` arrives at display 205 where
+  its own comment says 191, because 442fbe5 scaled the old triple by the
+  *neutral* ratio at 191 rather than re-inverting at the wall's chromaticity, and
+  the old triple was itself 1.54x above what the withdrawn fit gave for 191.
+  `winC` and `glassC` never had a stated target at all.
 - **`LAMP_CD_FULL = 78` rested on a stale anchor**, and this is a different bug
   class worth naming because the sweep found it. Its derivation is scale-free by
   design — the lantern against the skylight it has to beat — and the skylight
@@ -659,6 +654,63 @@ build on `?novol` is clean, which is what identifies the term. The gain is now
 `30 * 78 / LAMP_CD_FULL`, imported rather than transcribed, so the air holds
 still while the pools brighten. **A multiplier that was tuned against a level is
 a function of that level, however scale-free it looks.**
+
+### The space the reflected world is authored in — settled
+
+`SHOP_GLASS_BODY` paints what a shopfront pane sees as an analytic world:
+`litWall`, `shadeWall`, `winC`, `glassC`, a road, a sky. Three separate rounds of
+correction on those constants have ended in "inconclusive, different spaces",
+because their targets were display values read off a finished frame and every
+measurement of them is of a bare surface. **That is settled now, and not by
+opinion — the shader says which it wants.** The order of operations is: the
+constants resolve into `hit`; `gTint = mix(hit, hazeC, ext)` applies the aerial
+perspective over the *reflected* path; the film desaturates it; the pane's
+two-interface Fresnel weights it in linear light; and then the fragment's own
+aerial perspective, the bloom, the tone map and the grade all follow.
+
+**So a constant in there is the linear radiance leaving the reflected surface
+with no air in front of it and nothing applied to it.** Not a display value, not
+a display value inverted through any curve, and not "what the pane should look
+like" — a pane's appearance is that radiance times a Fresnel of 0.08 to 0.2,
+composited over a lit interior, two haze terms and a tone curve later. Authoring
+against a graded frame applies every one of those twice. The rule is written at
+the head of `SHOP_GLASS_BODY`, which is where the next person will be standing.
+
+The general form, since this is the third constant class to hit it: **a constant
+is authored in the space of the code that consumes it, and the way to find that
+space is to read forward from the constant to the frame and list what is applied
+in between.** If anything on that list is already in the number, it is wrong by
+that factor. Every one of these bugs has been a term applied twice.
+
+`tools/reflsurf.mjs` now measures all five referents in that space, finds the
+glazing by the material's own `customProgramCacheKey` rather than by position,
+and rejects samples standing in a lamp pool — which matters at 329 cd: shaded
+footway metered 1.82 under 20 m against 0.68 beyond it, and with the haze off
+that cannot be distance. Measured against what they depict, at the sun's current
+elevation:
+
+| constant | authored | the surface it depicts | ratio |
+|---|---|---|---|
+| `litWall` | 3.85, 2.25, 0.98 | 1.33, 0.66, 0.38 sunlit frontage, 11 samples | 2.9x |
+| `glassC` (mid of its hash) | 2.15, 1.44, 0.87 | 0.69, 0.48, 0.45 shopfront glazing opposite, 7 samples | 3.1x |
+| `shadeWall` | 0.30, 0.31, 0.37 | 0.59, 0.42, 0.43 shaded frontage, 20 samples | 0.5x |
+| `winC` (mid of its hash) | 3.33, 2.22, 1.16 | not measurable from this camera | — |
+
+**Not applied, and the reasons are specific rather than caution.** The upper
+glazing that `winC` depicts is drawn by a different program from the shopfront's
+and sits at about 6.9 m, which this camera pose cannot see; there is no point
+correcting two of a set of three. The referents are also moving: the sunlit
+frontage measured 1.02, 0.49, 0.31 and then 1.33, 0.66, 0.38 in two runs an hour
+apart, because another agent is editing `clouds.ts` and `env.ts`, and an A/B
+capture taken across that is not a measurement of anything. And correcting all
+three at once dims the reflected world about threefold, which is a signed-off
+look and a decision to put to the user with frames rather than to slip in — the
+frames have to be taken on a still scene.
+
+Worth noting for whoever does apply it: `shadeWall` is *below* its referent by
+half, so a consistent re-derivation brightens the shaded frontage as it dims the
+sunlit one, and the flattening of that contrast is most of what the change would
+look like.
 
 Two reporting tools were quoting the stale skylight and are corrected with it:
 `tools/poolreport.mjs`, whose "counts above the shaded carriageway" rested on L

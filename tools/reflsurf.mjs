@@ -11,6 +11,30 @@
  * `display = 0.284 * L^0.4545` fit, which over-predicts radiance three to six
  * times over the band this scene occupies.
  *
+ * ── THE SPACE THESE CONSTANTS ARE AUTHORED IN ─────────────────────────────
+ *
+ * Every previous round of this argument stalled on the same ambiguity: the
+ * targets were display values read off a finished frame, the measurements are of
+ * a bare surface, and nobody had written down which one the shader wants. The
+ * shader answers it, and the answer is not a matter of taste.
+ *
+ *   1. `hit` is resolved from these constants.
+ *   2. `gTint = mix(hit, hazeC, ext)` — the reflected path's aerial perspective,
+ *      six per cent at twelve metres and a third at forty, applied HERE.
+ *   3. `gTint` is mixed toward its own luminance, 0.42, for the film.
+ *   4. It is substituted for `indirectSpecular` and multiplied by the pane's
+ *      two-interface Fresnel, `diffuseColor.a`.
+ *   5. The fragment's own aerial perspective to the camera, then the bloom, the
+ *      tone map and the grade, none of which this shader can see.
+ *
+ * So a constant here is THE LINEAR RADIANCE LEAVING THE REFLECTED SURFACE WITH
+ * NO AIR IN FRONT OF IT. Everything between that surface and the eye is applied
+ * downstream, and a value derived from a graded frame has all of it baked in
+ * already — which is how a wall got authored at four times the wall it depicts.
+ * The rule, for the next one of these: measure the referent in the frame with
+ * `haze=off` and no grade, which is what this tool does, and never invert a
+ * screen value that has been through air, bloom, AgX and a grade.
+ *
  * ── How a sample gets taken, and why not by frame fraction ────────────────
  *
  * A rectangle of the viewport written down before the frame exists is a guess,
@@ -77,6 +101,16 @@ const CLAIM = {
   'frontage, shaded': grab(/vec3 shadeWall = vec3\(([\d.]+), ([\d.]+), ([\d.]+)\)/, 'shadeWall'),
   'footway, sunlit': grab(/road = mix\(road, vec3\(([\d.]+), ([\d.]+), ([\d.]+)\)/, 'the sunlit footway'),
   'carriageway, shaded': grab(/vec3 road = mix\(vec3\(([\d.]+), ([\d.]+), ([\d.]+)\)/, 'the shaded road'),
+  /* The two glazing terms, which are pictures of surfaces that are also in the
+   * frame and were until now the only ones in this shader nobody had metered.
+   * Both carry a per-bay hash multiplier as well, so the constant is the top of
+   * a range rather than the value: winC spans 0.55 to 1.30 of its triple and
+   * glassC 0.30 to 1.35. The mid-point of each range is what gets compared,
+   * since that is what a bay averages to. */
+  'glazing, upper': grab(/vec3 winC = mix\(vec3\(([\d.]+), ([\d.]+), ([\d.]+)\)/, 'winC')
+    .map((c) => c * (0.55 + 0.75 / 2)),
+  'glazing, shopfront': grab(/vec3 glassC = vec3\(([\d.]+), ([\d.]+), ([\d.]+)\)/, 'glassC')
+    .map((c) => c * (0.30 + 1.05 / 2)),
 };
 
 /* ── Sampling ─────────────────────────────────────────────────────────────── */
@@ -123,10 +157,23 @@ await run({ width: W, height: H, url }, async ({ page, readShaderErrors }) => {
 
     /* Find the two building lines by casting across the street rather than by
      * importing a dimension. If the geometry moves, this moves with it. */
-    const across = (z, sign) => {
-      rc.set(new T3.Vector3(0, 2.0, z), new T3.Vector3(sign, 0, 0));
-      const h = rc.intersectObjects(s.scene.children, true).filter((i) => i.distance > 0.5);
+    const acrossAll = (z, sign, y = 2.0) => {
+      rc.set(new T3.Vector3(0, y, z), new T3.Vector3(sign, 0, 0));
+      return rc.intersectObjects(s.scene.children, true).filter((i) => i.distance > 0.5);
+    };
+    const across = (z, sign, y = 2.0) => {
+      const h = acrossAll(z, sign, y);
       return h.length ? h[0] : null;
+    };
+    /* Which of these meshes is glazing, asked of the material rather than of a
+     * position or a name. The two glass materials in this street identify
+     * themselves to three through `customProgramCacheKey`, so the classification
+     * comes from the same string the renderer uses to tell the programs apart and
+     * cannot drift from it. Reported per group so it is checkable. */
+    const progKey = (o) => {
+      const m = o && o.material;
+      if (!m || typeof m.customProgramCacheKey !== 'function') return '';
+      try { return m.customProgramCacheKey() || ''; } catch { return ''; }
     };
     const down = (x, z) => {
       rc.set(new T3.Vector3(x, 6.0, z), new T3.Vector3(0, -1, 0));
@@ -136,15 +183,48 @@ await run({ width: W, height: H, url }, async ({ page, readShaderErrors }) => {
 
     const camZ = cam.position.z;
     const pts = [];
-    for (let k = 0; k < 30; k++) {
-      const z = camZ - 4 - k * 1.5;
+    /* What programs the ray actually meets at each height, so a group coming back
+     * empty can be told apart from a group whose referent is drawn by a material
+     * this tool does not recognise. The upper storey came back with no samples at
+     * all and this is how the reason was found. */
+    const seen = {};
+    for (let k = 0; k < 60; k++) {
+      const z = camZ - 3 - k * 1.0;
+      for (const sign of [-1, 1]) {
+        for (const y of [1.55, 4.60, 6.90]) {
+          for (const h of acrossAll(z, sign, y).slice(0, 4)) {
+            const key = `y${y} ${progKey(h.object) || h.object.type}`;
+            seen[key] = (seen[key] || 0) + 1;
+          }
+        }
+      }
+    }
+    for (let k = 0; k < 60; k++) {
+      const z = camZ - 3 - k * 1.0;
       for (const sign of [-1, 1]) {
         const w = across(z, sign);
         if (!w) continue;
         const wallX = w.point.x;
-        // The frontage, at three heights up one elevation.
-        for (const y of [1.8, 3.6, 6.4]) {
+        // The frontage, up one elevation.
+        for (const y of [1.8, 2.6, 3.6, 5.0, 6.4, 8.0]) {
           pts.push({ group: 'frontage', x: wallX - sign * 0.04, y, z, side: sign });
+        }
+        /* The glazing, at a shopfront height and at an upper-storey one, kept
+         * only where the ray actually lands on a glass program. Offset back
+         * along the ray so the sample sits just in front of the pane rather
+         * than on it, which is the same 4 cm the frontage samples use. */
+        for (const [y, group] of [[1.25, 'glazing, shopfront'], [1.55, 'glazing, shopfront'],
+          [1.95, 'glazing, shopfront'], [2.40, 'glazing, shopfront'],
+          [3.90, 'glazing, upper'], [4.60, 'glazing, upper'],
+          [5.30, 'glazing, upper'], [6.90, 'glazing, upper']]) {
+          /* The first glass along the ray, not the first thing along it: at these
+           * heights the ray usually meets a pier, a stallriser or a fascia first,
+           * and taking hit[0] was why the upper storey came back with no samples
+           * at all. Bounded to 20 m so a pane four blocks up the street cannot
+           * stand in for the elevation opposite. */
+          const g = acrossAll(z, sign, y).find((h) => h.distance < 20 && /glass/i.test(progKey(h.object)));
+          if (!g) continue;
+          pts.push({ group, x: g.point.x - sign * 0.04, y, z, side: sign, prog: progKey(g.object) });
         }
         // The footway, a metre in from the building line, and the carriageway.
         for (const [dx, group] of [[1.0, 'footway'], [1.9, 'footway'], [3.6, 'carriageway'],
@@ -199,6 +279,27 @@ await run({ width: W, height: H, url }, async ({ page, readShaderErrors }) => {
     const sunI = sun ? sun.intensity : 0;
     const full = readAll();
 
+    /* What the lanterns are worth at each sample, so that a surface standing in
+     * a lamp pool can be thrown out rather than averaged in.
+     *
+     * This is not fussiness. LAMP_CD_FULL was re-anchored from 78 to 329 cd, and
+     * the run that caught it shows what that does to a tool that ignores the
+     * lamps: shaded footway measured 1.82 under 20 m against 0.68 beyond it,
+     * which with the haze off cannot be distance and is the pools. Every
+     * constant in this shader depicts a surface as the DAYLIGHT leaves it — the
+     * reflected world in SHOP_GLASS_BODY has no lanterns in it at all — so a
+     * lamp-lit sample is a measurement of the wrong thing.
+     *
+     * Read the same way `lampanchor.mjs` reads it: the mirror at gain 1 and
+     * again at gain 2, and a reading is only believed where it doubles, because
+     * only the materials the mirror is injected into can answer and everything
+     * else returns a picture of itself. */
+    window.__sys5.mirror(1);
+    const art1 = readAll();
+    window.__sys5.mirror(2);
+    const art2 = readAll();
+    window.__sys5.mirror(0);
+
     /* Is the exposure actually doing anything? Halve it and the same pixels
      * have to halve in linear light. This is here because the instrument this
      * one is adapted from divides by an exposure the renderer compiled out, and
@@ -216,7 +317,10 @@ await run({ width: W, height: H, url }, async ({ page, readShaderErrors }) => {
     return {
       sunIntensity: sunI,
       camera: [cam.position.x, cam.position.y, cam.position.z].map((v) => +v.toFixed(2)),
-      samples: keep.map((k, i) => ({ ...k, full: full[i], noSun: noSun[i], half: half[i] })),
+      seen,
+      samples: keep.map((k, i) => ({
+        ...k, full: full[i], noSun: noSun[i], half: half[i], art1: art1[i], art2: art2[i],
+      })),
       cut: sunlitCut,
     };
   }, [T, EXPOSURE, SUNLIT]);
@@ -230,15 +334,53 @@ if (!out) finish(1);
 
 /* ── Report ───────────────────────────────────────────────────────────────── */
 
+/* Which elevation is the one in the sun, asked of the frame. The glazing terms
+ * are pictures of a pane on the SHADED elevation — winC's and glassC's bright
+ * branches are the ones that survive at `sun = 0` — so the two sides have to be
+ * told apart, and doing it by x sign means importing an azimuth. The frontage
+ * samples already know: whichever side loses more when the sun is switched off
+ * is the side the sun is on. */
+const sideLift = new Map();
+for (const s of out.samples) {
+  if (s.group !== 'frontage') continue;
+  const d = lum(toRadiance(s.full).map((c, k) => c - toRadiance(s.noSun)[k]));
+  sideLift.set(s.side, (sideLift.get(s.side) || 0) + d);
+}
+const litSide = [...sideLift.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+const elevation = (side) => (side === litSide ? 'sunlit elevation' : 'shaded elevation');
+
+/* The lamp rejection. `KMAX` is an upper bound on the diffuse transfer rather
+ * than a measurement of it: the two routes to it in this scene give 0.019 and
+ * 0.042 and disagree (see `scene/lampFixtures.ts`), so the larger one is used,
+ * which over-states the lamp's share and therefore throws away marginal samples
+ * rather than keeping them. A sample is dropped if the lanterns could account
+ * for more than SHARE of its radiance. */
+const KMAX = 0.042, SHARE = 0.08;
+let dropped = 0, unreadable = 0;
+const lampShare = (s) => {
+  const e1 = toRadiance(s.art1), e2 = toRadiance(s.art2);
+  const d = lum(e1) > 0.02 ? lum(e2) / lum(e1) : 0;
+  if (!(d > 1.7 && d < 2.3)) { unreadable++; return null; }   // not a mirrored fragment
+  return KMAX * lum(e1) / Math.max(lum(toRadiance(s.full)), 1e-4);
+};
+
 const bins = new Map();
 for (const s of out.samples) {
+  const share = lampShare(s);
+  if (share !== null && share > SHARE) { dropped++; continue; }
   const f = toRadiance(s.full);
   const n = toRadiance(s.noSun);
   const direct = f.map((c, k) => c - n[k]);
-  const lit = lum(direct) > SUNLIT;
-  const key = `${s.group}, ${lit ? 'sunlit' : 'shaded'}`;
+  /* A pane is not classified by whether the sun is on it. Switching the sun off
+   * takes most of the radiance out of a mirror aimed at a sunlit wall as well,
+   * so the sun-difference test — which is the right test for an opaque
+   * surface — would call a shaded pane sunlit. Glazing is binned by elevation
+   * instead. */
+  const key = s.group.startsWith('glazing')
+    ? `${s.group}, ${elevation(s.side)}`
+    : `${s.group}, ${lum(direct) > SUNLIT ? 'sunlit' : 'shaded'}`;
   if (!bins.has(key)) bins.set(key, []);
-  bins.get(key).push({ f, direct, hit: s.hitName, dist: s.dist, y: s.y });
+  bins.get(key).push({ f, direct, hit: s.hitName, dist: s.dist, y: s.y, side: s.side, prog: s.prog });
 }
 
 /* The exposure liveness assertion, before anything is reported. */
@@ -261,11 +403,18 @@ for (const s of out.samples) {
 
 console.log(`  camera at ${out.camera.join(', ')}, sun intensity ${out.sunIntensity}`);
 console.log(`  ${out.samples.length} samples survived projection and the occlusion re-cast`);
+console.log('  programs the cross-street ray meets, by height:');
+for (const [k, n] of Object.entries(out.seen || {}).sort()) console.log(`    ${k.padEnd(28)} ${n}`);
+console.log(`  lamp rejection: ${dropped} dropped for standing in a pool`
+  + ` (the lanterns worth over ${(100 * SHARE).toFixed(0)}% of the sample at k <= ${KMAX});`
+  + ` ${unreadable} could not be metered and are kept`);
 console.log(`  exposure ${EXPOSURE} divided back out; "sunlit" means the sun is worth`
   + ` more than ${SUNLIT} radiance at that point\n`);
 
 const order = ['frontage, sunlit', 'frontage, shaded', 'footway, sunlit', 'footway, shaded',
-  'carriageway, sunlit', 'carriageway, shaded'];
+  'carriageway, sunlit', 'carriageway, shaded',
+  'glazing, shopfront, shaded elevation', 'glazing, shopfront, sunlit elevation',
+  'glazing, upper, shaded elevation', 'glazing, upper, sunlit elevation'];
 for (const key of order) {
   const rows = bins.get(key);
   if (!rows || rows.length < 3) {
@@ -296,7 +445,12 @@ for (const key of order) {
     console.log(`    over  20 m  ${fmt(m(far))}   (${far.length})`);
   }
   console.log(`    measured    ${fmt(f)}   -> display ${display(f, { sensor: true }).join(' ')}`);
-  const claim = CLAIM[key];
+  const progs = [...new Set(rows.map((r) => r.prog).filter(Boolean))];
+  if (progs.length) console.log(`    programs    ${progs.join(', ')}`);
+  /* The glazing claim belongs to the shaded elevation; the sunlit side is
+   * printed as the control and is not what the constant is a picture of. */
+  const claim = CLAIM[key] || (key.endsWith('shaded elevation')
+    ? CLAIM[key.replace(', shaded elevation', '')] : null);
   if (claim) {
     console.log(`    reflection  ${fmt(claim)}   -> display ${display(claim, { sensor: true }).join(' ')}`);
     console.log(`    ratio       ${fmt(claim.map((c, k) => c / Math.max(f[k], 1e-4)))}`);
