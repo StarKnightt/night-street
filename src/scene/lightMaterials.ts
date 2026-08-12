@@ -12,10 +12,7 @@ import * as THREE from 'three';
 import { NOISE, CANYON } from '@/world/glsl';
 import { signGLSL, signUniforms } from './signs';
 import { FACADE_VARYINGS, FACADE_VERTEX } from './buildingMaterials';
-import {
-  ARTIFICIAL, artificialAdd, artificialUniforms,
-  BOWL_WARM, BOWL_WARMING,
-} from './lights';
+import { ARTIFICIAL, artificialAdd, artificialUniforms } from './lights';
 
 /* ── The traffic signal's clock ───────────────────────────────────────────
  *
@@ -53,8 +50,7 @@ int signalAspect(){
 const LAMP_PARS = /* glsl */ `
 ${FACADE_VARYINGS}
 varying vec4 vLamp;
-uniform vec3 uBowlWarm;
-uniform vec3 uBowlWarming;
+varying vec3 vBowl;
 vec3 gEmit = vec3(0.0);
 float gAO = 1.0;
 `;
@@ -64,7 +60,7 @@ const LAMP_BODY = /* glsl */ `
   float seed = vLamp.x;
   float part = vLamp.y;
   float y0 = vLamp.z;
-  float state = vLamp.w;
+  float warm = vLamp.w;
   float h = vWPos.y - y0;
 
   vec3 base = vec3(0.0455, 0.0470, 0.0495);   // painted steel, dark neutral grey
@@ -104,24 +100,25 @@ const LAMP_BODY = /* glsl */ `
   } else {
     /* The bowl.
      *
-     * The one emissive surface on the fitting. Radiance is set in
-     * scene/lights.ts by inverting the display curve and the state decides
-     * which of the two it gets — the point of having a warming state at all is
-     * that it is a *colour* difference, deep red-pink against orange, and not
-     * a dimmer setting.
+     * The one emissive surface on the fitting. Its radiance arrives per lamp
+     * on aBowl, inverted through the shipped transform in lampFixtures.ts at
+     * that fixture's own point on the sodium run-up. It is not a level and a
+     * dimmer setting: what separates a lamp that has just struck from one that
+     * has been on for five minutes is mostly *colour*, deep red-pink against
+     * orange, and the shader does not need to know that — it is already in the
+     * three numbers.
      *
      * The bowl itself is a moulded acrylic tray with sixty years of insect and
      * dust deposit in the bottom of it, so it is neither clean nor uniform;
      * the mottle is worth having because a perfectly even source is the tell
      * that separates a rendered lamp from a photographed one.
      */
-    vec3 lit = state > 1.5 ? uBowlWarm : uBowlWarming;
     float mott = 0.78 + 0.44 * unit(wfbm(vWPos.xz * 22.0 + seed * 17.0, 3));
     // The rim of the tray is thicker in section than the face, so it carries
     // more of the discharge toward a grazing view. Cheap, and it gives the
     // bowl an edge instead of a cut-out.
     float rim = 1.0 + 0.65 * (1.0 - abs(vWN.y));
-    gEmit = state > 0.5 ? lit * mott * rim : vec3(0.0);
+    gEmit = warm > 0.0 ? vBowl * mott * rim : vec3(0.0);
     // Unlit, the bowl is a dirty translucent white; lit, its own albedo is
     // irrelevant next to what it is emitting.
     base = vec3(0.1450, 0.1420, 0.1330);
@@ -147,14 +144,12 @@ export function makeLampMaterial(): THREE.MeshStandardMaterial {
     shadowSide: THREE.FrontSide, dithering: true,
   });
   m.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, artificialUniforms(), {
-      uBowlWarm: { value: new THREE.Vector3(...BOWL_WARM) },
-      uBowlWarming: { value: new THREE.Vector3(...BOWL_WARMING) },
-    });
+    Object.assign(shader.uniforms, artificialUniforms());
     shader.vertexShader = shader.vertexShader
       .replace('void main() {',
-        `${FACADE_VARYINGS}\nvarying vec4 vLamp;\nattribute vec4 aLamp;\nvoid main() {`)
-      .replace('#include <begin_vertex>', `${FACADE_VERTEX}\nvLamp = aLamp;`);
+        `${FACADE_VARYINGS}\nvarying vec4 vLamp;\nvarying vec3 vBowl;\n` +
+        'attribute vec4 aLamp;\nattribute vec3 aBowl;\nvoid main() {')
+      .replace('#include <begin_vertex>', `${FACADE_VERTEX}\nvLamp = aLamp;\nvBowl = aBowl;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('void main() {',
         `${NOISE}\n${LAMP_PARS}\n${CANYON}\n${ARTIFICIAL}\nvoid main() {`)

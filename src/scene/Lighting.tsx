@@ -29,11 +29,12 @@ import { signAtlas, NEON } from './signs';
 import { TV_AT } from './buildingMaterials';
 import { makeLampMaterial, makeNeonMaterial, makeGlowMaterial } from './lightMaterials';
 import {
-  LAMP_STATE, LAMP_OUTREACH, NEON_RED, NEON_GREEN, NEON_OPEN,
+  NEON_RED, NEON_GREEN, NEON_OPEN,
   SIG_RED, SIG_AMBER, SIG_GREEN,
   installLamps, installNeon, installShopLights, installCarLights,
   installTimeControl, advanceTime,
 } from './lights';
+import { lampFixtures, publishLampFixtures } from './lampFixtures';
 
 declare global {
   interface Window {
@@ -68,7 +69,7 @@ export function Lighting() {
     const atlas = signAtlas();
     const lit = litUnits();
 
-    const lamps = buildLamps(LAMP_STATE, LAMP_OUTREACH);
+    const lamps = buildLamps(lampFixtures());
     const neon = buildNeon(
       lit,
       {
@@ -124,6 +125,11 @@ export function Lighting() {
   }, []);
 
   useEffect(() => installTimeControl(), []);
+
+  /* System 6's raymarch reads this rather than re-deriving the lanterns. See
+   * the note at the top of lampFixtures.ts about why a fourth private copy of
+   * the lamp table is not an option. */
+  useEffect(() => publishLampFixtures(), []);
 
   useEffect(() => {
     window.__neon = built.neon.legend;

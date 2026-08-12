@@ -48,8 +48,11 @@
  * one tone curve and the sources have to share it.
  */
 import * as THREE from 'three';
-import { LAMPS, LAMP_H } from '@/world/dims';
+import { LAMPS } from '@/world/dims';
 import { atDisplay, forDisplay } from './tone';
+import {
+  lampFixtures, LAMP_CROSS, LAMP_PEAK, LAMP_CUT, LAMP_OUTREACH,
+} from './lampFixtures';
 
 /* ── The display response ─────────────────────────────────────────────────
  *
@@ -84,16 +87,24 @@ export const SUN_HORIZ = 115 * Math.sin(4.2 * Math.PI / 180);   // 8.42
  */
 export const LAMP_OFF = 0, LAMP_WARMING = 1, LAMP_WARM = 2;
 
-/** Per lamp in `LAMPS` order: z = 12, -8, -25, -45, -64, -84, -99. */
-export const LAMP_STATE: readonly number[] = [
-  LAMP_WARM,      //  12   behind the start of the walk, closes the view back
-  LAMP_WARMING,   //  -8   the near one, and the one that reads as just struck
-  LAMP_OFF,       // -25   dead, outside the lit convenience store
-  LAMP_WARM,      // -45   in the sun shaft, so it has daylight to lose against
-  LAMP_WARMING,   // -64   at the cross street
-  LAMP_WARM,      // -84
-  LAMP_OFF,       // -99   the far end of the block
-];
+/* The three discrete states are gone and `scene/lampFixtures.ts` has the table.
+ *
+ * They were two off, two warming and three working, and the brief for this pass
+ * is that every lantern on the street is alight. That removed the mechanism the
+ * old states existed for — a street where the lamps disagree with each other —
+ * so it has been replaced rather than deleted: `WARMTH` gives each fixture a
+ * position on the sodium run-up and the candela, the chromaticity and the
+ * bowl's display target are all derived from it. Two lamps that are both on can
+ * still disagree, and disagreeing in colour is the more convincing half of what
+ * the discrete states were doing.
+ *
+ * `LAMP_STATE` and `LAMP_OUTREACH` are re-exported because `world/lamps.ts` and
+ * `tools/sys5probe.ts` import them by those names; the state is now derived
+ * from the warmth so that nothing can set one without the other.
+ */
+export const LAMP_STATE: readonly number[] =
+  lampFixtures().map((f) => (f.warmth <= 0 ? LAMP_OFF : f.warmth >= 0.999 ? LAMP_WARM : LAMP_WARMING));
+export { LAMP_OUTREACH };
 
 /* Bowl radiance.
  *
@@ -118,26 +129,19 @@ export const LAMP_STATE: readonly number[] = [
  * transform inverted properly there is nothing left for it to correct — the
  * separation the warming state needs, 82 code values, now falls out of the two
  * target numbers directly.
+ *
+ * The two endpoints stand unchanged and are now the ends of a continuum rather
+ * than two states: `lampBowlTarget()` in lampFixtures.ts interpolates the
+ * display target between them and inverts each fixture's own value separately.
+ * They are kept exported because `tools/sys5probe.ts` imports them and because
+ * they are the two numbers the run-up is anchored on.
  */
 export const BOWL_WARM = atDisplay(214, [1.0, 0.47, 0.13]);
 export const BOWL_WARMING = atDisplay(132, [1.0, 0.30, 0.36]);
 
-/* Pool intensity. 24 cd for a working lantern, by the conversion at the top of
- * this file. The warming one is scaled by the ratio of the two bowl radiances,
- * now 0.67 / 4.73 = 0.142, so the thing you look at and the thing it does to
- * the pavement cannot drift apart. Fourteen per cent of working output is also
- * about right for a discharge lamp in the first minute of its run-up, which is
- * a check on the two targets rather than a coincidence. */
-export const LAMP_CD_WARM = 24;
-export const LAMP_CD_WARMING = LAMP_CD_WARM * (BOWL_WARMING[0] / BOWL_WARM[0]);
-
-/** How far the lantern reaches out from its column, toward the carriageway. */
-export const LAMP_OUTREACH = 1.15;
-
 /** World position of lamp `i`'s lantern — the column is at LAMPS[i]. */
 export function lampHead(i: number): [number, number, number] {
-  const [x, , z] = LAMPS[i];
-  return [x - Math.sign(x) * LAMP_OUTREACH, LAMP_H, z];
+  return lampFixtures()[i].position as [number, number, number];
 }
 
 /* ── Neon, as a source rather than as a surface ───────────────────────────
@@ -236,6 +240,14 @@ export const SYS5_TIME = { value: 0 };
  * artificial light stops shading and outputs `artificial()` itself, scaled by
  * this, as its whole radiance.
  *
+ * A negative value selects the same thing rendered as a *grey* carrying the
+ * red channel of the irradiance. That exists because the inverse in
+ * tools/agx.mjs is exact for neutrals and only approximate per channel for a
+ * saturated colour — AgX runs each channel through two chroma matrices, so a
+ * sodium orange read back and inverted through the grey curve overstates its
+ * red by tens of counts. Metering in grey removes that error entirely, and red
+ * is the channel every ratio in this file is quoted in.
+ *
  * It is here permanently, and one uniform compare in five programs is the
  * price. This project's most expensive and most repeated failure is code that
  * looks correct and is inert — envMapIntensity, the haze installer, a silent
@@ -274,23 +286,36 @@ function setPoint(
   ptC[i].set(colour[0] / peak, colour[1] / peak, colour[2] / peak);
 }
 
-/** The seven lanterns. Called once; the installation is static. */
+/* The seven lanterns. Called once; the installation is static.
+ *
+ * ── The distribution was the bug, and it was not a level ──────────────────
+ *
+ * What stood here was `pow(cos, 1.6)` about an axis tipped 21 degrees toward
+ * the carriageway, described as "a cosine power fitted to a semi-cut-off
+ * distribution". It is not one, and the direction of the error is the
+ * interesting part: a cosine power is a *narrowing* function, brightest under
+ * the column and falling monotonically away from it, whereas the entire
+ * purpose of a street lantern's reflector is to do the opposite. Uniform
+ * illuminance on a flat road needs intensity proportional to 1/cos^3 of the
+ * angle from nadir, because both the inverse square and the receiver's cosine
+ * are working against you as you move away from the column, and a real
+ * semi-cut-off optic chases that curve out to about 65 degrees before it caps
+ * and then cuts off hard so the light does not go through bedroom windows.
+ *
+ * Measured on the build before this one, `tools/sunlamp.mjs`: the crown of the
+ * road ran from E = 0.384 under a working lamp to E = 0.0001 — the meter's
+ * floor, which is to say nothing — nineteen metres later. That is not a street
+ * with dim lighting on it, it is a street with seven spots on it, and no amount
+ * of raising the candela fixes it: the shape scales with the level.
+ *
+ * So the flux is very nearly what it was and the shape is new. See
+ * `lampFixtures.ts` for the photometry; the encoding here is that a *negative*
+ * distribution exponent selects the street-lantern branch in ARTIFICIAL and
+ * carries the cross-street squeeze factor in its magnitude.
+ */
 export function installLamps(): void {
-  for (let i = 0; i < LAMPS.length; i++) {
-    const st = LAMP_STATE[i];
-    const cd = st === LAMP_WARM ? LAMP_CD_WARM
-      : st === LAMP_WARMING ? LAMP_CD_WARMING : 0;
-    const col = st === LAMP_WARM ? BOWL_WARM : BOWL_WARMING;
-    /* The distribution, and it is the one part of the removed cookie worth
-     * keeping. A cobra head throws down and along the street with a hard
-     * cut-off on the house side; the exponent below is a cosine power fitted
-     * to a semi-cut-off distribution, tipped 22 degrees toward the
-     * carriageway. Everything else the cookie carried — the bowl dirt, the
-     * ragged edge, the offset core — is invisible at 6% of the sun and cost
-     * the texture unit that forced the AO maps out. */
-    const head = lampHead(i);
-    const tilt = -Math.sign(head[0]) * 0.37;   // tipped toward x = 0
-    setPoint(i, head, [Math.sin(tilt), -Math.cos(tilt), 0], cd, 1.6, col);
+  for (const f of lampFixtures()) {
+    setPoint(f.index, f.position, f.direction, f.intensity, -LAMP_CROSS, f.colour);
   }
 }
 
@@ -448,6 +473,10 @@ export function installShopLights(
 export const ARTIFICIAL = /* glsl */ `
 #define ART_PT ${ART_PT}
 #define ART_AP ${ART_AP}
+#define LAMP_CROSS ${LAMP_CROSS.toFixed(4)}
+#define LAMP_PEAK ${LAMP_PEAK.toFixed(4)}
+#define LAMP_CUT0 ${LAMP_CUT[0].toFixed(4)}
+#define LAMP_CUT1 ${LAMP_CUT[1].toFixed(4)}
 uniform vec4 uArtP[ART_PT];
 uniform vec4 uArtD[ART_PT];
 uniform vec3 uArtC[ART_PT];
@@ -455,6 +484,38 @@ uniform vec4 uArtAC[ART_AP];
 uniform vec4 uArtAN[ART_AP];
 uniform vec4 uArtAL[ART_AP];
 uniform float uArtDbg;
+
+/* A semi-cut-off street lantern's distribution, normalised to 1 at nadir.
+ *
+ * ax is the cosine of the angle from the lantern's own axis and D is the unit
+ * direction from the lantern to the surface. Three things happen:
+ *
+ *   the lobe is squeezed across the street by k, because a real reflector
+ *   throws along the carriageway and not at the buildings, and that squeeze is
+ *   what buys the overlap between adjacent pools without buying four times the
+ *   flux to pay for it;
+ *
+ *   inside the squeezed frame the intensity chases 1/cos^3, which is the
+ *   distribution that puts uniform illuminance on a flat road, up to a ceiling
+ *   of LAMP_PEAK — a real optic runs out of reflector before it runs out of
+ *   ambition;
+ *
+ *   and then it cuts off, over about eight degrees.
+ *
+ * The cube is floored before the reciprocal rather than after. Beyond the
+ * cut-off the smoothstep is zero, and a zero multiplied by the infinity an
+ * unfloored 1/cos^3 returns at grazing is a NaN, which in this renderer means
+ * one black fragment per lamp per frame somewhere along the kerb line and no
+ * error anywhere to say so.
+ */
+float lanternLobe(float ax, vec3 D, vec3 A, float k){
+  vec3 T = D - ax * A;
+  float ts = T.z;                       // along the street
+  float tc = length(T.xy);              // across it, and up the buildings
+  float cs = ax * inversesqrt(ax * ax + ts * ts + k * k * tc * tc + 1e-9);
+  return min(1.0 / max(cs * cs * cs, 1.0 / LAMP_PEAK), LAMP_PEAK)
+       * smoothstep(LAMP_CUT0, LAMP_CUT1, cs);
+}
 
 vec3 artificial(vec3 P, vec3 N){
   vec3 E = vec3(0.0);
@@ -468,13 +529,28 @@ vec3 artificial(vec3 P, vec3 N){
     /* Cull below a quarter of a per cent of the sun's horizontal irradiance,
      * without a divide. This is what keeps thirteen sources affordable in five
      * programs: on most fragments the loop rejects all but one or two of them
-     * on a single compare. */
-    if (uArtP[i].w < 0.021 * d2) continue;
+     * on a single compare.
+     *
+     * The headroom is LAMP_PEAK rather than 1, because the lantern branch below
+     * can return up to that and w is its *nadir* intensity. Culling on the
+     * nadir value alone would have thrown away the brightest part of every pool
+     * — the batwing's peak is 25 to 45 degrees off the column, which is exactly
+     * where the overlap lives. It loosens the cull for the isotropic and cosine
+     * sources by the same factor, which costs a few more loop bodies on a few
+     * fragments and cannot make any of them wrong. */
+    if (uArtP[i].w * LAMP_PEAK < 0.021 * d2) continue;
     vec3 L = d * inversesqrt(d2);
     float ndl = max(dot(N, L), 0.0);
     if (ndl <= 0.0) continue;
     float ax = max(-dot(L, uArtD[i].xyz), 0.0);
-    float dis = uArtD[i].w > 0.0 ? pow(ax, uArtD[i].w) : 1.0;
+    /* Positive exponent: a cosine power, for a tray sign emitting into a lobe
+     * about its own normal. Zero: isotropic, for an exposed tube with nothing
+     * behind it. Negative: a street lantern, with the cross-street squeeze in
+     * the magnitude. */
+    float ex = uArtD[i].w;
+    float dis = ex > 0.0 ? pow(ax, ex)
+      : ex == 0.0 ? 1.0
+      : lanternLobe(ax, -L, uArtD[i].xyz, -ex);
     E += uArtC[i] * (uArtP[i].w * dis * ndl / d2);
   }
 
@@ -542,8 +618,10 @@ export const artificialAdd = (worldNormal: string) => /* glsl */ `
    * it multiplied by a known gain — which is a quantity tools/agx.mjs can
    * invert, rather than a quantity that has been through an albedo, a BRDF, a
    * canyon term and a bounce. */
-  if (uArtDbg > 0.0) {
-    reflectedLight.directDiffuse = artE * uArtDbg;
+  if (uArtDbg != 0.0) {
+    reflectedLight.directDiffuse = uArtDbg > 0.0
+      ? artE * uArtDbg
+      : vec3(artE.r * (-uArtDbg));
     reflectedLight.indirectDiffuse = vec3(0.0);
     reflectedLight.directSpecular = vec3(0.0);
     reflectedLight.indirectSpecular = vec3(0.0);
@@ -565,7 +643,11 @@ declare global {
   interface Window {
     __sys5?: {
       freeze(t: number): void; run(): void; readonly time: number;
-      /** Render `artificial()` raw at this gain. 0 restores the scene. */
+      /**
+       * Render `artificial()` raw at this gain. 0 restores the scene.
+       * Negative renders the red channel as a grey, which is the exact-inverse
+       * form for metering. See ART_DBG.
+       */
       mirror(gain: number): void;
       /** The registered sources, so a probe can predict what it is measuring. */
       dump(): {
