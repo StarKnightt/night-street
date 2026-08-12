@@ -52,34 +52,57 @@ import { signGLSL, signUniforms } from './signs';
  * prop pixels the propsOff pass identifies:
  *
  *                     full L   direct sun    sky/IBL     everything else
- *   props,  sunlit     6.05    4.88  81%     0.77  13%   0.25   4%
- *   street, sunlit     8.43    7.35  87%     0.43   5%   0.41   5%
- *   props,  shaded     0.72   -0.00   0%     0.53  73%   0.19  27%
- *   street, shaded     1.47   -0.00   0%     0.45  31%   1.02  69%
+ *   props,  sunlit     0.631   0.561  89%    0.054   9%   0.015   2%
+ *   street, sunlit     1.060   0.996  94%    0.032   3%   0.028   3%
+ *   props,  shaded     0.045   0.000   0%    0.028  63%   0.016  36%
+ *   street, shaded     0.101   0.000   0%    0.022  22%   0.078  78%
  *
- * The sun is not missing. A prop standing in the beam takes 81 per cent of its
- * light from the disc, at a blue-to-red ratio of 0.29, which is the same warm
+ * Those are the re-measured figures. This paragraph used to carry radiances
+ * sixteen times larger — "street, sunlit 8.43" for a surface at about 0.51 —
+ * because the tool set `NoToneMapping` and then set `toneMappingExposure`, which
+ * three compiles out, and then divided by it. Nothing below was derived from the
+ * absolute numbers: the argument in this comment and in 29ebdbd is made entirely
+ * out of percentages, blue-to-red ratios and pixel counts, all of which are
+ * scale-free and all of which survived the bug unchanged. The tool now asserts
+ * that halving its exposure halves the frame before it reports anything. The
+ * table is not a like-for-like re-run either — the sun has moved from 4.2 to 12
+ * degrees since — which is why the splits differ as well as the levels.
+ *
+ * The sun is not missing. A prop standing in the beam takes 89 per cent of its
+ * light from the disc, at a blue-to-red ratio of 0.16, which is the same warm
  * direct term the paving beside it gets. The material is in the lighting path
  * and the instance codes arrive; the first hypothesis was wrong.
  *
- * What the table actually shows is in the last column. A shaded street surface
- * takes 69 per cent of its light from a term that is neither the sun nor the
- * probe, and a shaded prop takes 27 per cent — a sixth as much in absolute
- * radiance. That term is the bounce off the frontage opposite, which at this
- * hour is in full sun above its shade line and is the largest warm source
- * anything at street level can see. `MASONRY_END` adds it, `streetEnd` adds it
- * to all four street-level materials, and this kit did not, so its shaded
- * faces were lit by 2.6x canyonSky and nothing else — and canyonSky's tint is
- * B/R 4.55 by construction. Hence a bollard reading 1.35 blue-to-red against
- * paving at 0.54 in the same pixels.
+ * What the table shows is in the last column. A shaded street surface takes
+ * three quarters of its light from a term that is neither the sun nor the probe,
+ * and a shaded prop a third. Most of that column is the bounce off the frontage
+ * opposite, which at this hour is in full sun above its shade line and is the
+ * largest warm source anything at street level can see — though not all of it,
+ * and the column cannot be read as the bounce alone: with the sun and the
+ * environment both off, the lamps and every emissive surface in the frame are
+ * still on. `MASONRY_END` adds the bounce, `streetEnd` adds it to all four
+ * street-level materials, and this kit did not, so its shaded faces were lit by
+ * 2.6x canyonSky and nothing else — and canyonSky's tint is B/R 4.55 by
+ * construction. Hence a bollard reading 1.35 blue-to-red against paving at 0.54
+ * in the same pixels.
  *
- * At 4.2 degrees this is most of what is seen of the kit, because a low sun
- * touches very little of a vertical object: 15k prop pixels in the probe frame
+ * At a low sun this is most of what is seen of the kit, because a low sun
+ * touches very little of a vertical object: 35k prop pixels in the probe frame
  * are sunlit against 38k shaded, where the mostly-horizontal street is sunlit
  * over half its area.
  *
+ * The size of the term itself is checked separately, by `tools/bounce.mjs`,
+ * which measures the radiance of the sunlit frontage, measures the street width
+ * and the shade line by raycast, and compares the coefficient against the strip
+ * form factor. It comes out at 0.6 to 0.9 of what the geometry supports at this
+ * height, and the hue is about twice as blue as the source measures — the term
+ * is conservative rather than inflated, which is the opposite of the signature
+ * the withdrawn display fit leaves.
+ *
  * Copied rather than imported. It is `streetEnd`'s bounce term, verbatim in
- * everything but the gain, and `scene/streetMaterials.ts` is locked.
+ * everything but the gain, and `scene/streetMaterials.ts` was locked when this
+ * was written. `tools/bounce.mjs` parses all three copies and fails if they have
+ * drifted apart, which is the check that matters until they are one constant.
  */
 /* canyonSky, at less than full strength, because a bollard is not a wall.
  *

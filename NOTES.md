@@ -626,15 +626,37 @@ Nothing else in the frame moves by more than the one-count floor.
 
 ### The instrument that had to be fixed first
 
-`tools/shadesplit.mjs` sets `NoToneMapping` and then sets an exposure "so that
+`tools/shadesplit.mjs` set `NoToneMapping` and then set an exposure "so that
 sunlit paving does not clip", and three compiles the exposure out:
 `WebGLProgram.js:771` omits `#define TONE_MAPPING` and the tone mapping function
 entirely when the mode is None, so `toneMappingExposure` is never read. The knob
-is inert. The tool then divides by it, so every absolute radiance it prints is
+is inert. The tool then divided by it, so every absolute radiance it printed was
 16.7x high — its "street, sunlit 8.43" is a surface at about 0.51, and those
-inflated figures are quoted in `propMaterials.ts`'s header. Its percentages and
+inflated figures were quoted in `propMaterials.ts`'s header. Its percentages and
 ratios are unaffected, which is why nobody noticed and why the conclusions drawn
 from it stand.
+
+**Fixed.** It now uses `LinearToneMapping`, removes the pedestal, and proves the
+exposure is live by halving it and requiring the same 228k mid-tone pixels to
+halve — measured 0.5001. Run it with `--tonemap 0` and the check fails at
+1.0000, which is the old configuration and is also where 39 per cent of the
+frame turns out to have been clipped to white. A check nobody has watched fail
+is not known to be a check.
+
+Nothing was derived from the inflated numbers. Every use of that tool in the tree
+is an argument about a ratio — 29ebdbd's diagnosis of the prop kit is made out of
+percentages, blue-to-red numbers and pixel counts — and the one constant that
+looked like it might have come from the tool, the cross-canyon bounce, predates
+it by a day and a commit (`git log -S` puts it in bea2726). The audit's own
+verdict on the bounce cited shadesplit and was wrong to: the "everything else"
+column is the frame with the sun and the environment both off, which is the
+lamps and every emissive surface as well as the bounce, so it cannot isolate the
+term. `tools/bounce.mjs` re-derives it from geometry instead — measured sunlit
+frontage radiance, street width, shade line and wall top by raycast, against the
+infinitely-long-strip form factor — and the coefficient comes out at 0.3 to 0.9
+of what the geometry supports, with a hue about twice as blue as the source. Too
+small rather than too large, which is the opposite of what the withdrawn display
+fit leaves behind. Verdict stands, on different grounds.
 
 `tools/reflsurf.mjs` uses `LinearToneMapping` instead, which is
 `saturate(exposure * colour)` and is live, and asserts it by halving the
