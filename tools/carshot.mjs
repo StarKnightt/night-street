@@ -24,6 +24,10 @@ const tag = args[0] && !args[0].startsWith('--') ? args[0] : 'carshot';
 const flag = (k, d) => { const i = args.indexOf('--' + k); return i < 0 ? d : args[i + 1]; };
 const W = +flag('w', 1920), H = +flag('h', 1080);
 const JS = flag('js', '');
+/* Shoot a subset. The five close crops are the regression set and are worth
+ * having, but re-aiming a new framing costs two runs of the whole list if there
+ * is no way to ask for one of them. */
+const ONLY = flag('only', '');
 
 /* Each entry is a place a critic named. `I*` are the sunlit hatch on the far
  * kerb at z = -76.3 — the car the final cut turned away from and the one both
@@ -42,6 +46,13 @@ const VIEWS = [
   { name: 'C-tail', x: -0.55, z: -39.4, yaw: 3.02, pitch: -0.14 },
   // The hero estate's front wheel and flank, walking past it.
   { name: 'C-arch', x: -0.35, z: -41.2, yaw: 3.32, pitch: -0.17 },
+  /* Two whole-car framings, which the close crops above cannot answer: the test
+   * for the away-facing lift is whether the car reads as one object under two
+   * lights, and that is a question about the whole body in frame with its own
+   * sunlit flank beside its own shaded tail. Both are far enough back to hold
+   * all 4.6 m of the estate. */
+  { name: 'C-3q', x: 1.55, z: -37.15, yaw: 0.5865, pitch: -0.127 },
+  { name: 'C-rake', x: 0.30, z: -36.00, yaw: 0.3088, pitch: -0.129 },
 ];
 
 const outDir = path.join(ROOT, 'shots', tag);
@@ -51,6 +62,7 @@ fs.mkdirSync(outDir, { recursive: true });
 await run({ width: W, height: H }, async ({ page, errs, readShaderErrors }) => {
   if (JS) await page.evaluate((js) => { new Function('s', js)(window.__scene); }, JS);
   for (const v of VIEWS) {
+    if (ONLY && !v.name.includes(ONLY)) continue;
     const got = await page.evaluate((v) => {
       const s = window.__scene;
       s.goTo(0.5);
