@@ -33,12 +33,61 @@
  * wheelie bin — comes back a saturated primary blue without it. The same
  * correction the building metal already applies is applied here, and for the
  * same reason.
+ *
+ * `canyonSky` on its own is not enough, and finding that out is what
+ * `tools/shadesplit.mjs` exists for. See STREET_BOUNCE below.
  */
 import * as THREE from 'three';
 
 import { NOISE, CANYON } from '@/world/glsl';
 import { FACADE_VARYINGS, FACADE_VERTEX, skyLift } from './buildingMaterials';
 import { signGLSL, signUniforms } from './signs';
+
+/* The cross-canyon bounce, which the kit was missing and everything around it
+ * had.
+ *
+ * The measurement, from `tools/shadesplit.mjs` — the frame rendered four times
+ * with the sun and the environment switched independently, differenced in
+ * scene radiance with the tone map and the grade off, and aggregated over the
+ * prop pixels the propsOff pass identifies:
+ *
+ *                     full L   direct sun    sky/IBL     everything else
+ *   props,  sunlit     6.05    4.88  81%     0.77  13%   0.25   4%
+ *   street, sunlit     8.43    7.35  87%     0.43   5%   0.41   5%
+ *   props,  shaded     0.72   -0.00   0%     0.53  73%   0.19  27%
+ *   street, shaded     1.47   -0.00   0%     0.45  31%   1.02  69%
+ *
+ * The sun is not missing. A prop standing in the beam takes 81 per cent of its
+ * light from the disc, at a blue-to-red ratio of 0.29, which is the same warm
+ * direct term the paving beside it gets. The material is in the lighting path
+ * and the instance codes arrive; the first hypothesis was wrong.
+ *
+ * What the table actually shows is in the last column. A shaded street surface
+ * takes 69 per cent of its light from a term that is neither the sun nor the
+ * probe, and a shaded prop takes 27 per cent — a sixth as much in absolute
+ * radiance. That term is the bounce off the frontage opposite, which at this
+ * hour is in full sun above its shade line and is the largest warm source
+ * anything at street level can see. `MASONRY_END` adds it, `streetEnd` adds it
+ * to all four street-level materials, and this kit did not, so its shaded
+ * faces were lit by 2.6x canyonSky and nothing else — and canyonSky's tint is
+ * B/R 4.55 by construction. Hence a bollard reading 1.35 blue-to-red against
+ * paving at 0.54 in the same pixels.
+ *
+ * At 4.2 degrees this is most of what is seen of the kit, because a low sun
+ * touches very little of a vertical object: 15k prop pixels in the probe frame
+ * are sunlit against 38k shaded, where the mostly-horizontal street is sunlit
+ * over half its area.
+ *
+ * Copied rather than imported. It is `streetEnd`'s bounce term, verbatim in
+ * everything but the gain, and `scene/streetMaterials.ts` is locked.
+ */
+const STREET_BOUNCE = (bounce: number) => /* glsl */ `
+{
+  float across = max(-vWN.x, 0.0) * 0.55 + max(vWN.x, 0.0) * 0.30 + max(vWN.y, 0.0) * 0.35;
+  reflectedLight.indirectDiffuse +=
+    vec3(0.190, 0.104, 0.043) * across * ${bounce.toFixed(2)} * diffuseColor.rgb;
+}
+`;
 
 const PROP_BODY = /* glsl */ `
 float gPropSpec = 1.0;
@@ -68,8 +117,24 @@ float gPropSpec = 1.0;
      * Municipal ironwork is painted black or a very dark green, repainted over
      * rust every few years, and the repaint never quite covers the last one.
      * The rust is the only chroma in it and at this hour it goes orange, which
-     * is what makes old ironwork read instantly. */
-    base = mix(vec3(0.0185, 0.0205, 0.0192), vec3(0.0210, 0.0300, 0.0235), tone);
+     * is what makes old ironwork read instantly.
+     *
+     * Five liveries rather than a lerp between two near-blacks. The old branch
+     * ran the whole class between 0.0185 and 0.030 linear — a reflectance
+     * below charcoal, on the reasoning that municipal ironwork is painted
+     * black. It is, and a black-painted bollard at this hour is still a
+     * *lit object*: gloss paint over cast iron measures 0.05 to 0.08, and a
+     * council repaints its street furniture in whatever it has, which on any
+     * real high street means a run of black posts with a dark green one, a
+     * grey one and a red-oxide primed one among them. At 0.02 the whole class
+     * had no value separation left to lose and every one of them converged on
+     * whatever the ambient happened to be — which was the blue. */
+    base =
+      tone < 0.34 ? vec3(0.0480, 0.0470, 0.0455) :        // black gloss, the common case
+      tone < 0.56 ? vec3(0.0330, 0.0560, 0.0400) :        // dark bottle green
+      tone < 0.72 ? vec3(0.0900, 0.0870, 0.0810) :        // grey, a newer post
+      tone < 0.88 ? vec3(0.0960, 0.0480, 0.0300) :        // red oxide primer
+                    vec3(0.1450, 0.1380, 0.1250);         // silver-grey, repainted late
     rgh = 0.80; met = 0.12;
     float rust = smoothstep(0.46, 0.84, unit(wfbm(ps * 1.5, 4)))
                * (0.35 + 0.65 * smoothstep(0.2, 0.9, unit(wfbm(ps * 6.0, 3))));
@@ -89,7 +154,7 @@ float gPropSpec = 1.0;
      * on top of it — there is no mirror left in a spelter coat, which is the
      * correction the building metal already had to make when its casings came
      * back as saturated blue boxes. */
-    base = vec3(0.1620, 0.1650, 0.1670); rgh = 0.74; met = 0.26;
+    base = vec3(0.2050, 0.2080, 0.2020); rgh = 0.74; met = 0.26;
     base *= 0.80 + 0.36 * unit(wfbm(pw * 4.0, 3));
     /* Spangle: the crystal pattern hot-dip zinc freezes in, quite large — 10
      * to 30 mm across — and very low contrast once the coat has dulled. It is
@@ -103,7 +168,11 @@ float gPropSpec = 1.0;
      * a refuse sack has a broad low-gloss lobe that picks up the sky as a soft
      * band down its shoulder, and that band is the entire reason a pile of
      * sacks reads as sacks rather than as lumps of coal. */
-    base = vec3(0.0125, 0.0128, 0.0140);
+    /* 0.030, up from 0.0125. Black polythene measures three to four per cent
+     * and the old figure was a black body, not a bin liner — and it is very
+     * slightly warm, because a refuse sack is carbon black in a translucent
+     * polymer rather than a pigment. */
+    base = vec3(0.0305, 0.0295, 0.0290);
     rgh = 0.34 + 0.16 * unit(wfbm(ps * 9.0, 3));
     met = 0.0;
     // Creases, in roughness rather than in normal. At 4.2 degrees a normal
@@ -116,13 +185,24 @@ float gPropSpec = 1.0;
      * colour is what the tone code selects — a street has a green bin, a blue
      * one, a red news box and an orange cone, and if they are all one hue the
      * kit reads as a kit. */
+    /* Every one of these is roughly doubled off its first value and the two
+     * cold ones are now a minority of the draw rather than 45 per cent of it.
+     *
+     * A wheelie bin is moulded from pigmented HDPE and it is not a dark
+     * object: a green one measures 0.07 to 0.10 and a grey one 0.20. The old
+     * green was 0.033/0.052/0.034 and the old blue 0.030/0.039/0.062, both
+     * about a third of life, and the blue in particular was the single
+     * loudest thing in the critique's frame — an already-blue albedo lit by a
+     * blue-violet slot with no bounce to answer it. Municipal blue is also
+     * simply rarer than municipal green on a street of this kind, so it now
+     * takes an eighth of the draw instead of a fifth. */
     vec3 hue =
-      tone < 0.25 ? vec3(0.0330, 0.0520, 0.0345) :        // municipal green
-      tone < 0.45 ? vec3(0.0300, 0.0390, 0.0620) :        // blue
-      tone < 0.62 ? vec3(0.1550, 0.1520, 0.1420) :        // grey
-      tone < 0.80 ? vec3(0.1180, 0.0300, 0.0250) :        // red
-      tone < 0.92 ? vec3(0.1450, 0.1350, 0.0450) :        // yellow
-                    vec3(0.2600, 0.0620, 0.0140);          // traffic orange
+      tone < 0.30 ? vec3(0.0620, 0.0980, 0.0640) :        // municipal green
+      tone < 0.43 ? vec3(0.0640, 0.0790, 0.1120) :        // municipal blue-grey
+      tone < 0.66 ? vec3(0.1980, 0.1930, 0.1800) :        // grey, the commonest body
+      tone < 0.82 ? vec3(0.1850, 0.0580, 0.0430) :        // red
+      tone < 0.93 ? vec3(0.2450, 0.2150, 0.0700) :        // yellow
+                    vec3(0.3200, 0.0900, 0.0210);         // traffic orange
     base = hue; rgh = 0.46; met = 0.0;
     // UV chalking, worst on the up-faces, which is where the sun gets it.
     float chalk = (0.35 + 0.65 * max(vWN.y, 0.0)) * smoothstep(0.3, 0.9, unit(wfbm(ps * 2.5, 3)));
@@ -159,12 +239,15 @@ float gPropSpec = 1.0;
     /* Painted sheet steel gone chalky: meter heads, news box bodies, drums.
      * The paint is a colour and the chalk is not, so the two are mixed rather
      * than one being a tint of the other. */
+    /* Lifted and spread on the same argument as the mouldings, and the two
+     * darkest entries are gone: a meter head or a news box is a *painted*
+     * object and the paint was chosen to be seen from a car. */
     vec3 hue =
-      tone < 0.22 ? vec3(0.0420, 0.0450, 0.0470) :
-      tone < 0.42 ? vec3(0.0310, 0.0640, 0.0480) :
-      tone < 0.62 ? vec3(0.1050, 0.0330, 0.0290) :
-      tone < 0.85 ? vec3(0.1550, 0.1480, 0.1330) :
-                    vec3(0.2650, 0.2400, 0.1650);
+      tone < 0.20 ? vec3(0.0880, 0.0900, 0.0910) :        // dark grey
+      tone < 0.40 ? vec3(0.0540, 0.1000, 0.0740) :        // post-office green
+      tone < 0.58 ? vec3(0.1800, 0.0620, 0.0500) :        // faded pillar red
+      tone < 0.80 ? vec3(0.2350, 0.2260, 0.2080) :        // dirty white
+                    vec3(0.3100, 0.2820, 0.1900);         // cream
     base = hue; rgh = 0.66; met = 0.10;
     float chalk = smoothstep(0.28, 0.86, unit(wfbm(ps * 2.2, 4)));
     base = mix(base, base * 0.55 + vec3(0.048), chalk * 0.6);
@@ -188,7 +271,7 @@ float gPropSpec = 1.0;
   } else if (mat < 8.5){
     // Rubber: castors, cone bases, the tyre of a sack truck. Nearly black,
     // very rough, and it never has a highlight on it.
-    base = vec3(0.0135, 0.0135, 0.0142); rgh = 0.94; met = 0.0;
+    base = vec3(0.0235, 0.0230, 0.0228); rgh = 0.94; met = 0.0;
     base *= 0.86 + 0.26 * unit(wfbm(ps * 6.0, 3));
     gPropSpec = 0.35;
   } else {
@@ -248,6 +331,7 @@ export function makePropMaterial(): THREE.MeshStandardMaterial {
       )
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n${PROP_BODY}`)
       .replace('#include <lights_fragment_end>', `${skyLift(2.6)}
+${STREET_BOUNCE(1.0)}
 /* The same treatment the building metal gets, and for the same reason: street
  * ironwork is painted, rusted, galvanised and then dirtied, and whatever
  * mirror it left the works with is long gone. Its reflection of the sky
@@ -334,19 +418,33 @@ const SIGN_BODY = /* glsl */ `
      * oxblood measured rather than imagined, and two mid grounds are added —
      * cream and ochre, both of which are commoner on a real parade than any
      * of the darks and neither of which was represented at all. */
+    /* Seven grounds, and the navy is down to a tenth of the draw from a
+     * seventh and up from 0.051/0.065/0.118 to 0.078/0.098/0.165.
+     *
+     * The previous set had three near-blacks in six, all of them between 0.043
+     * and 0.065 in their brightest channel, and the boards are the one class
+     * on the street the sun cannot reach — a blade hangs perpendicular to the
+     * frontage, so both lettered faces are lit by sky and bounce alone. A 0.05
+     * ground under that is within a couple of counts of every other 0.05
+     * ground, whatever its hue, and the whole parade converged on the colour
+     * of the fill. Lifting the darks to 0.07-0.18 and adding a sage and a
+     * maroon gives the class four distinct *values* — 0.09, 0.12, 0.20, 0.35,
+     * 0.47 — which is what separates one board from the next at thirty metres,
+     * where hue has long since gone. */
     vec3 dark =
-      tone < 0.22 ? vec3(0.0520, 0.0560, 0.0640) :        // near-black grey
-      tone < 0.42 ? vec3(0.0430, 0.0810, 0.0590) :        // dark green
-      tone < 0.60 ? vec3(0.1450, 0.0480, 0.0430) :        // oxblood
-      tone < 0.74 ? vec3(0.0510, 0.0650, 0.1180) :        // navy
-      tone < 0.88 ? vec3(0.3600, 0.3050, 0.1850) :        // ochre
-                    vec3(0.4700, 0.4400, 0.3700);         // cream
+      tone < 0.18 ? vec3(0.0850, 0.0870, 0.0900) :        // charcoal
+      tone < 0.36 ? vec3(0.0700, 0.1150, 0.0830) :        // dark bottle green
+      tone < 0.50 ? vec3(0.1750, 0.0680, 0.0560) :        // oxblood
+      tone < 0.60 ? vec3(0.0780, 0.0980, 0.1650) :        // navy
+      tone < 0.72 ? vec3(0.2050, 0.2150, 0.1850) :        // sage grey-green
+      tone < 0.86 ? vec3(0.3600, 0.3050, 0.1850) :        // ochre
+                    vec3(0.4900, 0.4600, 0.3900);         // cream
     vec3 light = vec3(0.5400, 0.5200, 0.4780);
     /* Nearly half, not a quarter. A light ground with dark type is the single
      * commonest shopfront blade there is, and it is also the only polarity
      * that survives being 30 m away in haze — which, on a street the camera
      * walks down, is where most of the signs are most of the time. */
-    bool inv = fract(seed * 7.3) > 0.56 && tone < 0.74;
+    bool inv = fract(seed * 7.3) > 0.56 && tone < 0.72;
     ground = inv ? light : dark;
     letter = inv ? dark : light;
     rgh = 0.52; wear = 0.20;
@@ -362,8 +460,8 @@ const SIGN_BODY = /* glsl */ `
   } else if (kind < 2.5){
     // Gilt on dark green. A hanging board is the oldest sign on the street and
     // gold leaf is the one thing on it that has not faded.
-    ground = mix(vec3(0.0400, 0.0720, 0.0530), vec3(0.1050, 0.0400, 0.0380), tone);
-    letter = vec3(0.4200, 0.3050, 0.1080);
+    ground = mix(vec3(0.0680, 0.1180, 0.0870), vec3(0.1720, 0.0660, 0.0620), tone);
+    letter = vec3(0.4600, 0.3400, 0.1250);
     rgh = 0.40; wear = 0.34;
   } else {
     /* Enamel plate, board edge and window lettering. A negative tone is the
@@ -376,9 +474,9 @@ const SIGN_BODY = /* glsl */ `
      * line against a face in shade. Painting the edge the same near-black as
      * the ground throws that away and leaves the sign with no thickness. */
     ground = tone < 0.0
-      ? vec3(0.0880, 0.0850, 0.0790)
-      : mix(vec3(0.0520, 0.0780, 0.0610), vec3(0.0620, 0.0570, 0.0690), fract(seed * 3.1));
-    letter = vec3(0.4000, 0.3300, 0.1600);
+      ? vec3(0.1250, 0.1200, 0.1120)
+      : mix(vec3(0.0900, 0.1300, 0.1020), vec3(0.1600, 0.1480, 0.1350), fract(seed * 3.1));
+    letter = vec3(0.4200, 0.3500, 0.1700);
     rgh = tone < 0.0 ? 0.70 : 0.34;
     wear = 0.26;
     if (tone < 0.0) ink = 0.0;
@@ -451,7 +549,11 @@ ${CANYON}
 void main() {`,
       )
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n${SIGN_BODY}`)
-      .replace('#include <lights_fragment_end>', skyLift(2.6));
+      /* 0.75 rather than the kit's 1.0. A board is the one thing here that is
+       * deliberately turned across the street to be read down it, so `across`
+       * is close to its maximum over the whole face and an unscaled bounce
+       * would put more warm light on a blade than on the wall behind it. */
+      .replace('#include <lights_fragment_end>', `${skyLift(2.6)}\n${STREET_BOUNCE(0.75)}`);
   };
   m.customProgramCacheKey = () => 'street-signage';
   return m;
