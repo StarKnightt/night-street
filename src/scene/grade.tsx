@@ -638,6 +638,88 @@ export function Grade() {
      * was a debug surface that existed on most loads and was absent on some,
      * and a tool that reported "is Grade mounted?" about a mounted Grade. */
     (window as unknown as { __grade?: unknown }).__grade = { grade: g, uniforms };
+    /* The veil's own controls, switchable on a mounted scene. `uBloom` is a
+     * uniform and was already reachable; the firefly guard was a literal
+     * inside the pyramid, so whether it was suppressing the one source in this
+     * scene that is supposed to produce glare could not be asked. */
+    (window as unknown as { __bloom?: unknown }).__bloom = rig ? {
+      get karis() { return rig.bloom.karis; },
+      set karis(v: number) { rig.bloom.karis = v; },
+      get gain() { return rig.bloom.gain; },
+      set gain(v: number) { rig.bloom.gain = v; },
+      get norm() { return rig.bloom.norm; },
+    } : null;
+    /* The scene in radiance, which until now nothing outside the volumetric
+     * could read.
+     *
+     * Every instrument in tools/ meters the canvas, which is AgX of the frame
+     * — a curve with a hard clamp at both ends and a shoulder that compresses
+     * two radiances into one code value. That is the correct thing to measure
+     * a *look* with and the wrong thing to measure a *light* with, and it is
+     * why the two tools that wanted radiance both ended up re-rendering the
+     * scene through a substitute tone map and arguing about the exposure.
+     *
+     * `rig.scene` already holds exactly what is wanted: the scene pass, in
+     * linear sRGB radiance, before bloom, before the grade and before AgX.
+     * This reads it back.
+     *
+     *  - Uint16Array and a manual half decode. Handing three a Float32Array
+     *    for a HalfFloatType target returns zeroes with no error, which is
+     *    indistinguishable from a pass that drew nothing; the same trap the
+     *    volumetric probe records above.
+     *  - Coordinates are GL's, so v = 0 is the bottom of the frame. Stated
+     *    because a region that is not what its name says has cost this project
+     *    three conclusions.
+     *  - The target is 4x multisampled; three resolves into the single-sample
+     *    framebuffer when the target is unbound, which has happened by the time
+     *    anything can call this.
+     *  - It reports `n` and the rect it actually read, so a probe that has
+     *    been handed a degenerate box says so instead of returning a mean of
+     *    one pixel. */
+    (window as unknown as { __hdr?: unknown }).__hdr = rig ? {
+      get size() { return [rig.scene.width, rig.scene.height] as [number, number]; },
+      /** Mean, peak and clip counts of one rect, in scene radiance. uv, v up. */
+      rect(u0 = 0, v0 = 0, u1 = 1, v1 = 1, clipAt = 0) {
+        const W = rig.scene.width, H = rig.scene.height;
+        const x = Math.max(0, Math.min(W - 1, Math.round(u0 * W)));
+        const y = Math.max(0, Math.min(H - 1, Math.round(v0 * H)));
+        const w = Math.max(1, Math.min(W - x, Math.round((u1 - u0) * W)));
+        const h = Math.max(1, Math.min(H - y, Math.round((v1 - v0) * H)));
+        const buf = new Uint16Array(w * h * 4);
+        gl.readRenderTargetPixels(rig.scene, x, y, w, h, buf);
+        const half = (hf: number) => {
+          const s = hf >> 15 ? -1 : 1, e = (hf >> 10) & 31, f = hf & 1023;
+          if (e === 0) return s * f * 2 ** -24;
+          if (e === 31) return f ? NaN : s * Infinity;
+          return s * (1 + f / 1024) * 2 ** (e - 15);
+        };
+        let r = 0, gg = 0, b = 0, peak = 0, over = 0, px = -1, py = -1;
+        const lums: number[] = [];
+        for (let i = 0; i < w * h; i++) {
+          const cr = half(buf[i * 4]), cg = half(buf[i * 4 + 1]), cb = half(buf[i * 4 + 2]);
+          r += cr; gg += cg; b += cb;
+          const l = 0.2126 * cr + 0.7152 * cg + 0.0722 * cb;
+          lums.push(l);
+          /* Where the peak is, not just what it is. A brightest-pixel figure
+           * with no coordinate cannot distinguish the solar disc from a
+           * clearcoat glint, and this project has already spent conclusions on
+           * regions that were not what their name said. */
+          if (l > peak) { peak = l; px = x + (i % w); py = y + Math.floor(i / w); }
+          if (clipAt > 0 && Math.max(cr, cg, cb) >= clipAt) over++;
+        }
+        lums.sort((a, c) => a - c);
+        const q = (p: number) => lums[Math.min(lums.length - 1, Math.floor(p * lums.length))];
+        const n = w * h;
+        return {
+          rect: [x, y, w, h] as [number, number, number, number],
+          n,
+          mean: [r / n, gg / n, b / n] as [number, number, number],
+          lum: { p10: q(0.1), median: q(0.5), p90: q(0.9), p99: q(0.99), peak },
+          peakAt: [px, py] as [number, number],
+          over,
+        };
+      },
+    } : null;
     (window as unknown as { __vol?: unknown }).__vol = rig
       ? { get cones() { return rig.vol.lastConeCount; },
           get shadow() { return rig.vol.lastShadow; },
@@ -780,7 +862,14 @@ export function Grade() {
         rig.vol.render(gl, scene as THREE.Scene, pc,
           rig.scene.depthTexture as THREE.Texture, frames.current);
       }
-      if (uniforms.uBloom!.value > 0) rig.bloom.render(gl, rig.scene.texture);
+      if (uniforms.uBloom!.value > 0) {
+        rig.bloom.render(gl, rig.scene.texture);
+        /* Read back from the pyramid every draw rather than only on resize.
+         * The normalisation is a function of the per-octave gain, and the gain
+         * is now settable — a veil swept without this is a veil whose energy
+         * conservation is describing the previous setting. */
+        uniforms.uBloomNorm!.value = rig.bloom.norm;
+      }
       gl.setRenderTarget(null);
     } else {
       gl.copyFramebufferToTexture(target);

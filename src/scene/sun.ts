@@ -99,6 +99,73 @@ export const SUN_BEAM_GROUND: [number, number, number] = [
   srgbToLinear((SUN_COLOR_HEX & 255) / 255) * SUN_INTENSITY,
 ];
 
+/* ── The disc, which is an image of the light above and was not ─────────────
+ *
+ * The sun is drawn twice in this project: once as the directional light, which
+ * has no image, and once as a painted profile in the sky, which carries no
+ * energy into the shading. That is the correct decomposition and it is argued
+ * in env.ts. What it does not license is the two halves disagreeing about how
+ * bright the sun is, and they disagreed by three orders of magnitude.
+ *
+ * The painted disc was `exp(-ang * 150.0) * 190.0` — transcribed into env.ts's
+ * CPU sky and again into clouds.ts's GLSL, which is the duplicated-constant
+ * class this file exists to stop — and it was picked, in that file's own
+ * words, as "a couple of hundred times the horizon value". Measured, that puts
+ * the brightest pixel of the sun at a luminance of 78 in a frame whose
+ * brightest pixel is a clearcoat glint at 7339: the sun was the ninety-fourth
+ * brightest thing in a photograph of the sun. See tools/sunglare.mjs.
+ *
+ * The consistent value is not a matter of taste. A directional light's
+ * intensity *is* the irradiance it lands on a surface facing it, and that
+ * irradiance is the disc's radiance times the solid angle it subtends:
+ *
+ *     E = L * omega        omega = pi * r^2,  r = 0.2665 deg
+ *
+ * so the radiance the sky must paint to be the same sun as the light above is
+ * E / omega. For the exponential profile actually used, whose integral over
+ * the sphere is 2*pi/k^2, the peak that carries that flux is E * k^2 / (2*pi).
+ * Both are computed below rather than written down.
+ *
+ * ── Why it does not ship at that value ─────────────────────────────────────
+ *
+ * Two hard limits and one soft one.
+ *
+ *   - The scene renders into a half-float target. 4.1e5 is inside the range
+ *     but leaves two of the sixteen bits of headroom before Inf, and Inf in
+ *     the bloom pyramid is NaN across a sixth of the frame.
+ *   - The veil in bloom.ts redistributes a fixed *fraction* of the frame's
+ *     energy through a point-spread function that is far broader than a real
+ *     lens's. At full flux the disc is two orders of magnitude more energy
+ *     than the rest of the frame put together, and 4.5 per cent of that,
+ *     spread over the pyramid's flat tail, is a white frame rather than a
+ *     glare. A real PSF falls as 1/theta^2 and keeps that energy within a few
+ *     degrees; this one does not, so the honest thing is to cap the source
+ *     rather than to pretend about the kernel.
+ *   - AgX clips the disc at anything over about 40 units of luminance anyway,
+ *     so every unit above the cap is spent entirely on the veil.
+ *
+ * SUN_DISC_SHARE is therefore what it says: the fraction of the sun's real
+ * flux this sky paints, chosen by measurement in tools/sunglare.mjs against
+ * the two things a photograph looking into a low sun actually shows — a
+ * lifted black level and a glow of tens of degrees — and reported there with
+ * the clipped-pixel count beside it. It is a deficiency of the kernel
+ * expressed as a deficiency of the source, and it is written here, once,
+ * where both skies read it.
+ */
+const SUN_ANG_RADIUS = (0.2665 * Math.PI) / 180;
+/** Reciprocal e-folding angle of the painted profile, per radian. */
+export const SUN_DISC_EFOLD = 150.0;
+/** Solid angle of `exp(-k*theta)` over the sphere, and of the real disc. */
+const PROFILE_SOLID = (2 * Math.PI) / (SUN_DISC_EFOLD * SUN_DISC_EFOLD);
+export const SUN_DISC_SOLID = Math.PI * SUN_ANG_RADIUS * SUN_ANG_RADIUS;
+export const SUN_DISC_SHARE = 0.02;
+/** Peak radiance of the painted profile, in the same units as the beam. */
+export const SUN_DISC_PEAK: [number, number, number] = [
+  (SUN_BEAM_GROUND[0] * SUN_DISC_SHARE) / PROFILE_SOLID,
+  (SUN_BEAM_GROUND[1] * SUN_DISC_SHARE) / PROFILE_SOLID,
+  (SUN_BEAM_GROUND[2] * SUN_DISC_SHARE) / PROFILE_SOLID,
+];
+
 /** Unit vector pointing from the scene toward the sun. */
 export const SUN_DIR: [number, number, number] = [
   Math.sin(SUN_AZIM) * Math.cos(SUN_ELEV),

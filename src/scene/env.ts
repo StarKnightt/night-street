@@ -38,11 +38,27 @@ const W = 512, H = 256;
 export { SUN_ELEV, SUN_AZIM, SUN_DIR, SUN_INTENSITY, SUN_COLOR_HEX, SUN_BEAM_GROUND } from './sun';
 // `export ... from` re-exports without binding locally, and this file reads
 // SUN_DIR a dozen times below.
-import { SUN_DIR } from './sun';
+import { SUN_DIR, SUN_DISC_EFOLD, SUN_DISC_PEAK } from './sun';
+
+/* `?disc=<x>` scales the painted solar disc, and nothing else, so the veil it
+ * feeds can be swept across loads against a fixed scene. Dev only and read
+ * once: the disc is baked into a cube and into a DataTexture, so this cannot
+ * change without a reload and pretending otherwise would be a knob that lies.
+ * Production is exactly 1 with a constant condition. */
+function discScale(): number {
+  if (process.env.NODE_ENV === 'production') return 1;
+  if (typeof window === 'undefined') return 1;
+  const q = new URLSearchParams(window.location.search).get('disc');
+  const v = q === null ? 1 : Number(q);
+  return Number.isFinite(v) && v >= 0 ? v : 1;
+}
+const DISC_SCALE = discScale();
 
 export type NightEnv = {
   background: THREE.Texture;
   environment: THREE.Texture;
+  /** The pre-cloud probe, kept for A/B. Undefined if it is the shipped one. */
+  environmentFlat?: THREE.Texture;
   fogColor: THREE.Color;
   fogSunColor: THREE.Color;
   dispose(): void;
@@ -151,8 +167,15 @@ function skyRadiance(theta: number, phi: number, out: [number, number, number], 
    * atmosphere, and it is the one place in the picture where clipping is not
    * only allowed but required. */
   if (withDisc) {
-    const disc = Math.exp(-ang * 150.0) * 190.0;
-    col[0] += disc * 1.00; col[1] += disc * 0.80; col[2] += disc * 0.52;
+    /* Both numbers come from sun.ts now. They were `exp(-ang * 150) * 190`
+     * here and the same two literals again in clouds.ts's GLSL, describing a
+     * sun three orders of magnitude dimmer than the directional light it is
+     * an image of; the derivation and the reason it ships capped are in
+     * sun.ts, and DISC_SCALE is the dev sweep that chose the cap. */
+    const disc = Math.exp(-ang * SUN_DISC_EFOLD) * DISC_SCALE;
+    col[0] += disc * SUN_DISC_PEAK[0];
+    col[1] += disc * SUN_DISC_PEAK[1];
+    col[2] += disc * SUN_DISC_PEAK[2];
   }
 
   /* Below the horizon.
@@ -324,6 +347,35 @@ export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
    * irradiance the scene receives is not merely close to what it was — it is
    * the same Float32Array, produced by the same code path, and cannot have
    * moved. See tools/skycloud.mjs for the measurement that says so anyway.
+   *
+   * ── That note is no longer true, and it is the reason this block changed ──
+   *
+   * Decoupling the probe from the background was the right way to land the
+   * clouds: it proved the cloud pass had not disturbed the lighting, because
+   * the lighting was demonstrably the same array. What it left behind is a
+   * scene lit by a sky nobody is looking at. Every shadow-side surface in a
+   * street canyon — which is most of what faces a walking camera — takes
+   * essentially all of its light from the dome, and that dome had no clouds in
+   * it and no ozone in it, while the one being drawn had both.
+   *
+   * A cloud deck at golden hour is not a small correction to the dome. It is
+   * a very large, very bright, very warm lambertian source hanging over the
+   * street: sunlit cloud base is the brightest thing in the upper hemisphere
+   * after the disc itself, and it is exactly what fills a shaded frontage in
+   * a real photograph of this hour. Convolving it out and then wondering why
+   * the shade reads dead is the whole of the defect.
+   *
+   * So the probe is now convolved from a cube baked by the same shader as the
+   * background, from the same `SUN_DIR`, differing in one term: the solar disc
+   * is off. That decomposition is unchanged and is argued above — the
+   * directional light carries the disc, with hard shadows, and a half-degree
+   * source belongs in exactly one of the two.
+   *
+   * The equirect probe is still built, still convolved, and returned beside
+   * the shipped one as `environmentFlat` in development, so the two can be
+   * swapped on a live scene inside one draw. That is how the change was
+   * measured and it is how anyone can re-measure it: an inert change reads as
+   * exactly 1.000.
    */
   /* `bakeSkyCube` returns null rather than throwing when it cannot finish —
    * lost context, a renderer mid-teardown, a Fast Refresh landing in the middle
@@ -333,15 +385,43 @@ export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
    * file only has to cope with not getting a cube. It has cost a shared dev
    * server once already; see the note above bakeSkyCube. */
   const mode = skyMode();
+
+  /* The probe's own bake, first, so that `__skyBakeMs` still reports the cost
+   * of the sky the camera sees and tools/skycloud.mjs keeps meaning what it
+   * meant.
+   *
+   * 256 a face rather than 1536. This is convolved into a nine-mip roughness
+   * chain whose top level is 256 and whose diffuse term is an order-2
+   * spherical harmonic; there is nothing in it that can resolve 1.9 texels per
+   * degree, and the disc — the one feature in this sky with a sharp angular
+   * scale — is deliberately not in this bake at all. Measured cost is printed
+   * beside the background's.
+   */
+  const probeCube = mode === 'flat'
+    ? null
+    : bakeSkyCube(renderer, SUN_DIR, { size: 256, clouds: mode === 'clouds', disc: false });
+  const probeBakeMs = (globalThis as { __skyBakeMs?: number }).__skyBakeMs;
+
   const cube = mode === 'flat'
     ? null
-    : bakeSkyCube(renderer, SUN_DIR, { size: 1536, clouds: mode === 'clouds' });
+    : bakeSkyCube(renderer, SUN_DIR, {
+      size: 1536, clouds: mode === 'clouds', discScale: DISC_SCALE,
+    });
+  (globalThis as { __skyProbeBakeMs?: number }).__skyProbeBakeMs = probeBakeMs;
 
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
-  const target = pmrem.fromEquirectangular(probeSrc);
+  /* The old probe. Kept because a difference between two builds is not a
+   * measurement — a difference between two draws of one build is. */
+  const flatTarget = pmrem.fromEquirectangular(probeSrc);
+  const cubeTarget = probeCube ? pmrem.fromCubemap(probeCube.texture) : null;
   probeSrc.dispose();
+  /* The cube itself has done its job the moment it is convolved; only the
+   * cubeUV target is read from here on. */
+  probeCube?.dispose();
   pmrem.dispose();
+
+  const target = cubeTarget ?? flatTarget;
 
   /* Haze, in two colours rather than one, and both taken from the sky.
    *
@@ -388,9 +468,18 @@ export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
   return {
     background: cube ? cube.texture : equirect,
     environment: target.texture,
+    /* The withdrawn probe, for A/B against the shipped one. Undefined when the
+     * two are the same object, so a tool cannot report a difference it did not
+     * measure. */
+    environmentFlat: cubeTarget ? flatTarget.texture : undefined,
     fogColor,
     fogSunColor,
-    dispose() { equirect.dispose(); target.dispose(); cube?.dispose(); },
+    dispose() {
+      equirect.dispose();
+      flatTarget.dispose();
+      cubeTarget?.dispose();
+      cube?.dispose();
+    },
   };
 }
 

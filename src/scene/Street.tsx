@@ -96,13 +96,39 @@ export function Street() {
      * not in direct sun is lit by the sky and by nothing else, so the ratio
      * between the two is what decides whether shade reads as cool blue shadow
      * or as black. Holding the environment down here is exactly what would
-     * produce the dead shadows this scene has to avoid. */
-    scene.environmentIntensity = 0.50;
+     * produce the dead shadows this scene has to avoid.
+     *
+     * All of which was written above a 0.50, which is to say the file argued
+     * for the sky and then halved it. It is 1.0 now: the probe is a radiance
+     * map of a sky whose levels were authored absolutely — env.ts says so in
+     * as many words, and NOTES.md's curve sweep clears it as "the thing the
+     * transform was validated against" — so any coefficient other than one is
+     * asserting the sky is not the sky.
+     *
+     * Measured with tools/skylift.mjs, on one build, switching the gain
+     * between two draws: the ground half of the frame gains 1.3x to 2.2x
+     * depending on how much of it the sun reaches, the whole frame 1.02x to
+     * 1.25x — small only because the sky itself fills a third of these frames
+     * and does not move. Nothing clips: the blown-pixel count is 0.000 per
+     * cent at every one of six viewpoints, before and after. */
+    scene.environmentIntensity = 1.0;
     /* Haze, thinner than the night fog in absolute terms but far more visible,
      * because it is now being lit rather than merely tinted. The directional
      * part of it — milky toward the sun, clear away from it — is in haze.ts.
      * Idempotent: it guards on THREE.ShaderChunk.__hazeInstalled, so a double
      * invocation under StrictMode installs once. */
+    /* The two probes, published so that the sky the scene is lit by can be
+     * switched inside one draw. Both are cubeUV PMREM targets, so three's
+     * program cache key does not move and nothing recompiles between the two
+     * frames — which is the only way the difference measured is the sky and
+     * not a rebuild. Dev only; in production `environmentFlat` is not built. */
+    if (process.env.NODE_ENV !== 'production') {
+      (window as unknown as { __env?: unknown }).__env = {
+        clouds: env.environment,
+        flat: env.environmentFlat ?? env.environment,
+        hasFlat: !!env.environmentFlat,
+      };
+    }
     installHaze(new THREE.Vector3(...SUN_DIR), env.fogColor, env.fogSunColor);
     scene.fog = new THREE.FogExp2(env.fogColor.getHex(), 0.0072);
 
@@ -155,7 +181,10 @@ export function Street() {
     scene.background = env.background;
     scene.environment = env.environment;
     scene.backgroundIntensity = 1;
-    scene.environmentIntensity = 0.50;
+    // The same value as the useMemo above, and it has to be: this re-asserts
+    // that block after a Fast Refresh, so a difference here is a scene whose
+    // lighting depends on whether anyone has saved a file.
+    scene.environmentIntensity = 1.0;
     if (!scene.fog) scene.fog = new THREE.FogExp2(env.fogColor.getHex(), 0.0072);
     return () => {
       scene.background = null;

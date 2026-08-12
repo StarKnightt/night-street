@@ -55,7 +55,27 @@
 import * as THREE from 'three';
 import { Blit, makeColourTarget } from './pipeline';
 
-const LEVELS = 6;
+/* Nine, not six, and the three that were missing are the whole of the veil.
+ *
+ * The support of this kernel is not "a third of the frame", which is what the
+ * header claimed. Each level is upsampled with a 3x3 tent whose radius is one
+ * texel *of that level*, so the furthest a photon can travel is about two
+ * texels of the coarsest level: at six levels from half resolution that is
+ * 2 x 64 = 128 pixels, which on a 900-line frame at 45 degrees is 6.4 degrees.
+ * Past that the veil is exactly, bit-for-bit, the frame without it.
+ *
+ * That is measurable and was measured. With the sun in frame at t = 0.40, a
+ * twenty-fold change in the disc's flux — a quarter of the frame's whole
+ * energy budget — moved the frame beyond ten degrees from the sun by 0.00
+ * code values at six levels: 130.58 against 130.59, 99.16 against 99.16.
+ * Every octave of glare the source was emitting past 6.4 degrees was being
+ * dropped on the floor. An absent term reads as exactly 1.000.
+ *
+ * Nine levels reach 2 x 512 = 1024 pixels, which is 51 degrees and covers the
+ * frame from any point in it. They cost three passes over targets of 25x14,
+ * 12x7 and 6x3 texels; the measured frame time does not move.
+ */
+const LEVELS = 9;
 
 /* How much of each octave survives into the one below it, so the point-spread
  * function is geometric with this ratio: 0.42 of the veil in the tightest
@@ -70,7 +90,36 @@ const LEVELS = 6;
  * contrast that costs. A real lens is the other way round: strongly peaked,
  * with a tail. Measured at 18 per cent of the micro-contrast of every patch on
  * the frontage, at every distance from 9 m to 26 m, in tools/micro.mjs. */
-const GAIN = 0.6;
+/* ── What this number is, physically ──────────────────────────────────────
+ *
+ * Each level of the pyramid is mean-preserving and each is added to the one
+ * below it with this weight, so octave k carries GAIN^k of the veil's energy.
+ * A point source's energy at octave k is spread over (2^k)^2 pixels, so its
+ * surface brightness at a radius of about 2^k pixels is
+ *
+ *     B(theta)  ~  GAIN^log2(theta) / theta^2
+ *
+ * At GAIN = 1 that is exactly 1/theta^2 — the classical veiling-glare law,
+ * equal energy per octave, which is what a real lens's point-spread function
+ * does out to tens of degrees. Every value below 1 steepens it: 0.6 makes the
+ * exponent 2.74, which puts the veil within a couple of hundred pixels of its
+ * source and leaves the rest of the frame with none of it.
+ *
+ * 0.6 was chosen at the same time as the normalisation below was fixed, on
+ * the reasoning that six unit-weight octaves are "flatter than uniform". They
+ * are not: equal energy per octave is 1/theta^2, which is strongly peaked.
+ * What is true is that the *unnormalised* sum was six times too bright, and
+ * that is what the 18 per cent micro-contrast loss measured at the time was —
+ * a fifth of a stop of exposure, not a tail.
+ *
+ * Measured on this scene with the sun in frame, at the two stations where the
+ * disc clears the terrace: at 0.6 a hundred-and-twenty-fold change in the
+ * sun's own flux moves the frame beyond ten degrees from it by less than one
+ * hundredth of a code value — the far field is bit-identical, which is the
+ * signature of a term that is not connected to anything. See
+ * tools/sunglare.mjs.
+ */
+const GAIN = 1.0;
 
 const DOWN = /* glsl */ `
 precision highp float;
@@ -151,6 +200,18 @@ export class Bloom {
   private down: Blit;
   private up: Blit;
 
+  /* The firefly guard, as a knob rather than a constant, because whether it
+   * should be on is a question about this scene and not about the technique.
+   * 1 is the Karis average as described above; 0 is the plain 13-tap filter,
+   * which is what a lens does. See the note above `pyramid`. */
+  karis = 1;
+
+  /* The per-octave weight, as a knob for the same reason: whether the veil
+   * should follow 1/theta^2 is a question that has to be asked of a frame with
+   * the sun in it, and it could not be asked while it was a module constant.
+   * `norm` follows it, so the veil stays energy-conserving at every setting. */
+  gain = GAIN;
+
   constructor(w: number, h: number) {
     this.down = new Blit(DOWN, {
       tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uKaris: { value: 0 },
@@ -187,7 +248,15 @@ export class Bloom {
    *
    * Energy is conserved here rather than in uBloom so that uBloom keeps meaning
    * the one thing it should mean. */
-  get norm(): number { return (1 - GAIN) / (1 - GAIN ** LEVELS); }
+  get norm(): number {
+    const g = this.gain;
+    /* The geometric series has a removable singularity at g = 1, where the
+     * six octaves are equally weighted and the sum is simply LEVELS. Writing
+     * (1-g)/(1-g^L) there is 0/0, which arrives as NaN in a uniform and takes
+     * the whole composite black — and 1.0 is precisely the value this now
+     * ships at. */
+    return Math.abs(1 - g) < 1e-6 ? 1 / LEVELS : (1 - g) / (1 - g ** LEVELS);
+  }
 
   setSize(w: number, h: number) {
     for (let i = 0; i < LEVELS; i++) {
@@ -218,12 +287,13 @@ export class Bloom {
       const ph = prev ? prev.height : this.levels[0].height * 2;
       du.tSrc.value = from;
       (du.uTexel.value as THREE.Vector2).set(1 / pw, 1 / ph);
-      du.uKaris.value = i === 0 ? 1 : 0;
+      du.uKaris.value = i === 0 ? this.karis : 0;
       this.down.render(gl, this.levels[i]);
       from = this.levels[i].texture;
     }
 
     const uu = this.up.uniforms;
+    uu.uGain.value = this.gain;
     for (let i = LEVELS - 1; i > 0; i--) {
       uu.tSrc.value = this.levels[i].texture;
       (uu.uTexel.value as THREE.Vector2).set(1 / this.levels[i].width, 1 / this.levels[i].height);

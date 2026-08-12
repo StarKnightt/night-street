@@ -100,7 +100,7 @@
  *                      falls out rather than being painted.
  */
 import * as THREE from 'three';
-import { SUN_ELEV, SUN_BEAM_GROUND } from './sun';
+import { SUN_ELEV, SUN_BEAM_GROUND, SUN_DISC_EFOLD, SUN_DISC_PEAK } from './sun';
 
 /* ── The atmosphere the numbers come from ────────────────────────────────────
  *
@@ -360,9 +360,9 @@ const SKY_GLSL = /* glsl */ `
  * beam through its own body, not by two hundred units of disc radiance added to
  * its ambient term. Feeding the disc into the cloud's fill light puts a
  * two-hundred-unit smear on any cell that happens to be in front of it. */
-float sunDisc(vec3 dir){
+vec3 sunDisc(vec3 dir){
   float ang = acos(clamp(dot(dir, uSun), -1.0, 1.0));
-  return exp(-ang * 150.0) * 190.0;
+  return exp(-ang * uDiscEfold) * uDiscPeak;
 }
 
 vec3 skyRaw(vec3 dir, float withDisc){
@@ -387,7 +387,7 @@ vec3 skyRaw(vec3 dir, float withDisc){
   float halo = exp(-ang * 5.6) * 0.45 + exp(-ang * 19.0) * 5.60;
   col += halo * vec3(1.60, 0.86, 0.34);
 
-  col += withDisc * exp(-ang * 150.0) * 190.0 * vec3(1.00, 0.80, 0.52);
+  col += withDisc * exp(-ang * uDiscEfold) * uDiscPeak;
 
   if (up < 0.0){
     float d = min(1.0, -up * 1.15);
@@ -678,14 +678,21 @@ vec3 overDeck(vec3 col, int deck, vec3 dir, vec3 sky, float mu,
   return mix(col, seen, alpha);
 }
 
-vec3 skyWithClouds(vec3 dir){
+vec3 skyWithClouds(vec3 dir, float withDisc){
   /* Two skies again, for the third time in this project and the same reason
    * each time. 'sky' is the dome without the disc: it is what fills the
    * clouds, what the air between the camera and each deck scatters, and what a
    * deck converges on at the horizon. The disc is added underneath everything
-   * so that a cloud in front of the sun occludes it. */
+   * so that a cloud in front of the sun occludes it.
+   *
+   * withDisc is 0 when this bake is going to be convolved into the light
+   * probe rather than looked at. The decomposition is env.ts's and is argued
+   * there: the directional light already carries the disc, with hard shadows,
+   * so putting it in the probe as well counts it twice and fills every shadow
+   * in the scene. The clouds themselves stay, because they are the dome — a
+   * deck over the sun is genuinely what a shadow-side wall is being lit by. */
   vec3 sky = skyBase(dir, 0.0);
-  vec3 col = sky + sunDisc(dir) * vec3(1.00, 0.80, 0.52);
+  vec3 col = sky + withDisc * sunDisc(dir);
   if (dir.y <= 0.0) return col;
 
   float mu = clamp(dot(dir, uSun), -1.0, 1.0);
@@ -704,7 +711,9 @@ void main(){
 }
 `;
 
-function fragment(sun: readonly number[], withClouds: boolean): string {
+function fragment(
+  sun: readonly number[], withClouds: boolean, withDisc: boolean, discScale: number,
+): string {
   const flat = Math.hypot(sun[0], sun[2]);
   return /* glsl */ `
 precision highp float;
@@ -716,6 +725,13 @@ const vec3 uSun = ${v3(sun)};
  * nearly the sun direction itself. */
 const vec2 uSunFlat = vec2(${(sun[0] / flat).toFixed(6)}, ${(sun[2] / flat).toFixed(6)});
 
+/* The disc, generated from sun.ts rather than typed. It was two literals in
+ * two files, one of which was this one, and the peak is now derived from the
+ * key light's own irradiance — so a change to SUN_INTENSITY moves the painted
+ * sun with it instead of leaving it correct-looking and wrong. */
+const float uDiscEfold = ${SUN_DISC_EFOLD.toFixed(1)};
+const vec3 uDiscPeak = ${v3(SUN_DISC_PEAK.map((c) => c * discScale))};
+
 ${NOISE_GLSL}
 ${SKY_GLSL}
 ${cloudGlsl()}
@@ -726,7 +742,9 @@ void main(){
    * test for the projection change and has to stay comparable with ?sky=flat,
    * which is the CPU equirect and has no ozone in it either. Differencing the
    * two still isolates the cube, and nothing else. */
-  vec3 col = ${withClouds ? 'skyWithClouds(dir)' : 'skyRaw(dir, 1.0)'};
+  vec3 col = ${withClouds
+    ? `skyWithClouds(dir, ${withDisc ? '1.0' : '0.0'})`
+    : `skyRaw(dir, ${withDisc ? '1.0' : '0.0'})`};
   gl_FragColor = vec4(max(col, 0.0), 1.0);
 }
 `;
@@ -753,10 +771,16 @@ export type SkyCube = {
 export function bakeSkyCube(
   renderer: THREE.WebGLRenderer,
   sun: readonly number[],
-  opts: { size?: number; clouds?: boolean } = {},
+  opts: { size?: number; clouds?: boolean; disc?: boolean; discScale?: number } = {},
 ): SkyCube | null {
   const size = opts.size ?? 1024;
   const clouds = opts.clouds ?? true;
+  /* Default true, because the caller that draws this is the one that existed
+   * first. `disc: false` is the light probe's bake; see skyWithClouds. */
+  const disc = opts.disc ?? true;
+  /* A dev-only sweep multiplier, owned by env.ts because that is where the
+   * URL is read. 1 in production, by construction. */
+  const discScale = opts.discScale ?? 1;
 
   /* Nothing below this line may throw out of this function.
    *
@@ -803,7 +827,7 @@ export function bakeSkyCube(
   material = new THREE.ShaderMaterial({
     name: 'ProceduralSkyCube',
     vertexShader: VERTEX,
-    fragmentShader: fragment(sun, clouds),
+    fragmentShader: fragment(sun, clouds, disc, discScale),
     side: THREE.BackSide,
     depthTest: false,
     depthWrite: false,
