@@ -314,21 +314,39 @@ second, one 8.8 s program remains and it sets the floor for every other
 optimisation in this document.
 
 This is the paving pass's file and this document does not propose an edit to it.
-What is worth passing on:
 
-- 230k characters is five to eight times a stock `MeshStandardMaterial`.
-  Compilation cost on the D3D backend grows faster than linearly with program
-  size, and this program is the proof: it is 1.35× the size of the shopfront
-  program and 2.2× its compile time.
-- The HLSL compiler is emitting `X3595 gradient instruction used in a loop with
-  varying iteration` against these shaders. A texture sample inside a
-  variable-length loop forces the compiler to work much harder and produces
-  undefined derivatives. Hoisting those samples out, or using an explicit LOD
-  (`textureLod`) inside such loops, is likely to cut both the compile time and
-  the warning.
-- If the paving rewrite is going to add anything to this shader, the cost of
-  doing so is roughly 40 ms of first-visit load per thousand characters added,
-  on an RTX 4060.
+**Two claims originally made in this section were tested by the paving pass and
+are false. They are corrected here rather than deleted, because both are
+plausible enough to be re-derived by the next person.**
+
+- ~~Compilation cost grows with program size, so adding to this shader costs
+  roughly 40 ms of first-visit load per thousand characters.~~ **Withdrawn.**
+  42.2% of the road program is comment prose — 96,992 of its 229,734
+  characters. On code alone the road is 132,002 characters against car paint's
+  124,301, within 6% of each other, yet they cost 8,845 ms and 1,196 ms: a
+  1.06× size difference against 7.4× the compile time. Stripping the comments
+  behind a URL flag (liveness confirmed first — the road left the eight-largest
+  list, 229,734 to under 154k) should have bought 3.9 s at the rate above. It
+  bought nothing: 35,201 and 30,519 ms with the flag on against 33,294, 35,582
+  and 31,780 ms with it off, all inside run-to-run spread. **Compile cost here
+  is instruction count and register pressure, not program length.** Do not trim
+  a material's look to hit a character budget, and do not strip comments to buy
+  load time.
+- ~~`X3595 gradient instruction used in a loop with varying iteration` suggests
+  hoisting texture samples out of loops or forcing `textureLod`.~~
+  **Withdrawn — nothing to act on.** There are zero `texture()`, `dFdx`, `dFdy`
+  and `fwidth` calls inside any loop in that fragment shader.
+
+What actually remains: the road is a 1,793-line `main` at 96,405 characters
+doing the whole material model inline. The 8.8 s is in what those lines do, and
+locating it needs a bisection of `main`, not a size reduction. The paving pass
+is folding that into its rewrite rather than doing it twice.
+
+Also confirmed by that pass: the two expensive variants were the envmap/fog
+twins that §4.1 has since removed, so there is no per-instance variant left to
+fold, and `road`, `walk`, `kerb` and `apron` each already force a
+`customProgramCacheKey`. Of the preprocessor blocks in `main` over 25 lines,
+only `DEBUG_ROAD_NO_BOUNCE` (34 lines) is removable dead weight.
 
 ### 4.5 What not to do
 
@@ -426,14 +444,38 @@ The practical recommendation: run `tools/coldstart.mjs` before and after any
 change to `materials.ts`, `streetMaterials.ts`, `carMaterials.ts` or
 `buildingMaterials.ts`, and treat the total `LINK_STATUS` figure as a budget.
 
+**Two hazards found while doing exactly that, both worth knowing before you
+trust a number:**
+
+- **Another agent's edit will silently ruin your run.** Fast Refresh rebuilds
+  the scene mid-load, inflating the program count to 148, 221, even 292. Gate on
+  bake count and only compare runs with the same number of `readPixels` as your
+  baseline (42 at the time of writing). A contaminated run does not look
+  obviously wrong; it just reports a worse number.
+- **Fast Refresh can preserve a `useMemo` across an edit while still running an
+  effect cleanup.** The first version of the §4.1 fix therefore left the scene
+  stripped of its environment after a hot reload and recompiled everything
+  without it. Harmless in production, highly visible to anyone walking the
+  street on a dev server, so the layout effect must re-assert rather than only
+  tear down. It cannot dirty a material: three keys the program cache on whether
+  an environment exists, not on which one.
+
 ---
 
 ## 7. Suggested order of work
 
-1. **§4.1**, move the environment/fog assignment ahead of the first render.
-   Largest win, measured at about 15 s, no visual change, small edit. Blocked
-   only by `scene/Street.tsx` ownership.
-2. **Re-measure.** Confirm the `+17,363`-character twins are gone.
+1. ~~**§4.1**, move the environment/fog assignment ahead of the first render.~~
+   **DONE** by the paving pass in `6fb36ef`. Forward assignments moved into the
+   `useMemo`, teardown left in an effect. Programs linked 99 → 76, `LINK_STATUS`
+   46,708 ms → 33,294 ms (repeat 35,582 ms): 11–13 s recovered against the 15 s
+   predicted here. The frame is unchanged, and that is a measurement rather than
+   an assertion — before-against-after is mean 0.062/255 across three stops,
+   while two captures of the *same* build differ by 0.061–0.064. The animated
+   dust is the floor; there is no signal above it.
+2. ~~**Re-measure.** Confirm the `+17,363`-character twins are gone.~~ **DONE.**
+   Of the eight largest programs dumped, every one linked on the first mount now
+   has `USE_ENVMAP` and `USE_FOG` defined. Remaining duplicates are exact-size
+   copies from hot reloads, not `+17,363` pairs.
 3. **§4.2**, `compileAsync` with `frameloop="never"`. Unblocks the main thread
    whatever it does to the wall clock, which is what makes a truthful progress
    bar possible and lets `Gate.tsx`'s fake CSS sweep be deleted.
