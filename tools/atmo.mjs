@@ -76,6 +76,29 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
         return res;
       };
 
+      /* Clipped pixels, whole frame, per configuration.
+       *
+       * The recorded defect is the OPEN neon reaching pure white over 4,223
+       * pixels, and the instruction is not to make it worse. Counting is the
+       * only way to hold that: a veil and a shaft both change the frame near
+       * its top end, and "it looks the same" is not a measurement of how many
+       * pixels have run out of headroom. Counted on all three channels at once
+       * because a channel-wise count is dominated by the sun-struck footway,
+       * which is legitimately at the top of red without being clipped white. */
+      const clipped = () => {
+        s.renderOnce();
+        ctx.drawImage(cv, 0, 0);
+        const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+        let white = 0, anyCh = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const lo = Math.min(d[i], d[i + 1], d[i + 2]);
+          const hi = Math.max(d[i], d[i + 1], d[i + 2]);
+          if (lo >= 254) white++;
+          if (hi >= 254) anyCh++;
+        }
+        return { white, anyCh };
+      };
+
       /* Time N frames with a synchronous read after the last one, so the CPU
        * cannot run ahead of the GPU and the number is wall time for work that
        * has actually finished. */
@@ -97,7 +120,7 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
       for (const [name, [v, b]] of Object.entries(cfgs)) {
         if (hdr) { u.uVol.value = v * VOL; u.uBloom.value = b * BLOOM; }
         s.renderOnce();
-        res[name] = { px: sample(), ms: Infinity };
+        res[name] = { px: sample(), clip: clipped(), ms: Infinity };
       }
       /* Rounds interleaved across configurations, minimum kept, and both of
        * those are the fix for a run that reported bloom costing -2.74 ms.
@@ -197,6 +220,54 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
         sweep.push({ t: tt, on, off, d: on - off });
       }
 
+      /* Gain sweep for the subtractive sun term.
+       *
+       * uSunShare is a uniform, so this costs a write and a re-render per point
+       * and cannot differ in anything else. What is being looked for is not the
+       * biggest delta — that is monotonic and tells you nothing — but the gain
+       * at which the clamp starts saturating, because a saturated subtraction is
+       * constant and its boundary is an iso-distance curve rather than a piece
+       * of geometry. That shows up as span growing while the steepest gradient
+       * stops growing with it: more area at the ceiling, no more edge.
+       */
+      /* The march's own integrals, read straight out of it. shadeSharp is the
+       * shadow-map-resolved share and shadeSoft the analytic one; if the first
+       * is zero everywhere then the shadow map is not reaching the air and no
+       * gain on it can do anything, however well wired it looks from outside. */
+      let inner = null;
+      if (window.__vol && window.__vol.probe && 'debug' in window.__vol) {
+        window.__vol.debug = 1; s.renderOnce();
+        inner = Object.fromEntries(Object.entries(REGIONS).map(([k, r]) =>
+          [k, window.__vol.probe(r[0] + r[2] / 2, 1 - (r[1] + r[3] / 2))]));
+        window.__vol.debug = 0; s.renderOnce();
+      }
+
+      const GROW = 0.16;   // low in the frame: near-field air, where the shadow map reaches
+      const gains = [1, 2, 3, 4, 6, 8];
+      const sweepGain = [];
+      if (window.__vol && window.__vol.probeRow) {
+        const g0 = window.__vol.gain;
+        for (const g of gains) {
+          window.__vol.gain = g;
+          s.renderOnce();
+          const r = window.__vol.probeRow(GROW);
+          let steep = 0, lo = Infinity, hi = -Infinity;
+          for (let i = 2; i < r.length - 2; i++) {
+            const gr = Math.abs(r[i + 2] - r[i - 2]) / 4;
+            if (gr > steep) steep = gr;
+            if (r[i] < lo) lo = r[i];
+            if (r[i] > hi) hi = r[i];
+          }
+          /* Flatness: how much of the row sits within a hair of its own extreme.
+           * A saturated clamp parks a large fraction of texels at exactly the
+           * same value, which no gradient statistic reveals on its own. */
+          let atMax = 0;
+          for (const v of r) if (Math.abs(v - lo) < 0.02 * Math.abs(hi - lo)) atMax++;
+          sweepGain.push({ g, steep, span: hi - lo, flat: atMax / r.length });
+        }
+        window.__vol.gain = g0;
+      }
+
       /* What the sky is made of, which decides whether the march's subtractive
        * sun term is allowed to touch the top of the frame. scene.background
        * goes through three's own pass and is never fogged, so there is no
@@ -224,9 +295,24 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
         cones: window.__vol.cones, shadow: window.__vol.shadow, air: window.__vol.air,
         probes: window.__vol.probe ? Object.fromEntries(Object.entries(REGIONS).map(
           ([k, r]) => [k, window.__vol.probe(r[0] + r[2] / 2, 1 - (r[1] + r[3] / 2))])) : null,
+        /* Rows across open air at three heights. What is wanted from these is
+         * the steepest gradient, not the mean: a shaft is an edge, and a march
+         * whose step is coarse relative to the shadow boundary reproduces the
+         * position of every gap while resolving the slope of none of them. */
+        rows: window.__vol.probeRow ? [0.12, 0.22, 0.34, 0.50].map((v) => {
+          const r = window.__vol.probeRow(v);
+          let steep = 0, lo = Infinity, hi = -Infinity;
+          for (let i = 2; i < r.length - 2; i++) {
+            const g = Math.abs(r[i + 2] - r[i - 2]) / 4;
+            if (g > steep) steep = g;
+            if (r[i] < lo) lo = r[i];
+            if (r[i] > hi) hi = r[i];
+          }
+          return { v, steep, lo, hi, span: hi - lo };
+        }) : null,
       } : {};
       s.setPaused(false);
-      return { res, hdr, vol, dust, sweep, sky, first: window.__firstFrame || null };
+      return { res, hdr, vol, dust, sweep, sky, sweepGain, inner, first: window.__firstFrame || null };
     },
     { t, yaw, pitch, REGIONS, N },
   );
@@ -271,6 +357,33 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
     console.log(`  air albedo, sunward airlight / sun irradiance: `
       + out.vol.air.map((v) => v.toFixed(4)).join(' '));
   }
+  if (out.inner) {
+    console.log('\n  march internals: what the two occlusion sources actually contributed');
+    console.log('    region     shadeSharp   shadeSoft   airlight available');
+    for (const [k, p] of Object.entries(out.inner)) {
+      console.log(`    ${k.padEnd(10)}${p.r.toFixed(5).padStart(11)}${p.g.toFixed(5).padStart(12)}${p.b.toFixed(5).padStart(15)}`);
+    }
+  }
+  if (out.sweepGain && out.sweepGain.length) {
+    console.log('\n  subtractive sun term, gain sweep on one row of open air');
+    console.log('    gain     span   steepest   frac at the clamp');
+    for (const r of out.sweepGain) {
+      console.log(`    ${String(r.g).padStart(4)} ${r.span.toFixed(4).padStart(9)} ${r.steep.toFixed(5).padStart(10)}`
+        + `   ${(r.flat * 100).toFixed(1).padStart(6)}%`);
+    }
+  }
+  if (out.vol.rows) {
+    console.log('\n  shaft edges, rows across the march\'s own target (radiance/texel)');
+    console.log('    row      min       max      span   steepest gradient');
+    for (const r of out.vol.rows) {
+      console.log(`    ${r.v.toFixed(2)}  ${r.lo.toFixed(4).padStart(8)} ${r.hi.toFixed(4).padStart(9)}`
+        + ` ${r.span.toFixed(4).padStart(9)}  ${r.steep.toFixed(5).padStart(9)} per texel`);
+    }
+    const best = Math.max(...out.vol.rows.map((r) => r.steep));
+    const span = Math.max(...out.vol.rows.map((r) => r.span));
+    console.log(`    edge sharpness, steepest gradient / span: ${(best / Math.max(span, 1e-6)).toFixed(3)}`
+      + '   (higher is more shaft, lower is more fog)');
+  }
   if (out.vol.probes) {
     console.log('\n  march output, read back from its own target'
       + ' (rgb = signed in-scatter, vz = metres marched to)');
@@ -282,14 +395,12 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
 
   const d = out.dust;
   if (d && d.toward.off !== null) {
-    const a = d.toward.on - d.toward.off, b = d.away.on - d.away.off;
-    console.log(`\n  dust, top 0.2% of an open-air region, counts above the field switched off`);
-    console.log(`    toward sun  ${a.toFixed(2)}   away  ${b.toFixed(2)}   ratio ${(a / Math.max(b, 1e-3)).toFixed(1)}:1`);
-    /* The pixel count is the headline and the percentile is kept only because
-     * it is what the brief asked for. A mote is a few pixels on a large region
-     * and the top 0.2% of that region is the sun on the road, not the dust, so
-     * the percentile reads 0.00 whatever the field does. How much of the frame
-     * the field lights is the quantity that matches what a viewer sees. */
+    console.log('\n  dust, an open-air region, differenced against the field switched off');
+    /* Pixel count only. The percentile this used to print has been dropped: a
+     * mote is a few pixels on a large region and the top 0.2% of that region is
+     * the sun on the road rather than the dust, so it read 0.00 whatever the
+     * field did. How much of the frame the field lights is the quantity that
+     * matches what a viewer sees. */
     const tm = d.toward.moved, am = d.away.moved;
     console.log(`    px lit by the field (>=2 counts): toward ${tm}  away ${am}`
       + `   ratio ${(tm / Math.max(am, 1)).toFixed(1)}:1`);
@@ -305,6 +416,13 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
     }
     const ds = out.sweep.map((s) => s.d);
     console.log(`    march term range over 3 m of walk: ${(Math.max(...ds) - Math.min(...ds)).toFixed(2)} counts`);
+  }
+
+  console.log('\n  clipped pixels, whole frame of ' + (1600 * 900).toLocaleString());
+  console.log('    config     pure white   any channel');
+  for (const [name, r] of Object.entries(out.res)) {
+    if (!r.clip) continue;
+    console.log(`    ${name.padEnd(10)}${String(r.clip.white).padStart(11)}${String(r.clip.anyCh).padStart(14)}`);
   }
 
   const errs = await readShaderErrors();

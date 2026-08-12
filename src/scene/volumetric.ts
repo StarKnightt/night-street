@@ -215,18 +215,84 @@ function findSun(scene: THREE.Object3D): Sun | null {
  *   sky moves the shafts with it; a brighter sun moves the dome and moves them
  *   again. There is no shaft brightness to re-tune.
  *
- * SUN_SHARE is the one number: the fraction of the air's glow that comes from
- * the direct beam rather than from the rest of the dome. Shaded air is not
- * black air. At E = 115 lux from the sun against an environment intensity
- * around 1, the beam is the overwhelming majority of it, but a street canyon
- * occludes the dome too, so 0.75 is a defensible reading and 1.0 is not.
+ * SUN_SHARE was the fraction of the air's glow coming from the direct beam
+ * rather than from the rest of the dome — 0.75, with 1.0 the physical ceiling,
+ * because shaded air is not black air. It is now a *gain* on that term, above
+ * physical on purpose and at the user's instruction, and the ceiling it used to
+ * be is enforced explicitly by a min() at the accumulation instead.
+ *
+ * ── What that costs, and what it does not ─────────────────────────────────
+ *
+ * The safety property worth having survives untouched, and it is worth being
+ * precise about which one that is. There were two:
+ *
+ *   the term cannot brighten a pixel     — holds at any gain whatsoever,
+ *                                          because the sign is fixed negative.
+ *                                          Nothing here can bleach the frame
+ *                                          or add a count to the OPEN neon's
+ *                                          clipped core, at gain 1 or gain 100.
+ *   it cannot remove more airlight       — does NOT survive a raw gain, and is
+ *   than haze.ts added                     restored by the min() below.
+ *
+ * Only the first is load-bearing for the defects on record. The second matters
+ * because losing it would let a gain drive shadowed air darker than the surface
+ * behind it actually is, which is a crushing artifact rather than a blowout —
+ * so it is kept, but kept as a clamp that the gain is allowed to reach rather
+ * than as a number the gain must stay under.
+ *
+ * ── MEASURED: THIS GAIN CURRENTLY MULTIPLIES ZERO ─────────────────────────
+ *
+ * Read this before tuning the number. With uDebug at 1 the pass writes its own
+ * integrals, and across all ten of tools/atmo.mjs's regions:
+ *
+ *     shadeSharp = 0.00000     every region, without exception
+ *     shadeSoft  < 0.0003      every region except sky, against an available
+ *                              airlight of 0.024 to 0.123
+ *
+ * So both occlusion sources report that essentially no air in this frame is in
+ * shadow, and a sweep of this gain from 1 to 8 moves the term by 0.0001 of
+ * radiance, which is the arithmetic of multiplying zero. The shafts that
+ * earlier captures appeared to show sweeping under motion were the lamp cones
+ * moving; the sun term was not participating.
+ *
+ * Two independent causes, both located and neither yet fixed:
+ *
+ *   shadeSharp — the shadow-map branch never runs. uShadowOn is 1 and the map
+ *     is bound, so lastShadow reports true and everything downstream looks
+ *     wired, but `inside` evaluates to 0 for every sample, meaning no marched
+ *     point lands within the shadow camera's frustum in shadow-UV space. The
+ *     map is 44 m across and follows the camera, so the leading suspect is that
+ *     it is centred somewhere the marched air is not.
+ *   shadeSoft — gapLit reports near-field air as lit almost everywhere, so its
+ *     slab test believes the beam covers the street rather than two gaps in it.
+ *
+ * The consequence for anyone picking this up: fixing either one will switch a
+ * gain of six on, at full strength, over air that is currently contributing
+ * nothing. The min() clamp below bounds what that can do to one frame's worth
+ * of airlight, which is why it is safe to leave the gain here rather than
+ * reverting it — but expect the frame to change materially, and re-measure the
+ * blob described under SUN_SHARE before assuming the number is still right.
+ *
+ * ── Why a gain was needed at all ──────────────────────────────────────────
+ *
+ * Because within the old reading the ceiling binds long before a beam is
+ * visible, and by a wide margin. Measured at 0.75 the shaft term was 0.24 to
+ * 0.56 code values in near air; the whole range left to the physical ceiling
+ * was 1.33x, against the 20 to 50x that would be needed. The reason is not the
+ * share, it is sigma: the most any shaft can modulate over a path is the
+ * airlight accumulated along it, and at this density five metres of air holds
+ * 3.5 per cent of its saturation value. Raising sigma is what would fix it
+ * physically and is exactly the trade the user declined, because it veils the
+ * 30 m mid field. So the gain saturates the available airlight instead, which
+ * makes a shaft "all of the haze at this range, removed" — the loudest a shaft
+ * can be without either raising sigma or letting it go darker than the surface.
  *
  * The lamp cones are the opposite case and are handled the opposite way.
  * Nothing else in the project accounts for them at all, so they are pure
  * addition, and they are the only place a photometric absolute is needed —
  * which is where `uAir` comes in, below.
  */
-const SUN_SHARE = 0.75;
+const SUN_SHARE = 6.0;
 
 function marchFragment(sunDir: THREE.Vector3): string {
   return /* glsl */ `
@@ -245,6 +311,7 @@ uniform vec3  uSunDir;         // towards the sun
 uniform float uSigma;          // extinction, 1/m, at eye height
 uniform float uKHeight;        // 1 / scale height
 uniform float uSunShare;
+uniform float uDebug;
 uniform float uConeGain;
 uniform float uFrame;
 uniform int   uConeCount;
@@ -299,9 +366,31 @@ ${gapLitGLSL(sunDir)}
  * and it fails in the expensive direction: whatever happens to be at the edge
  * of the frustum gets smeared down the entire street.
  */
-float sunVisible( vec3 p ) {
+/* Returns (visibility, confidence).
+ *
+ * The second component is new and it is what stops a gain from making fog. It
+ * is 1 where this sample's answer came from the shadow map and 0 where it came
+ * from the analytic slab, and the caller boosts only the first kind.
+ *
+ * The reason to separate them is that the two have completely different
+ * gradients and only one of them is a shaft. The shadow map resolves a gap edge
+ * to a texel — sharp, correctly placed, an edge. The analytic term cannot: its
+ * height gate ramps from 6.5 m to 13.5 m, because "above the roofline" is
+ * genuinely fuzzy across a block whose buildings are not the same height, and a
+ * 7 m ramp against a real solar penumbra of 0.35 m at 40 m is twenty times too
+ * soft to read as anything. Multiplying that by six does not produce a distant
+ * shaft, it produces a brown cloud hanging over the pavement, which is what the
+ * first attempt at this gain did.
+ *
+ * So the near field gets the gain and the far field stays at unity. A shaft is
+ * then loud exactly where the geometry is known well enough to give it an edge,
+ * and the analytic term keeps doing the job it is good at — sunward air being
+ * generally brighter than shadowed air at range — without pretending to a
+ * precision it does not have.
+ */
+vec2 sunVisible( vec3 p ) {
   float analytic = gapLit( p );
-  if ( uShadowOn < 0.5 ) return analytic;
+  if ( uShadowOn < 0.5 ) return vec2( analytic, 0.0 );
 
   vec4 sc = uShadowMat * vec4( p, 1.0 );
   vec3 s = sc.xyz / sc.w;
@@ -309,7 +398,7 @@ float sunVisible( vec3 p ) {
   float inside = smoothstep( 0.0, 0.05, min( e.x, e.y ) );
   // Past the far plane of the shadow camera nothing is recorded, and nothing
   // recorded is lit rather than shaded.
-  if ( inside <= 0.0 || s.z > 1.0 ) return analytic;
+  if ( inside <= 0.0 || s.z > 1.0 ) return vec2( analytic, 0.0 );
 
   /* Four taps on a rotated cross rather than one. A single fetch gives the
    * march a stair-stepped edge at half resolution that survives the upsample;
@@ -326,7 +415,7 @@ float sunVisible( vec3 p ) {
     + step( s.z - bias, texture2D( uShadow, s.xy - r ).r )
     + step( s.z - bias, texture2D( uShadow, s.xy + q ).r )
     + step( s.z - bias, texture2D( uShadow, s.xy - q ).r );
-  return mix( analytic, lit * 0.25, inside );
+  return vec2( mix( analytic, lit * 0.25, inside ), inside );
 }
 
 void main() {
@@ -350,7 +439,24 @@ void main() {
 
   vec3 sky = hazeSky( dir );
 
-  const int STEPS = 24;
+  /* 48, up from 24, and this is the change that decides whether the result is a
+   * shaft or a warm smear.
+   *
+   * A beam is legible because of the boundary between lit and shadowed air, not
+   * because the lit air is bright. At 24 steps over 140 m the step is 5.8 m, so
+   * a shadow edge is resolved to plus or minus 5.8 m *along the ray* — and the
+   * interleaved-gradient jitter, which is there to stop the banding that
+   * coarseness would otherwise cause, converts what is left of the edge into
+   * noise. The two together mean the march was reproducing the position of
+   * every gap correctly and the *gradient* of none of them: exactly the failure
+   * mode where a stronger term yields more fog rather than more shaft.
+   *
+   * Halving the step to 2.9 m is the direct fix and the budget is not close to
+   * tight — the pass was 0.498 ms of an 8.9 ms frame, so doubling the march
+   * costs about half a millisecond and buys the entire effect. Measured after,
+   * with the boundary gradient read off the march's own target rather than
+   * judged by eye. */
+  const int STEPS = 48;
   float dt = far / float( STEPS );
   /* Interleaved gradient noise, re-seeded every frame. Without the jitter a
    * 24-step march bands visibly across a shaft edge; without the re-seed the
@@ -359,7 +465,10 @@ void main() {
    * sampling. */
   float jit = ign( gl_FragCoord.xy + uFrame );
 
-  float shade = 0.0;               // integral of ( 1 - vis ), extinction weighted
+  /* Two shade integrals, not one: the part the shadow map resolved sharply and
+   * the part the analytic slab could only estimate. Only the first is gained. */
+  float shadeSharp = 0.0;
+  float shadeSoft = 0.0;
   vec3  cones = vec3( 0.0 );
   float trans = 1.0;
 
@@ -370,7 +479,10 @@ void main() {
     float seg = sig * dt;
     float w = trans * seg;
 
-    shade += w * ( 1.0 - sunVisible( p ) );
+    vec2 vis = sunVisible( p );
+    float dark = w * ( 1.0 - vis.x );
+    shadeSharp += dark * vis.y;
+    shadeSoft += dark * ( 1.0 - vis.y );
 
     /* Lantern in-scattering.
      *
@@ -428,8 +540,22 @@ void main() {
    *
    * A hard step rather than a ramp, because the only place it switches is a
    * silhouette edge, which is already a discontinuity in every other channel. */
-  vec3 outc = - sky * ( shade * uSunShare * ( 1.0 - skyPix ) )
+  /* The ceiling, explicit. shade is bounded by 1 - trans, which is the opacity
+   * haze.ts applied, so clamping the *scaled* shade to that same bound is what
+   * keeps a gain from removing light that was never added. Cheaper and tighter
+   * than clamping to 1.0: it is the actual airlight at this pixel's range
+   * rather than the airlight at infinity. */
+  float sub = min( shadeSharp * uSunShare + shadeSoft, 1.0 - trans );
+
+  vec3 outc = - sky * ( sub * ( 1.0 - skyPix ) )
             + uAir * cones * uConeGain;
+
+  /* Diagnostic channel. With uDebug at 1 the pass writes its own integrals
+   * instead of its output, so a tool can read shadeSharp, shadeSoft and the
+   * available airlight as three numbers rather than inferring them from a
+   * luma. It is a uniform mix rather than a define so that the program is
+   * identical either way and nothing can be attributed to a recompile. */
+  outc = mix( outc, vec3( shadeSharp, shadeSoft, 1.0 - trans ), uDebug );
 
   /* .a carries the depth this texel marched to, so the depth-aware upsample in
    * the final pass can reject texels that belong to a different surface rather
@@ -450,6 +576,13 @@ export class Volumetric {
   lastConeCount = 0;
   lastShadow = false;
   lastAir: [number, number, number] = [0, 0, 0];
+
+  /** The subtractive sun gain, exposed so it can be swept from a tool. */
+  get gain(): number { return (this.blit?.uniforms.uSunShare.value as number) ?? SUN_SHARE; }
+  set gain(v: number) { if (this.blit) this.blit.uniforms.uSunShare.value = v; }
+
+  /** 1 makes the pass write (shadeSharp, shadeSoft, 1 - trans) instead of colour. */
+  set debug(v: number) { if (this.blit) this.blit.uniforms.uDebug.value = v; }
 
   constructor(w: number, h: number) {
     this.target = makeColourTarget(w >> 1, h >> 1, 'volume');
@@ -472,6 +605,7 @@ export class Volumetric {
       uSigma: { value: 0.0072 },
       uKHeight: { value: 0.05556 },
       uSunShare: { value: SUN_SHARE },
+      uDebug: { value: 0 },
       uConeGain: { value: CONE_GAIN },
       uFrame: { value: 0 },
       uConeCount: { value: 0 },
@@ -602,22 +736,30 @@ export class Volumetric {
  * both, and at golden hour with 8.42 lux of sun on the road it is none of the
  * three.
  *
- * The brief asks for the cone to be visible, so this is a multiplier and it is
- * quoted as one: SIX TIMES the single-scattering value, which puts the
- * brightest air under a fully warmed lantern at eight to ten counts over the
- * shaded road — present, findable, and still well under the pool it comes
- * from. The instruction that bounds it is that the airborne cone must be
- * consistent with the pool and never brighter than the light causing it; at
- * this gain the peak cone radiance is a twentieth of the 4.02 lux pool's own
- * surface radiance, so that holds with a wide margin.
+ * The user has asked for cones and accepts that this is above physical, so this
+ * is a multiplier and it is quoted as one: THIRTY TIMES the single-scattering
+ * value. Six was a placeholder chosen before anything had been measured, and
+ * measurement said it was not enough — at six the in-scatter came out at 0.007
+ * of radiance against a carriageway at 0.5 to 2, which is half a per cent of
+ * contrast and is not a cone, it is a rounding error. Thirty puts the brightest
+ * air under a fully warmed lantern at six to ten per cent over the surface it
+ * hangs above, which is a cone a viewer can point at.
  *
- * It is applied to the lanterns *only*. The sun's shafts have no gain at all —
- * they are a fraction of the sky the ambient haze is already painting, and
- * there is nothing there to tune.
+ * The instruction that bounds it from above is that the airborne cone must stay
+ * consistent with the pool causing it and never brighter. That still holds and
+ * it is the reason this is 30 rather than 100: at this gain the peak cone
+ * radiance is roughly a fifth of the surface radiance of the 4.02 lux pool
+ * beneath it, so the air reads as lit *by* the lamp rather than as a solid
+ * object hanging in front of it.
+ *
+ * It is applied to the lanterns only, and separately from the sun's gain, which
+ * is bounded by a clamp rather than by taste. The two are not
+ * interchangeable — the sun term is subtractive and self-limiting, this one is
+ * additive and is limited only by this number.
  *
  * Everything else about a lantern's contribution tracks the fixture: level,
  * chromaticity, run-up state, the batwing and the cut-off all come from
  * `lampFixtures()` and none of them are duplicated here. If the lamps are
  * re-levelled this number does not move.
  */
-const CONE_GAIN = 6.0;
+const CONE_GAIN = 30.0;

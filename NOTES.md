@@ -546,3 +546,70 @@ Every emissive in `scene/lights.ts`, and they all land high:
 The 0.325 correction on `BOWL_WARMING` was measured, and was in the right
 direction, but it was read against curve A and is the wrong size. Redo it
 against `agx.mjs` rather than keeping it.
+
+## A value that is only ever a divisor, and was eleven times wrong
+
+`volumetric.ts` read the sun's irradiance back off the light with
+`light.color.clone().convertSRGBToLinear().multiplyScalar(intensity)`. three's
+`ColorManagement` is on by default and decodes on assignment, so `light.color`
+is *already* working-space by the time anyone reads it: `Street.tsx` writes
+`#ff9a4e` and the object holds `(1.000, 0.325, 0.076)`, not `(1.000, 0.604,
+0.306)`. Decoding a second time gave `(1.000, 0.089, 0.007)` and an irradiance
+of `(115, 10.2, 0.78)` against a true `(115, 37.4, 8.8)`.
+
+**The frame did not change.** That value is never displayed and never added to
+anything — it is only ever a *divisor*, used to turn a measured airlight into an
+albedo. So the error left every pixel it touched plausible and moved only a
+ratio: the air came out `(0.029, 0.144, 0.541)` instead of `(0.029, 0.038,
+0.048)`, eleven times too blue, and the lamp cones it scaled were faint enough
+that nobody would have called the hue wrong.
+
+The general shape, because this will happen again: **a quantity that only ever
+appears in a denominator cannot be checked by looking at the picture.** Nothing
+about a wrong divisor is visible on its own; it shows up as a plausible result
+of the wrong magnitude somewhere downstream. The only thing that caught it was
+printing the derived value next to the value it was predicted to have —
+`tools/atmo.mjs` prints the albedo, and `(0.029, 0.144, 0.541)` against a
+predicted `(0.030, 0.038, 0.048)` is not a subtle discrepancy once it is on the
+screen next to its own prediction. Derive the expected number by hand once, put
+it in the tool, and print both.
+
+A related trap in the same family: `three` will happily hand back a colour in
+whichever space it is currently managing, and the API does not say which. If a
+colour is being read *out* of a three object rather than written into one,
+assume it is already linear and prove otherwise.
+
+## "The march wrote nothing" and "the readback is wrong" look identical
+
+`gl.readRenderTargetPixels` matches the readback buffer to the *texture type*.
+The volumetric and bloom targets are `HalfFloatType`, and reading one into a
+`Float32Array` returns four zeroes per texel — no exception, no warning, no
+GL error. A debug probe built to answer "is this pass producing anything"
+answered "no" for every texel of a pass that was working correctly, and it cost
+an hour to tell the two apart, because zero is exactly what a broken pass looks
+like.
+
+Use a `Uint16Array` for a half-float target and decode manually; there is a
+seven-line decoder in `grade.tsx`'s `__vol.probe`. More generally, **the first
+thing to verify about a new instrument is that it can report a non-zero**, and
+the cheapest way is to point it at something already known to be non-zero
+before pointing it at the thing under test.
+
+## Mislabelled sampling regions have now cost three separate conclusions
+
+Same session, three times, all in `tools/atmo.mjs`:
+
+- A region named `sky` was geometry at 79.6 m. Its `-9.4` counts were read as a
+  sky artifact and chased as a bug; it was correct aerial perspective.
+- A dust probe sampled `y = 0.34..0.56`, which at that pitch is above the
+  horizon, while the motes live 0.25 to 2.6 m above the carriageway. It
+  reported a view-dependence ratio of `-1.3:1` on a region containing no dust.
+- A gain sweep sampled rows in the upper frame, where the term being swept is
+  zero by construction, and reported that the gain did nothing — which was true
+  of those rows and false of the frame.
+
+The fix that worked is cheap and worth doing by default: **have the probe report
+what it is looking at, not just what it measured.** Since `__vol.probe` started
+returning the depth the march reached alongside every value, a region that is
+not what its name says announces itself immediately. A statistic with no
+provenance attached is a statistic about an unknown place.

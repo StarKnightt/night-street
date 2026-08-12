@@ -57,6 +57,21 @@ import { Blit, makeColourTarget } from './pipeline';
 
 const LEVELS = 6;
 
+/* How much of each octave survives into the one below it, so the point-spread
+ * function is geometric with this ratio: 0.42 of the veil in the tightest
+ * octave, then 0.25, 0.15, 0.09, 0.054, 0.033 once normalised.
+ *
+ * Not 1.0, which is what this had, and the difference is the whole reason the
+ * frame read flat. Six octaves at unit weight is a PSF that is *flatter than
+ * uniform* — more of its energy a third of the way across the frame than within
+ * a few pixels of the source — and a veil like that has no visible structure at
+ * all. It cannot put glare around a sun-struck parapet because it does not know
+ * where the parapet is; it can only raise the whole frame and take the
+ * contrast that costs. A real lens is the other way round: strongly peaked,
+ * with a tail. Measured at 18 per cent of the micro-contrast of every patch on
+ * the frontage, at every distance from 9 m to 26 m, in tools/micro.mjs. */
+const GAIN = 0.6;
+
 const DOWN = /* glsl */ `
 precision highp float;
 varying vec2 vUv;
@@ -64,12 +79,25 @@ uniform sampler2D tSrc;
 uniform vec2 uTexel;
 uniform float uKaris;
 
-/* Weight by 1/(1+luma) before averaging, so one very bright sample cannot
- * dominate the group. This is the whole of the anti-firefly measure. */
-vec3 karis( vec3 c ) { return c / ( 1.0 + dot( c, vec3( 0.2126, 0.7152, 0.0722 ) ) ); }
-vec3 tap( vec2 uv ) {
+/* The Karis average, as an average.
+ *
+ * The first version of this returned c/(1+luma) from every tap and summed those
+ * with the filter weights, which is not a weighted average — it is a tone
+ * compression. Nothing divided the weights back out, so with scene radiance
+ * around 1 to 3 the whole of level 0 came out two to four times too dark while
+ * levels 1 to 5 were untouched. The tightest octave of the point-spread
+ * function, which is the one that puts glare next to a highlight, was the only
+ * one being suppressed, and the flat tail was left at full strength.
+ *
+ * A weighted mean divides by the weights it used. Then a group of equally
+ * bright samples is returned unchanged, which is the property that matters:
+ * this must only act on outliers. With uKaris = 0 the weights are 1 and it
+ * reduces exactly to the plain 13-tap filter. */
+float luma( vec3 c ) { return dot( c, vec3( 0.2126, 0.7152, 0.0722 ) ); }
+vec4 tap( vec2 uv, float k ) {
   vec3 c = texture2D( tSrc, uv ).rgb;
-  return mix( c, karis( c ), uKaris );
+  float w = k * mix( 1.0, 1.0 / ( 1.0 + luma( c ) ), uKaris );
+  return vec4( c * w, w );
 }
 
 void main() {
@@ -78,25 +106,20 @@ void main() {
    * between them, plus the corners and edges of a 2-texel box. The overlap is
    * the point — it is what makes the chain stable when the camera moves,
    * which a plain box filter is not. */
-  vec3 a = tap( vUv + vec2( -1.0,  1.0 ) * t );
-  vec3 b = tap( vUv + vec2(  0.0,  1.0 ) * t );
-  vec3 c = tap( vUv + vec2(  1.0,  1.0 ) * t );
-  vec3 d = tap( vUv + vec2( -1.0,  0.0 ) * t );
-  vec3 e = tap( vUv );
-  vec3 f = tap( vUv + vec2(  1.0,  0.0 ) * t );
-  vec3 g = tap( vUv + vec2( -1.0, -1.0 ) * t );
-  vec3 h = tap( vUv + vec2(  0.0, -1.0 ) * t );
-  vec3 i = tap( vUv + vec2(  1.0, -1.0 ) * t );
-  vec3 j = tap( vUv + vec2( -0.5,  0.5 ) * t );
-  vec3 k = tap( vUv + vec2(  0.5,  0.5 ) * t );
-  vec3 l = tap( vUv + vec2( -0.5, -0.5 ) * t );
-  vec3 m = tap( vUv + vec2(  0.5, -0.5 ) * t );
-
-  vec3 o = e * 0.125;
-  o += ( a + c + g + i ) * 0.03125;
-  o += ( b + d + f + h ) * 0.0625;
-  o += ( j + k + l + m ) * 0.125;
-  gl_FragColor = vec4( o, 1.0 );
+  vec4 o = tap( vUv, 0.125 );
+  o += tap( vUv + vec2( -1.0,  1.0 ) * t, 0.03125 );
+  o += tap( vUv + vec2(  1.0,  1.0 ) * t, 0.03125 );
+  o += tap( vUv + vec2( -1.0, -1.0 ) * t, 0.03125 );
+  o += tap( vUv + vec2(  1.0, -1.0 ) * t, 0.03125 );
+  o += tap( vUv + vec2(  0.0,  1.0 ) * t, 0.0625 );
+  o += tap( vUv + vec2( -1.0,  0.0 ) * t, 0.0625 );
+  o += tap( vUv + vec2(  1.0,  0.0 ) * t, 0.0625 );
+  o += tap( vUv + vec2(  0.0, -1.0 ) * t, 0.0625 );
+  o += tap( vUv + vec2( -0.5,  0.5 ) * t, 0.125 );
+  o += tap( vUv + vec2(  0.5,  0.5 ) * t, 0.125 );
+  o += tap( vUv + vec2( -0.5, -0.5 ) * t, 0.125 );
+  o += tap( vUv + vec2(  0.5, -0.5 ) * t, 0.125 );
+  gl_FragColor = vec4( o.rgb / max( o.a, 1e-6 ), 1.0 );
 }
 `;
 
@@ -105,6 +128,7 @@ precision highp float;
 varying vec2 vUv;
 uniform sampler2D tSrc;
 uniform vec2 uTexel;
+uniform float uGain;
 
 void main() {
   // 3x3 tent, radius one texel of the *smaller* level.
@@ -118,7 +142,7 @@ void main() {
          + texture2D( tSrc, vUv + vec2( -t.x, -t.y ) ).rgb * 1.0
          + texture2D( tSrc, vUv + vec2(  0.0, -t.y ) ).rgb * 2.0
          + texture2D( tSrc, vUv + vec2(  t.x, -t.y ) ).rgb * 1.0;
-  gl_FragColor = vec4( o * ( 1.0 / 16.0 ), 1.0 );
+  gl_FragColor = vec4( o * ( uGain / 16.0 ), 1.0 );
 }
 `;
 
@@ -133,6 +157,7 @@ export class Bloom {
     });
     this.up = new Blit(UP, {
       tSrc: { value: null }, uTexel: { value: new THREE.Vector2() },
+      uGain: { value: GAIN },
     });
     /* Additive on the way up so each octave lands on the one below it rather
      * than replacing it. A pyramid that overwrites is one gaussian with extra
@@ -144,6 +169,25 @@ export class Bloom {
 
   /** The finest level, i.e. the veil at half resolution. */
   get texture(): THREE.Texture { return this.levels[0].texture; }
+
+  /* What to scale that texture by so it has the same mean as the frame it came
+   * from, and therefore so the fraction it is mixed with is the fraction that
+   * is actually scattered.
+   *
+   * Every filter in the pyramid preserves the mean — the 13 taps sum to one and
+   * the tent divides by sixteen — so each octave has the scene's mean and the
+   * additive chain leaves level 0 holding the geometric series 1 + g + g^2 ...
+   * Six unit-weight octaves therefore came out six times too bright, and
+   * mix(src, veil, 0.045) against a veil six times the mean is not a 4.5 per
+   * cent redistribution of light, it is a 22 per cent exposure lift. That is
+   * what was pushing the frame up AgX's shoulder and flattening it, and it is
+   * why the measured cost of "4.5 per cent glare" was 6 to 7 code values on
+   * every region of the frame including ones with no highlight anywhere near
+   * them.
+   *
+   * Energy is conserved here rather than in uBloom so that uBloom keeps meaning
+   * the one thing it should mean. */
+  get norm(): number { return (1 - GAIN) / (1 - GAIN ** LEVELS); }
 
   setSize(w: number, h: number) {
     for (let i = 0; i < LEVELS; i++) {

@@ -186,6 +186,7 @@ uniform vec2  uTexel;
   uniform float uRevDepth;
   uniform float uExposure;
   uniform float uBloom;
+  uniform float uBloomNorm;
   uniform float uVol;
 #endif
 uniform vec3  uSlope, uOffset, uPower, uShadow, uHigh;
@@ -341,8 +342,14 @@ void main() {
    * manufacture it, so the frame keeps 1 - uBloom of itself and the pyramid
    * supplies the rest. Written as a mix rather than an add for that reason:
    * an additive veil brightens the whole frame by its own mean, which on this
-   * scene is a fifth of a stop of exposure nobody asked for. */
-  src = mix(src, texture2D(tBloom, vUv).rgb, uBloom);
+   * scene is a fifth of a stop of exposure nobody asked for.
+   *
+   * uBloomNorm is what makes that claim true rather than merely stated. The
+   * pyramid accumulates six octaves additively, each of which preserves the
+   * mean, so without it the veil arrives with several times the frame's mean
+   * and the mix is an exposure lift wearing a redistribution's clothes. See
+   * Bloom.norm. */
+  src = mix(src, texture2D(tBloom, vUv).rgb * uBloomNorm, uBloom);
 
   vec3 c = agx(src, uExposure) * 0.955 + vec3(0.0040, 0.0046, 0.0070);
 #else
@@ -553,6 +560,7 @@ export function Grade() {
       uRevDepth: { value: 0 },
       uExposure: { value: 1 },
       uBloom: { value: flags.has('nobloom') ? 0 : BLOOM },
+      uBloomNorm: { value: rig ? rig.bloom.norm : 1 },
       uVol: { value: flags.has('novol') ? 0 : 1 },
     } : {}),
     uSlope: { value: new THREE.Vector3(...g.slope) },
@@ -633,6 +641,14 @@ export function Grade() {
       ? { get cones() { return rig.vol.lastConeCount; },
           get shadow() { return rig.vol.lastShadow; },
           get air() { return rig.vol.lastAir; },
+          /* The subtractive gain, writable, so it can be swept without a
+           * reload. It lives on the march's own material rather than on the
+           * grade's, and a tool reaching for window.__grade.uniforms.uSunShare
+           * gets undefined and sweeps nothing while printing a table that looks
+           * like a result. */
+          get gain() { return rig.vol.gain; },
+          set gain(v: number) { rig.vol.gain = v; },
+          set debug(v: number) { rig.vol.debug = v; },
           /* One texel of the march's own output, in its own units: rgb is the
            * signed in-scatter it wrote and a is the view depth it marched to.
            * Added because a gate on that depth failed silently and reading the
@@ -655,6 +671,28 @@ export function Grade() {
               return s * (1 + f / 1024) * 2 ** (e - 15);
             };
             return { r: half(buf[0]), g: half(buf[1]), b: half(buf[2]), vz: half(buf[3]) };
+          },
+          /* A whole row of the march, so the *gradient* across a shaft boundary
+           * can be measured rather than its brightness. A beam is legible
+           * because of that edge; a term that is strong and has no edge is fog,
+           * and the two are indistinguishable in a screenshot and in every
+           * region-mean statistic. */
+          probeRow(v: number) {
+            const t = rig.vol.target;
+            const buf = new Uint16Array(t.width * 4);
+            gl.readRenderTargetPixels(t, 0, Math.round(v * t.height), t.width, 1, buf);
+            const half = (h: number) => {
+              const s = h >> 15 ? -1 : 1, e = (h >> 10) & 31, f = h & 1023;
+              if (e === 0) return s * f * 2 ** -24;
+              if (e === 31) return f ? NaN : s * Infinity;
+              return s * (1 + f / 1024) * 2 ** (e - 15);
+            };
+            const out = new Array<number>(t.width);
+            for (let i = 0; i < t.width; i++) {
+              out[i] = 0.2126 * half(buf[i * 4]) + 0.7152 * half(buf[i * 4 + 1])
+                + 0.0722 * half(buf[i * 4 + 2]);
+            }
+            return out;
           } }
       : null;
 
@@ -701,6 +739,7 @@ export function Grade() {
       uniforms.tDepth!.value = rig.scene.depthTexture as THREE.Texture;
       uniforms.tFrame.value = rig.scene.texture;
       uniforms.tBloom!.value = rig.bloom.texture;
+      uniforms.uBloomNorm!.value = rig.bloom.norm;
     }
   }, [gl, size, viewport.dpr, target, uniforms, rig]);
 

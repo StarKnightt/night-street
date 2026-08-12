@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { layoutBlock, BUILD_LINE, BLOCK_DEPTH } from '@/world/block';
 import { walkHeight } from '@/world/geometry';
+import { HORIZON_AWAY, HORIZON_SUNWARD, SUN_DIR } from './env';
 
 /* Direction-dependent haze.
  *
@@ -309,19 +310,19 @@ function skyPort(dir: [number, number, number], sun: [number, number, number], h
   });
 }
 
-/* Imported dynamically, and that is load-bearing rather than stylistic.
+/* A static import here used to kill the page at boot, and no longer does.
  *
- * env.ts and clouds.ts already import each other, and clouds.ts reads
- * env.ts's SUN_ELEV during its own module evaluation. That cycle survives only
- * because of the order the existing importers happen to pull the two modules
- * in; adding one more static edge into env.ts from here reorders it and the
- * page dies at boot with SUN_ELEV in the temporal dead zone. Measured, not
- * predicted — a static import here is what the first version did.
+ * env.ts and clouds.ts imported each other, and clouds.ts read env.ts's
+ * SUN_ELEV during its own module evaluation. That cycle survived only on the
+ * order the existing importers happened to pull the two modules in, so adding
+ * one more edge into env.ts from this file reordered it and the page died with
+ * SUN_ELEV in its temporal dead zone. The workaround was a dynamic import.
  *
- * A dynamic import runs after every module has finished evaluating, which is
- * both the fix and the right timing anyway: this is a dev assertion about two
- * modules' agreement, so it wants to run when both exist. Neither file is
- * mine, so the cycle is reported rather than repaired.
+ * The sun now lives in scene/sun.ts, a leaf with no imports, which a cycle
+ * cannot form through. The edge is safe and the workaround is gone — recorded
+ * because "why is this one import dynamic" is otherwise unanswerable, and
+ * because a comment describing a cycle that has been fixed is the same kind of
+ * stale transcription this function exists to catch.
  */
 /* The radiance a saturated column of this scene's air reaches looking along the
  * sun's bearing, with the solar aureole taken back out.
@@ -356,28 +357,26 @@ let checked = false;
 function checkSkyDrift() {
   if (checked || process.env.NODE_ENV !== 'development') return;
   checked = true;
-  void import('./env').then(({ SUN_DIR, HORIZON_SUNWARD, HORIZON_AWAY }) => {
-    const s = SUN_DIR as unknown as [number, number, number];
-    const az = Math.atan2(s[2], s[0]);
-    const y = Math.sin(0.012), r = Math.cos(0.012);    // the horizon env.ts samples
-    const pairs: [string, [number, number, number], readonly number[]][] = [
-      ['sunward', [Math.cos(az) * r, -y, Math.sin(az) * r], HORIZON_SUNWARD],
-      ['away', [-Math.cos(az) * r, -y, -Math.sin(az) * r], HORIZON_AWAY],
-    ];
-    for (const [name, dir, want] of pairs) {
-      const got = skyPort(dir, s);
-      const err = Math.max(...[0, 1, 2].map((i) =>
-        Math.abs(got[i] - want[i]) / Math.max(want[i], 0.02)));
-      if (err > 0.04) {
-        console.warn(
-          `haze.ts: the sky port has drifted from env.ts at the ${name} horizon by `
-          + `${(err * 100).toFixed(0)}%. port=[${got.map((v) => v.toFixed(3))}] `
-          + `env=[${want.map((v) => v.toFixed(3))}]. Distant geometry will stop `
-          + 'dissolving into the sky; re-transcribe skyRadiance into hazeSkyGLSL.',
-        );
-      }
+  const s = SUN_DIR as unknown as [number, number, number];
+  const az = Math.atan2(s[2], s[0]);
+  const y = Math.sin(0.012), r = Math.cos(0.012);    // the horizon env.ts samples
+  const pairs: [string, [number, number, number], readonly number[]][] = [
+    ['sunward', [Math.cos(az) * r, -y, Math.sin(az) * r], HORIZON_SUNWARD],
+    ['away', [-Math.cos(az) * r, -y, -Math.sin(az) * r], HORIZON_AWAY],
+  ];
+  for (const [name, dir, want] of pairs) {
+    const got = skyPort(dir, s);
+    const err = Math.max(...[0, 1, 2].map((i) =>
+      Math.abs(got[i] - want[i]) / Math.max(want[i], 0.02)));
+    if (err > 0.04) {
+      console.warn(
+        `haze.ts: the sky port has drifted from env.ts at the ${name} horizon by `
+        + `${(err * 100).toFixed(0)}%. port=[${got.map((v) => v.toFixed(3))}] `
+        + `env=[${want.map((v) => v.toFixed(3))}]. Distant geometry will stop `
+        + 'dissolving into the sky; re-transcribe skyRadiance into hazeSkyGLSL.',
+      );
     }
-  });
+  }
 }
 
 /**
