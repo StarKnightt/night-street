@@ -881,3 +881,7 @@ discipline and no colour-space reasoning, and several of their recommendations
 were actively wrong for this scene. By far the most useful source of technique
 was the previous project's own code comments. Skills are good at telling an
 agent what an API is. They were no help at all with what number to put in it.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
