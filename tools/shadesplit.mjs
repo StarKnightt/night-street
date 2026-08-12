@@ -102,7 +102,21 @@ async function radiance(file) {
 const fmt = (v) => v.map((c) => c.toFixed(3).padStart(7)).join(' ');
 const lum = (v) => 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
 
-const url = `${DEV_URL}/?nograde`;
+/* `?nohdr` as well as `?nograde`, and without it this tool has been returning
+ * nonsense since System 8 landed.
+ *
+ * The probe sets `renderer.toneMapping = NoToneMapping` and a low exposure so
+ * that the four variants subtract as radiance. With the HDR pipeline in place
+ * the renderer's own tone mapping is no longer what reaches the canvas — the
+ * grade pass tone-maps the linear target on the way out — so those two lines
+ * controlled nothing and every variant came back clipped to white. Measured
+ * before this line was added: the sun's contribution read as *minus* 15.5
+ * radiance, "other" as +15.9, and both sunlit bins held zero pixels, which is
+ * an instrument saturated at 255 rather than a scene with no sun in it.
+ * `?nohdr` restores the path this tool was written against: scene straight to
+ * the canvas, tone-mapped by the renderer, which is the only configuration in
+ * which its own exposure control means anything. */
+const url = `${DEV_URL}/?nograde&nohdr`;
 const shots = {};
 
 await run({ width: W, height: H, url }, async ({ page, readShaderErrors }) => {

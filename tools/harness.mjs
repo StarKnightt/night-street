@@ -24,8 +24,34 @@ import { exec } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import { installLiveness, formatLiveness } from './liveness.mjs';
 
 export const DEV_URL = process.env.STREET_URL || 'http://127.0.0.1:3000';
+
+/* Inherited by every tool, because the toggle has to be available to all of
+ * them and none of them should have to know how it is spelled.
+ *
+ *   --nofollow   disable src/scene/sunFollow.ts, restoring the pre-0a4f58b
+ *                behaviour, and suppress the liveness assertion — which would
+ *                otherwise, correctly, fail every capture in that mode.
+ *   --nolive     suppress the assertion on its own.
+ *   --auditlive  run the assertion even under --nofollow, and report rather
+ *                than fail. This is how "was *this* tool ever actually
+ *                affected?" is answered: the follower is off, so whether the
+ *                capture goes stale depends entirely on whether an animation
+ *                frame happens to run between the tool's last camera move and
+ *                its draw — which differs per tool and is not something to
+ *                reason about.
+ */
+export const NO_FOLLOW = process.argv.includes('--nofollow');
+const AUDIT_LIVE = process.argv.includes('--auditlive');
+const NO_LIVE = (NO_FOLLOW && !AUDIT_LIVE) || process.argv.includes('--nolive');
+
+/* Every liveness failure any capture in this run produced. Read at the end of
+ * `run()` and reported the way the shader-error ledger is, for the same
+ * reason: a check nobody has to remember to look at is the only kind that
+ * works. */
+export const livenessFailures = [];
 
 const AFFINITY = '0xF00';   // top four of twelve logical cores
 const ps = (c) => exec('powershell -NoProfile -Command "' + c + '"', () => {});
@@ -96,14 +122,22 @@ export function reachable(url, timeoutMs = 2500) {
  * next task.
  */
 export async function capture(page, file) {
-  const url = await page.evaluate(() => {
+  /* The liveness assertion runs inside the same evaluate as the draw, between
+   * the render and the read, so it observes the exact state the PNG was made
+   * from. Asking afterwards would let an animation frame fix the very thing
+   * it is there to catch — which is the bug, one level up. */
+  const { url, live } = await page.evaluate((label) => {
     const s = window.__scene;
     s.setPaused(true);
     s.renderOnce();
+    const live = window.__liveness ? window.__liveness(label) : null;
     const data = s.renderer.domElement.toDataURL('image/png');
     s.setPaused(false);
-    return data;
-  });
+    return { url: data, live };
+  }, path.basename(file));
+  if (live && live.failures && live.failures.length) {
+    livenessFailures.push({ file: path.basename(file), ...live });
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.from(url.split(',')[1], 'base64'));
   return file;
@@ -164,9 +198,11 @@ export async function run(opts, body) {
   closeables.push(browser);
 
   const errs = [];
-  let code = 0, gl = null, shaderErrors = [];
+  let code = 0, gl = null, shaderErrors = [], staleLedger = null;
   try {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+    await installLiveness(page, { off: NO_LIVE });
+    if (NO_FOLLOW) await page.addInitScript('window.__sunFollowOff = true;');
     // No page operation may block indefinitely, whatever the caller asked for.
     page.setDefaultTimeout(Math.min(timeout, 90_000));
     page.setDefaultNavigationTimeout(Math.min(timeout, 90_000));
@@ -186,9 +222,42 @@ export async function run(opts, body) {
      * burns the whole timeout to report an error the page already knew about.
      * Race the wait against the error list instead — the throw usually
      * happened during goto(), before any fresh listener could have caught it. */
-    // Short, because the only slow part of boot is the first Turbopack
-    // compile and that is already done by the time anyone runs this twice.
-    const boot = 60_000;
+    /* Long enough that a cold boot is not a race.
+     *
+     * This was 60 s, on the reasoning that the only slow part is the first
+     * Turbopack compile and that it is already done by the second run. That
+     * has stopped being true: measured on this machine a cold `sunalign` takes
+     * about 34 s to the first scene draw and about 40 s of wall clock before
+     * `__scene` exists, so the margin was 20 s on a 40 s operation — marginal
+     * rather than broken, which is the worst kind, because it fails on the run
+     * where somebody else's save has just invalidated the compile and it looks
+     * like the page is broken rather than slow.
+     *
+     * Three minutes is still well inside the 300 s watchdog, so a genuinely
+     * wedged dev server is still reported in minutes and not in hours. The
+     * ceiling that matters is the watchdog's, and it is unchanged. */
+    const boot = Number(process.env.SHOOT_BOOT_MS || 180_000);
+
+    /* Get past the front door.
+     *
+     * `src/app/Gate.tsx` will not mount the scene unless `(pointer: fine)`,
+     * `requestPointerLock` and `innerWidth >= 700` all hold, and it offers a
+     * "Load it anyway" button when they do not. A headless page at 640x360 —
+     * which is what `sunalign` and several other diagnostics ask for, because
+     * they read numbers rather than pixels — fails the width test and sits on
+     * the touch card until the boot wait expires, reporting "the page never
+     * defined __scene". That is a true statement about a page that is working
+     * perfectly, and it cost an hour once.
+     *
+     * Clicking rather than widening the viewport, because a viewport is a
+     * measurement parameter and a tool that quietly got a different one than
+     * it asked for is the worse failure. */
+    const gate = page.getByRole('button', { name: /load it anyway/i });
+    gate.click({ timeout: 8000 }).then(
+      () => console.log('   gate: clicked through the touch card (viewport under 700 px)'),
+      () => {},
+    );
+
     await Promise.race([
       page.waitForFunction(() => !!window.__scene, null, { timeout: boot }),
       (async () => {
@@ -225,6 +294,15 @@ export async function run(opts, body) {
      * first draw, so a material that only appears at one stop of the walk does
      * not report until that stop has actually been rendered. */
     shaderErrors = await page.evaluate(() => window.__shaderErrors || []);
+
+    /* What this tool's own render idiom would have drawn before 0a4f58b.
+     *
+     * Printed for every run because it is free and because the answer is not
+     * guessable from the source: whether a capture goes stale depends on
+     * whether an animation frame happens to fall between the last camera move
+     * and the draw, which is a property of where the `await`s are. */
+    staleLedger = await page.evaluate(
+      () => (window.__sunFollow ? JSON.parse(JSON.stringify(window.__sunFollow.state.ledger)) : null));
   } catch (err) {
     console.error('\n✗ capture failed:', (err && err.message) || err);
     code = 1;
@@ -268,9 +346,52 @@ export async function run(opts, body) {
     console.log('  shader programs: all linked');
   }
 
+  /* A stale per-frame placement is a hard failure of the run, for the same
+   * reason a failed link is: the pixels are not the build. See
+   * `tools/liveness.mjs` for the three instances that motivate it. */
+  if (livenessFailures.length && AUDIT_LIVE) {
+    console.log('\n' + '─'.repeat(72));
+    console.log(`  liveness AUDIT: ${livenessFailures.length} capture(s) drew stale per-frame state.`);
+    console.log('  Reported, not failed, because --auditlive says the staleness is deliberate.');
+    for (const f of livenessFailures) {
+      console.log(`\n  ── ${f.file}`);
+      console.log(formatLiveness(f));
+    }
+    console.log('─'.repeat(72));
+  } else if (livenessFailures.length) {
+    code = 1;
+    console.error('\n' + '═'.repeat(72));
+    console.error(`✗✗✗  ${livenessFailures.length} CAPTURE(S) DREW STALE PER-FRAME STATE`);
+    console.error('     Something positioned in a useFrame does not match the camera that');
+    console.error('     was rendered. The frame is a picture of another viewpoint\'s lighting.');
+    console.error('     Do NOT review or measure this build; see tools/liveness.mjs.');
+    console.error('═'.repeat(72));
+    for (const f of livenessFailures) {
+      console.error(`\n  ── ${f.file}`);
+      console.error(formatLiveness(f));
+    }
+    console.error('\n' + '═'.repeat(72) + '\n');
+  } else if (!NO_LIVE) {
+    console.log('  liveness: per-frame state matches the rendered camera');
+  } else {
+    console.log('  liveness: SUPPRESSED (--nofollow/--nolive)');
+  }
+
   /* Never clear a failure the body already recorded. `process.exitCode = code`
    * used to overwrite it, so a run whose captures did not reach disk said so
    * on stdout and then exited zero. */
+  if (staleLedger && staleLedger.renders) {
+    const l = staleLedger;
+    const pct = ((100 * l.stale) / l.renders).toFixed(1);
+    console.log(`  pre-fix audit: ${l.stale}/${l.renders} renders (${pct}%) would have drawn a stale` +
+      ` shadow box before 0a4f58b   ${JSON.stringify(l.buckets)}`);
+    if (l.worst) {
+      console.log(`                 worst ${l.worst.metres.toFixed(2)} m` +
+        `  camera ${l.worst.camera.map((v) => v.toFixed(2)).join(', ')}` +
+        `  box target ${l.worst.target.map((v) => v.toFixed(2)).join(', ')}`);
+    }
+  }
+
   process.exitCode = code || process.exitCode || 0;
-  return { errs: [...new Set(errs)], gl, shaderErrors };
+  return { errs: [...new Set(errs)], gl, shaderErrors, staleLedger };
 }
