@@ -85,6 +85,30 @@ for (let r = 0; r < 3; r++) {
 PATCHES.push({ name: 'facadeL', x: 0.05, y: 0.22, w: 0.06, h: 0.10 });
 PATCHES.push({ name: 'facadeR', x: 0.86, y: 0.22, w: 0.06, h: 0.10 });
 
+/* Extra patches on the command line: --patch name:x,y,w,h
+ *
+ * Additive, and the default grid is untouched, so every existing invocation
+ * measures exactly what it measured before.
+ *
+ * The grid above covers the lower half from x 0.10 to 0.825, which at the
+ * standard framing is carriageway and the near footway. It does not reach the
+ * sunlit footway, which at the tilted framing sits beyond x 0.75 in a diagonal
+ * band — checked by sampling the grid's own cells and finding none with the
+ * red-to-blue ratio near 9 that a directly sunlit surface has under this
+ * 2200 K key, against 1.0 to 1.7 for everything the grid does cover. Two runs
+ * that differed only in a footway uniform came back identical to 0.01 counts
+ * across all twenty patches, which is a true statement about the patches and
+ * says nothing whatever about the footway. */
+for (const spec of all('patch')) {
+  const [name, r] = spec.split(':');
+  const [x, y, w, h] = (r || '').split(',').map(Number);
+  if (!name || ![x, y, w, h].every(Number.isFinite)) {
+    console.error(`✗ bad --patch "${spec}", want name:x,y,w,h in frame fractions`);
+    process.exit(2);
+  }
+  PATCHES.push({ name, x, y, w, h });
+}
+
 const LAGS = [1, 4, 16];
 const outDir = path.join(ROOT, 'shots', TAG);
 fs.mkdirSync(outDir, { recursive: true });
