@@ -118,6 +118,35 @@ second.
 
 ### What the programs are
 
+> **UNRESOLVED CONTRADICTION — read before optimising against this table.**
+>
+> A second, independent measurement (atmosphere pass, A/B of the HDR chain via
+> `?post=nohdr`) reports numbers that cannot both be true with the table below:
+>
+> - `LINK_STATUS` totals **7.1 ms**, not tens of seconds. The ~33 s sits in
+>   `getProgramInfoLog` at roughly **430 ms per program across 76 programs**,
+>   which three only calls because `debug.checkShaderErrors` is on.
+> - **69 of the 76 programs are surface bakes and PMREM**, not scene materials —
+>   the reverse of the split in this table.
+>
+> That second point is the one that matters, because if it is right this whole
+> document points optimisation at scene materials that account for under 10% of
+> the programs.
+>
+> The two are not obviously reconcilable by arithmetic, but they may both be
+> honest observations of the same thing: with `KHR_parallel_shader_compile`
+> present, compilation is asynchronous and the cost surfaces at whichever call
+> first forces a synchronisation. §5's ablation found that removing the info-log
+> calls simply moved the identical cost into `LINK_STATUS`, which is exactly what
+> that theory predicts — and would mean *neither* call is the cause and disabling
+> `checkShaderErrors` buys nothing, as §5 concluded. It does not explain the
+> program-mix disagreement, which is a straight counting question and should be
+> settled by counting.
+>
+> **Do not delete either measurement to make the document tidy.** Settle it by
+> re-counting programs by group on one build, in one run, with both call sites
+> instrumented simultaneously.
+
 With the info-log ablation applied (§5) the same cost lands on
 `getProgramParameter(LINK_STATUS)`, one call per program, which makes it
 attributable per program:
