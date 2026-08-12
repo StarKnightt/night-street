@@ -18,6 +18,45 @@ Two of its findings overturn things that would otherwise reasonably have been
 built. They are flagged at the top of their sections and repeated in the
 summary below.
 
+## What has changed since this was written — read before quoting a number
+
+This brief was written before Systems 5, 6 and 8 were built, and the scene has
+since moved underneath several of its premises. The reasoning is left intact
+because it is still the best account of *why* each choice was made; the
+following inputs are simply no longer current, and any arithmetic in this
+document that uses them is stale by that factor. Verified against the tree at
+`fce0191`.
+
+- **The sun is at 12 degrees, not 4.2.** `scene/sun.ts` is the single
+  definition and explains the trade. Every "at 4.2°" in this document — the
+  shadow lengths, the grazing-angle arguments, §4.3's god-ray geometry, §5.5's
+  defocus reasoning — was reasoned at the old elevation. §3's worked example
+  `E_sun,horizontal = 115 · sin(4.2°) = 8.42` is now `115 · sin(12°) = 23.9`.
+- **§4.3's conclusion was overturned and a volumetric march ships.**
+  "Do not build a volumetric renderer" was right on its own premises and lost
+  to two things it did not anticipate: a dozen lamp cones, which are not two
+  planes and cannot be made into two, and the fact that the analytic version
+  was occluded by the frontage gaps and by nothing else on the street. The
+  argument, including what the march deliberately does *not* carry so that it
+  cannot produce flat beige, is at the head of `scene/volumetric.ts`.
+- **`scene.environmentIntensity` is 1.0, not 0.50**, and the probe is now
+  convolved from the same cloudy sky that is drawn rather than from a separate
+  cloudless one. Shadow-side surfaces came up 1.2× to 3.3× when that landed, so
+  every "shade is lit by the environment at 0.50" comparison here understates
+  the ambient by about a factor of four.
+- **The sun's shadow map is 8192 × 4096 and its box is rolled along the
+  street**, not the 4096² level-oriented box quoted in §3.2 and §6. See
+  `scene/sunShadow.ts` for the measured cost of the roll in ground texel
+  density, which is the only density worth quoting.
+- **The street lamps are at 329 cd.** Any candela figure here predates the
+  re-anchoring in `scene/lampFixtures.ts`, which also records why the old
+  derivation went stale without looking like a transcribed constant.
+- **The bloom veil is nine octaves, not six.** Six stops 6.4 degrees from the
+  disc; the far field was measurably inert before the change.
+
+The withdrawal of `display = 0.284 · L^0.4545` below still stands and is the
+most important thing in this file.
+
 ## What the sources turned out to be worth
 
 **`c:\Code\jungle-trail` has no skill files.** No `.cursor/`, `.claude/`,
