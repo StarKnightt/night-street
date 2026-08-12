@@ -358,8 +358,49 @@ const PAGE = (spots) => `
     }
   }
 
+  // ── 4. Straight across the rear corner, pixel by pixel ─────────────────
+  /* The question is whether the finish steps or turns across the corner. A
+   * vertical scan cannot answer it and a world-space path around the body needs
+   * a guess about the body's shape, so this walks a row of the rendered image
+   * instead and reports, for every pixel, where it landed, which way that
+   * surface faces, which part code it carries and what it returned. A step in
+   * value that coincides with a part-code change is a material boundary; a ramp
+   * that tracks the normal turning is a lit curve. */
+  const corner = [];
+  {
+    const W2 = view.width, H2 = view.height;
+    shoot();
+    for (const hy of [0.50, 0.85, 1.25]) {
+    const anchor = new THREE.Vector3(-0.99, hy, -40.30).project(s.camera);
+    const row = Math.round((0.5 - anchor.y * 0.5) * H2);
+    const c0 = Math.round((anchor.x * 0.5 + 0.5) * W2);
+    for (let dx = -120; dx <= 120; dx += 4) {
+      const x2 = c0 + dx;
+      if (x2 < 1 || x2 > W2 - 2) continue;
+      gl.readRenderTargetPixels(view, x2, H2 - 1 - row, 1, 1, px4);
+      const L = [h2f(px4[0]), h2f(px4[1]), h2f(px4[2])];
+      const ndc = new THREE.Vector2((x2 / W2) * 2 - 1, 1 - (row / H2) * 2);
+      ray.setFromCamera(ndc, s.camera);
+      const hs = ray.intersectObjects(s.scene.children, true)
+        .filter((h) => h.object.visible && h.object.type === 'Mesh');
+      if (!hs.length) continue;
+      const nv = new THREE.Vector3();
+      if (hs[0].face) nv.copy(hs[0].face.normal).transformDirection(hs[0].object.matrixWorld);
+      const g = hs[0].object.geometry;
+      const a = g && g.attributes && g.attributes.aCar;
+      const uv = g && g.attributes && g.attributes.uv;
+      corner.push({
+        hy, dx, L, p: hs[0].point.toArray(), n: nv.toArray(), d: hs[0].distance,
+        part: (a && hs[0].face) ? a.getY(hs[0].face.a) : -1,
+        u: (uv && hs[0].face) ? uv.getX(hs[0].face.a) : -1,
+        v: (uv && hs[0].face) ? uv.getY(hs[0].face.a) : -1,
+      });
+    }
+    }
+  }
+
   s.renderOnce();
-  return { out, line, envInfo };
+  return { out, line, envInfo, corner };
 })()
 `;
 
@@ -455,6 +496,35 @@ await run({ width: 1600, height: 900 }, async ({ page }) => {
         + `${(q.swap[2] / Math.max(q.swap[0], 1e-9)).toFixed(2)}`
         + ` against ${(q.off[2] / Math.max(q.off[0], 1e-9)).toFixed(2)} as built` : '')
       + (spread > 0.01 ? `   channels disagree by ${spread.toFixed(3)}` : ''));
+  }
+
+  console.log('\n── straight across the rear corner, one pixel at a time ───────');
+  console.log('   px    linear (r g b)          B/R    hit x, z        normal        uv.x  part');
+  let prev = null;
+  let lastH = null;
+  for (const q of res.corner) {
+    if (q.d > 6 || q.part < 0) continue;
+    if (q.hy !== lastH) {
+      console.log(`   -- at y = ${q.hy.toFixed(2)} `
+        + (q.hy < 0.60 ? '(under the film line, where the clearcoat is meant to go)'
+          : q.hy < 1.05 ? '(the lamp band)' : '(clean paint, above everything)'));
+      lastH = q.hy; prev = null;
+    }
+    const br = q.L[2] / Math.max(q.L[0], 1e-9);
+    let flag = '';
+    if (prev) {
+      const turn = Math.acos(Math.min(1, Math.max(-1,
+        prev.n[0] * q.n[0] + prev.n[1] * q.n[1] + prev.n[2] * q.n[2]))) * 180 / Math.PI;
+      const mm = Math.hypot(q.p[0] - prev.p[0], q.p[2] - prev.p[2]) * 1000;
+      const jump = br / Math.max(prev.br, 1e-9);
+      if (q.part !== prev.part) flag += `  part ${prev.part}->${q.part}`;
+      if (jump > 1.6 || jump < 0.62) flag += `  B/R x${jump.toFixed(2)} over ${mm.toFixed(0)} mm and ${turn.toFixed(0)} deg`;
+    }
+    console.log(`  ${String(q.dx).padStart(4)}  ${q.L.map((v) => v.toFixed(4)).join(' ')}`
+      + `   ${br.toFixed(2).padStart(5)}  ${q.p[0].toFixed(2).padStart(5)} ${q.p[2].toFixed(2)}`
+      + `  ${q.n.map((v) => v.toFixed(2).padStart(5)).join(' ')}  ${q.u.toFixed(2).padStart(5)}`
+      + `  ${String(q.part).padStart(2)} ${PART[q.part] || '?'}${flag}`);
+    prev = { ...q, br };
   }
 
   const tail = rows.find((r) => r.name === 'tail centre');
