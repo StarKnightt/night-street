@@ -794,10 +794,27 @@ const PAINT_BODY = /* glsl */ `
      * the paint around it. */
     col = vec3(0.3700, 0.0155, 0.0110);
     col *= 1.0 + facet * 0.85 * vis;
-    // Lens divisions: the reversing lamp and the indicator inside the cluster.
+    /* Lens divisions: the reversing lamp and the indicator inside the cluster.
+     *
+     * These were three full-height bands across the whole cluster and they
+     * drew the rainbow the critique found: a clear section at 0.43 neutral is
+     * a near-white mirror at roughness 0.09, so it returned the sky and read
+     * as a saturated blue stripe; the amber under it read olive against the
+     * red; and the three stacked bands each ran the full width of the lens.
+     * A photograph of a rear cluster at this hour has one hue in it.
+     *
+     * Both are now authored as what they physically are rather than as what
+     * the moulding is called. A reversing lamp is clear plastic over an
+     * aluminised bowl and it is *dark* from any direction that is not
+     * coaxial with it — it is the second darkest part of the cluster, not the
+     * brightest, and at 0.085 it can no longer act as a sky mirror. The
+     * indicator is a filter like the red one, two passes over the same
+     * reflector, so it belongs an octave under the red rather than beside it.
+     * Both bands are also narrower, so the divisions read as fittings inside
+     * a red cluster rather than as three equal stripes. */
     float f = clamp((hh - lampLo) / max(lampHi - lampLo, 0.02), 0.0, 1.0);
-    if (f < 0.26){ col = vec3(0.4400, 0.1950, 0.0135); }          // indicator amber
-    else if (f > 0.80){ col = vec3(0.4300, 0.4150, 0.3900); }     // reverse, clear
+    if (f < 0.20){ col = vec3(0.2350, 0.0870, 0.0100); }          // indicator amber
+    else if (f > 0.86){ col = vec3(0.0850, 0.0820, 0.0780); }     // reverse, clear
     rgh = 0.09 + 0.10 * dirt; coat = 1.0; met = 0.0;
     gSlope += vec2(fc.x, fc.y) * 0.06 * vis;
     grime = 0.8;
@@ -985,6 +1002,49 @@ const PAINT_BODY = /* glsl */ `
     gAO *= 0.35;
     grime = 1.4;
 
+  } else if (part > 11.5){
+    /* ── The door mirror's glass ────────────────────────────────────────
+     *
+     * The one first-order mirror on a car, and it is worth its own branch for
+     * the same reason the number plate is: it is a small hard-edged object
+     * whose *content* is different from everything around it. It faces the
+     * car's own tail, so what it returns is the street the camera is walking
+     * down — a horizon line, the frontage, the road — compressed into 120 px,
+     * and that compressed image is the whole read. A flat beige box is what
+     * this looked like without it.
+     *
+     * Second-surface aluminised glass: metal, because the reflection is off
+     * the coating and there is no diffuse term to speak of, and roughness
+     * 0.14 rather than a true mirror because a parked car's mirror has a
+     * week of dust on it and because a hard mirror at this exposure is a
+     * highlight looking for somewhere to clip. The albedo is the coating's
+     * own reflectance, which is not unity.
+     */
+    col = vec3(0.6800, 0.6850, 0.6950);
+    rgh = 0.14; met = 0.90; coat = 0.0; grime = 0.6;
+    /* Convex, which is not a detail — a door mirror is a spherical section of
+     * about a metre's radius, and the compression that puts is the single
+     * thing that separates a mirror from a dark oval. Stated as a sweep of
+     * the normal across the face, so the eight facets of the shell's own
+     * section carry a continuously varying ray rather than one value: the top
+     * of the glass returns the frontage, the bottom returns the road, and the
+     * value crosses the whole range in 120 px. */
+    gSlope += vFuv * 0.34;
+    /* Dust settles in the corners of a mirror and the middle gets wiped by
+     * the airflow, which is a radial gradient and nothing else. uv here is a
+     * disc coordinate about the glass centre. */
+    float rr = clamp(length(vFuv), 0.0, 1.0);
+    float grit = smoothstep(0.45, 1.0, rr) * (0.35 + 0.65 * unit(wfbm(pw * 12.0, 2)));
+    col = mix(col, vec3(0.0620, 0.0585, 0.0530), grit * 0.55);
+    rgh = mix(rgh, 0.55, grit * 0.7);
+    /* A mirror is set into a housing and sees a good deal less than an
+     * unoccluded hemisphere. Stated on gAO and not on gSpecAO: gSpecAO is
+     * *assigned* further down from the height ramp, so anything written to it
+     * from here is discarded — which is the class of bug this project has
+     * paid for most, and it costs nothing to avoid it by writing to the term
+     * that accumulates. */
+    gAO *= 0.55;
+
   } else {
     /* ── The scuttle ────────────────────────────────────────────────────
      *
@@ -1157,6 +1217,28 @@ export function makeCarPaintMaterial(): THREE.MeshPhysicalMaterial {
      * shopfronts all fell into, and here it would take out the long diagonal
      * car shadows that are most of what this system contributes to a frame. */
     shadowSide: THREE.FrontSide,
+    /* Left on, and the stipple on the body is *not* this.
+     *
+     * The critique's dithered silhouette reproduces and measures: the mean
+     * absolute residual from a 3-tap median — which a smooth gradient, however
+     * steep, scores near zero on and a per-pixel stipple does not — is 1.42
+     * counts on the sunlit roof of the hatch at z = -76.3, against 0.30 counts
+     * on a sunlit stucco wall at the same 140 code values in the same frame.
+     * Nearly five times the noise of the surface beside it, and worst where
+     * the body is brightest, which is why it shows along a lit edge.
+     *
+     * Turning this flag off changed that number from 1.416 to 1.410, i.e. not
+     * at all, so three's dither is not the source and the one-line fix is a
+     * one-line no-op. It is recorded here rather than shipped because an inert
+     * change that looks like a fix is worse than no change. Three's dither is
+     * bounded at half a code value per channel by construction, so the
+     * arithmetic agreed with the measurement in hindsight.
+     *
+     * What is left, for whoever takes it: the control surface is in full sun
+     * and the car's roof is near a shadow terminator, and `softShadow.ts` runs
+     * a 12-tap blocker search and a 20-tap Vogel filter whose taps are rotated
+     * per fragment. Per-pixel noise in a penumbra and nowhere else is that
+     * filter's signature, and it is not this file's to change. */
     dithering: true,
   });
   m.onBeforeCompile = (shader) => {

@@ -93,6 +93,11 @@ export const CAR = {
    * between the two states the edge in albedo as well, so it survives whatever
    * the light is doing. */
   SCUTTLE: 11,
+  /* The door mirror's own glass. It is its own code because it is the one
+   * part of a car that is a first-order mirror of what is *behind* the car,
+   * and because 120 mm of aluminised glass at two metres is the difference
+   * between a mirror and a beige box with a smaller beige box behind it. */
+  MIRROR: 12,
 } as const;
 
 /** Branches in the glazing shader. */
@@ -884,20 +889,137 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
       [[-1, -1], [1, -1], [1, 1], [-1, 1]]);
   }
 
-  /* Door mirrors. Two boxes on a stalk, at the base of the A-pillar, and they
-   * matter out of all proportion to their size: a car with no mirrors reads as
-   * a soap bar, and the mirror is the only thing that breaks the greenhouse
-   * silhouette. */
+  /* Door mirrors, at the base of the A-pillar. They matter out of all
+   * proportion to their size: a car with no mirrors reads as a soap bar, and
+   * the mirror is the only thing that breaks the greenhouse silhouette.
+   *
+   * They were two axis-aligned cuboids, which at 1.5 m is 120 px of flat
+   * untextured box with a smaller flat untextured box behind it, and both
+   * reviews named it. The plan extents below are unchanged to the
+   * millimetre — `carSolids()` and therefore `scene/collide.ts` derive the
+   * walker's clearance from these same three numbers, and a mirror that is
+   * shaped differently from the one the collider knows about is a worse
+   * defect than a boxy one. What changes is what fills them. */
   const mu = s.screen[0] * s.len + 0.10;
   const my = at(s.deck, s.screen[0]) + 0.055;
   for (const sgn of [-1, 1]) {
     const wOut = at(s.hw, s.screen[0]) * 0.99;
     setB(CAR.TRIM, s.screen[0], my, sgn);
-    box(c.B, fr, sgn * (wOut + 0.055), my - 0.045, mu - 0.075,
-      sgn * (wOut + 0.155), my + 0.055, mu + 0.075);
-    box(c.B, fr, sgn * (wOut - 0.02), my - 0.020, mu - 0.030,
-      sgn * (wOut + 0.070), my + 0.030, mu + 0.030);
+    mirror(c.B, fr, sgn, wOut, my, mu, setB);
   }
+}
+
+/* One door mirror: a stalk, a shell, and the glass in it.
+ *
+ * Three things make a mirror read, and a cuboid has none of them. It tapers —
+ * the shell is narrower and lower where it meets the stalk than at the glass,
+ * which is what gives it the teardrop plan every mirror has had since they
+ * stopped being round. Its edges are radiused, so at four degrees of sun the
+ * top catches a line of light and the corners do not each catch their own.
+ * And the glass is recessed behind a bezel and faces the car's own tail, so
+ * it returns the street behind the car rather than whatever the outside of a
+ * box happens to be pointing at.
+ *
+ * The section is an octagon rather than a rectangle, which is the cheapest
+ * radius there is: eight facets over a 100 mm shell is a facet every 12 mm,
+ * well under a pixel at any distance this is seen from, and it costs sixteen
+ * triangles over the box it replaces.
+ */
+function mirror(
+  H: Hull, fr: ReturnType<typeof place>, sgn: number,
+  wOut: number, my: number, mu: number,
+  setB: (part: number, u: number, y: number, side: number) => void,
+): void {
+  /* The same envelope the two boxes occupied, so the collider still agrees:
+   * outboard from wOut + 0.055 to wOut + 0.155, my - 0.045 to my + 0.055,
+   * and mu - 0.075 to mu + 0.075 along the car. */
+  const u0 = 0.055, u1 = 0.155;
+  const y0 = my - 0.045, y1 = my + 0.055;
+  const zF = mu - 0.075, zR = mu + 0.075;
+
+  /* An octagon in (outboard fraction, height fraction), counter-clockwise as
+   * seen looking forward along the car. `k` is the chamfer: 0 is the box this
+   * replaces and 0.5 is a lozenge. */
+  const k = 0.30;
+  const oct: [number, number][] = [
+    [0, k], [k, 0], [1 - k, 0], [1, k], [1, 1 - k], [1 - k, 1], [k, 1], [0, 1 - k],
+  ];
+  /* Mirroring the car's other side negates the lateral axis, which reverses
+   * the sense of the loop and would emit the whole shell inside out. This is
+   * the same failure the wheels shipped with; it is cheaper to state it once
+   * here than to find it in a frame. */
+  const ring = sgn < 0 ? [...oct].reverse() : oct;
+  const N = ring.length;
+
+  /* Front and rear sections. The front is 82 per cent of the rear about the
+   * shell's own axis and sits 8 mm inboard, which is the taper. */
+  const pt = (j: number, rear: boolean): V3 => {
+    const [a, b] = ring[j];
+    const t = rear ? 1.0 : 0.82;
+    const ac = 0.5 + (a - 0.5) * t, bc = 0.5 + (b - 0.5) * t;
+    return fr.p(sgn * (wOut + u0 + ac * (u1 - u0) - (rear ? 0 : 0.008)),
+      y0 + bc * (y1 - y0), rear ? zR : zF);
+  };
+  /* The glass: the rear section pulled in to 0.74 and back 12 mm, so the
+   * bezel between the two is a real lip rather than a painted line. */
+  const gl = (j: number): V3 => {
+    const [a, b] = ring[j];
+    const ac = 0.5 + (a - 0.5) * 0.74, bc = 0.5 + (b - 0.5) * 0.74;
+    return fr.p(sgn * (wOut + u0 + ac * (u1 - u0)),
+      y0 + bc * (y1 - y0), zR - 0.012);
+  };
+
+  /* The shell. Each facet takes the outward normal of its own edge in the
+   * section plane, which is what makes the eight of them read as a radius
+   * instead of as eight flats. */
+  for (let j = 0; j < N; j++) {
+    const jb = (j + 1) % N;
+    const A = pt(j, false), B = pt(jb, false), C = pt(jb, true), D = pt(j, true);
+    /* The edge's outward normal in the section plane. `dx` carries the sign
+     * of the side, which with the reversed ring above leaves the section
+     * counter-clockwise in the car's own (x, y) on both flanks, so (dy, -dx)
+     * points out of the shell on both. */
+    const dx = (ring[jb][0] - ring[j][0]) * (u1 - u0) * sgn;
+    const dy = (ring[jb][1] - ring[j][1]) * (y1 - y0);
+    const nf = fr.n(dy, -dx, 0);
+    H.quad(A, nf, B, nf, C, nf, D, nf,
+      [[zF, y0], [zF, y1], [zR, y1], [zR, y0]]);
+  }
+  // The front cap, facing the nose.
+  {
+    const cen = fr.p(sgn * (wOut + (u0 + u1) * 0.5 - 0.008), (y0 + y1) * 0.5, zF);
+    for (let j = 0; j < N; j++) {
+      H.tri(cen, pt((j + 1) % N, false), pt(j, false),
+        [[zF, my], [zF, y1], [zF, y0]]);
+    }
+  }
+  // The bezel: the rear rim turning in to the recessed glass.
+  for (let j = 0; j < N; j++) {
+    const jb = (j + 1) % N;
+    H.quad(pt(j, true), fr.n(0, 0, 1), pt(jb, true), fr.n(0, 0, 1),
+      gl(jb), fr.n(0, 0, 1), gl(j), fr.n(0, 0, 1),
+      [[zR, y0], [zR, y1], [zR, y1], [zR, y0]]);
+  }
+  // The glass itself, and it is the only part of this that is not trim.
+  setB(CAR.MIRROR, 0.5, my, sgn);
+  {
+    const cen = fr.p(sgn * (wOut + (u0 + u1) * 0.5), (y0 + y1) * 0.5, zR - 0.012);
+    /* uv on the glass is a normalised disc coordinate about its centre, so
+     * the shader can put the dust in the corners and the wiped middle where
+     * they belong without knowing how big the mirror is. */
+    const uvOf = (i: number): [number, number] =>
+      [(ring[i][0] - 0.5) * 2, (ring[i][1] - 0.5) * 2];
+    for (let j = 0; j < N; j++) {
+      const jb = (j + 1) % N;
+      H.tri(cen, gl(j), gl(jb), [[0, 0], uvOf(j), uvOf(jb)]);
+    }
+  }
+  setB(CAR.TRIM, 0.5, my, sgn);
+
+  /* The stalk. Smaller than the shell it carries and set low on it, which is
+   * where a stalk goes: the shell hangs off the top of it, not around it. */
+  box(H, fr, sgn * (wOut - 0.015), my - 0.030, mu - 0.028,
+    sgn * (wOut + 0.078), my + 0.016, mu + 0.028);
 }
 
 /** An axis-aligned box in the car's local frame, wound outward. */
@@ -1031,9 +1153,25 @@ function emitWheel(
        * which quads it squashed. It should say so. */
       const squashed = down(i, k) || down(i, k + 1) || down(i2, k) || down(i2, k + 1);
       W.attr('aWhl', spec.seed, squashed ? WHL.PATCH : part, spec.dirt, spec.age);
-      W.quad(at3(i, k), nrm(i, k), at3(i, k + 1), nrm(i, k + 1),
-        at3(i2, k + 1), nrm(i2, k + 1), at3(i2, k), nrm(i2, k),
-        [[i / sides, k], [i / sides, k + 1], [i2 / sides, k + 1], [i2 / sides, k]]);
+      /* Section index outward, angle index around: that order and no other.
+       *
+       * `quad` takes its four corners counter-clockwise *seen from outside*,
+       * and the loop that used to run (i,k) -> (i,k+1) -> (i2,k+1) -> (i2,k)
+       * traversed the section before the angle, which is the opposite hand:
+       * (b-a)x(c-a) came out pointing at the axle. Under FrontSide culling —
+       * which this material needs, for the shadow — every triangle of every
+       * tyre in the street was discarded, and the only wheel geometry that
+       * survived was the two rim fans below, which are wound explicitly.
+       *
+       * That is the see-through wheel arch, and it is worth naming the shape
+       * of the failure: nothing was missing, nothing errored, the vertex
+       * normals were right, and `tools/wheelcheck.mjs` puts it at 85.7 per
+       * cent of the wheel mesh facing inward. The four rounds of work above
+       * on the contact patch, the tan wedge and the sidewall crescent were
+       * all spent on surfaces that were never drawn. */
+      W.quad(at3(i, k), nrm(i, k), at3(i2, k), nrm(i2, k),
+        at3(i2, k + 1), nrm(i2, k + 1), at3(i, k + 1), nrm(i, k + 1),
+        [[i / sides, k], [i2 / sides, k], [i2 / sides, k + 1], [i / sides, k + 1]]);
     }
   }
 
