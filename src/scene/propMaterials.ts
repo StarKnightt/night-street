@@ -40,7 +40,7 @@
 import * as THREE from 'three';
 
 import { NOISE, CANYON } from '@/world/glsl';
-import { FACADE_VARYINGS, FACADE_VERTEX, skyLift } from './buildingMaterials';
+import { FACADE_VARYINGS, FACADE_VERTEX } from './buildingMaterials';
 import { signGLSL, signUniforms } from './signs';
 
 /* The cross-canyon bounce, which the kit was missing and everything around it
@@ -81,6 +81,34 @@ import { signGLSL, signUniforms } from './signs';
  * Copied rather than imported. It is `streetEnd`'s bounce term, verbatim in
  * everything but the gain, and `scene/streetMaterials.ts` is locked.
  */
+/* canyonSky, at less than full strength, because a bollard is not a wall.
+ *
+ * `skyLift` applies the canyon tint at full weight, which is right for what it
+ * was written for: a facade panel sees the slot of sky overhead, the frontage
+ * eleven metres opposite, and nothing else, so B/R 4.55 is the correct residual
+ * for it. A free-standing object 300 mm across standing in the middle of a
+ * six-metre footway is in a different position. Most of its lower hemisphere is
+ * the paving and the carriageway it is standing on — surfaces which at this
+ * hour are either in direct sun or are being lit by the same warm bounce the
+ * term below adds — and the canyon model has no representation of them at all.
+ *
+ * Measured, after the bounce went in and before this did: shaded props still
+ * came back at blue-to-red 1.41 against shaded street at 0.54, essentially
+ * unmoved from the 1.35 that started this. The bounce is scaled by albedo and
+ * these are dark objects, so on its own it cannot answer a tint applied to the
+ * whole indirect term. Pulling the tint back toward the untinted probe is the
+ * lever that can, it is local to this material, and it does not touch the
+ * lighting rig or canyonSky itself — both of which belong to someone else.
+ */
+const PROP_SKY = (gain: number, flat: number) => /* glsl */ `
+#include <lights_fragment_end>
+{
+  vec3 raw = reflectedLight.indirectDiffuse;
+  reflectedLight.indirectDiffuse =
+    mix(canyonSky(raw, vWN, vWPos.y), raw, ${flat.toFixed(2)}) * ${gain.toFixed(2)};
+}
+`;
+
 const STREET_BOUNCE = (bounce: number) => /* glsl */ `
 {
   float across = max(-vWN.x, 0.0) * 0.55 + max(vWN.x, 0.0) * 0.30 + max(vWN.y, 0.0) * 0.35;
@@ -330,8 +358,8 @@ export function makePropMaterial(): THREE.MeshStandardMaterial {
         `${NOISE}\n${FACADE_VARYINGS}\nvarying vec4 vProp;\n${CANYON}\nvoid main() {`,
       )
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n${PROP_BODY}`)
-      .replace('#include <lights_fragment_end>', `${skyLift(2.6)}
-${STREET_BOUNCE(1.0)}
+      .replace('#include <lights_fragment_end>', `${PROP_SKY(2.6, 0.45)}
+${STREET_BOUNCE(2.2)}
 /* The same treatment the building metal gets, and for the same reason: street
  * ironwork is painted, rusted, galvanised and then dirtied, and whatever
  * mirror it left the works with is long gone. Its reflection of the sky
@@ -553,7 +581,12 @@ void main() {`,
        * deliberately turned across the street to be read down it, so `across`
        * is close to its maximum over the whole face and an unscaled bounce
        * would put more warm light on a blade than on the wall behind it. */
-      .replace('#include <lights_fragment_end>', `${skyLift(2.6)}\n${STREET_BOUNCE(0.75)}`);
+      /* Same two arguments as the kit, and a board has the stronger case for
+       * both: it is turned across the street to be read down it, so it faces
+       * the sunlit frontage opposite squarely, and it hangs out over the
+       * footway with paving under it rather than being part of a wall. */
+      .replace('#include <lights_fragment_end>',
+        `${PROP_SKY(2.6, 0.45)}\n${STREET_BOUNCE(1.8)}`);
   };
   m.customProgramCacheKey = () => 'street-signage';
   return m;
