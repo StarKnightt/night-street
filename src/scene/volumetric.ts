@@ -91,7 +91,7 @@ import {
   Blit, IGN_GLSL, RAY_GLSL, makeColourTarget, rayUniforms, setRayUniforms,
 } from './pipeline';
 import { gapLitGLSL, gapPlanes, hazePhaseGLSL, hazeSkyGLSL, sunwardAirlight } from './haze';
-import { LAMP_CROSS, LAMP_CUT, LAMP_PEAK, lampFixtures } from './lampFixtures';
+import { LAMP_CD_FULL, LAMP_CROSS, LAMP_CUT, LAMP_PEAK, lampFixtures } from './lampFixtures';
 
 /* The most lanterns the march will carry in one frame.
  *
@@ -829,7 +829,45 @@ export class Volumetric {
  *
  * Everything else about a lantern's contribution tracks the fixture: level,
  * chromaticity, run-up state, the batwing and the cut-off all come from
- * `lampFixtures()` and none of them are duplicated here. If the lamps are
- * re-levelled this number does not move.
+ * `lampFixtures()` and none of them are duplicated here.
+ *
+ * ── THE LAMPS WERE RE-LEVELLED, AND THIS NUMBER DOES MOVE ─────────────────
+ *
+ * This used to end "if the lamps are re-levelled this number does not move",
+ * on the reasoning that a multiplier on a physical term is scale-free. That is
+ * true of the ratio and false of everything anyone looks at.
+ *
+ * `LAMP_CD_FULL` went from 78 to 329 when its own derivation was re-anchored
+ * against a scene whose sun has moved. The cone term is linear in candela, so
+ * at a fixed 30 the airlight went up with it — and the airlight is *accumulated
+ * along the ray*, through as many overlapping cones as the ray crosses, where
+ * the pool on the ground is one lamp at a time. Captured: `shots/lampafter` at
+ * 329 with the gain still at 30 is a fog bank. Measured off the frames rather
+ * than off the capture report, which does not agree with its own PNGs here: at
+ * t=0.4 the mean of the frame goes up 29 counts out of 255 and the tenth
+ * percentile — the shadows, which is where an additive haze shows — from 0.156
+ * to 0.282; at t=0.8, from 0.092 to 0.221, a lift of 140 per cent. The far half
+ * of the street loses its shadow structure. The same build on `?novol`
+ * (`shots/novol329`) is clean and correctly lit, which is what identifies this
+ * term rather than the lamps as what broke it.
+ *
+ * So the exaggeration is re-derived instead of being left standing. The
+ * quantity that was calibrated and signed off is the *airlight a cone puts over
+ * the surface beneath it*, six to ten per cent, and the multiplier needed to
+ * reach it is inversely proportional to how strong the source already is. At
+ * 329 cd it is 7.1, not 30. `shots/lampfinal` is that build: against
+ * `shots/lampbefore` the mean moves 3.4 counts at t=0.4 and 5.3 at t=0.8 and
+ * the tenth percentile 0.156 to 0.171 — the same air, over four times the pool,
+ * which is the frame that was signed off with brighter ground under it.
+ *
+ * Which also makes the pass less of a lie than it was. 30x single scattering was
+ * the price of a source too weak to be seen in its own air; a stronger source
+ * needs less of it, and this is 7x. The bound in the paragraph above — the cone
+ * must never be brighter than the pool causing it — is comfortably kept: it is
+ * now about a twentieth of the surface radiance under it rather than a fifth.
+ *
+ * `LAMP_CD_FULL` is imported rather than written down, so the next re-levelling
+ * carries the air with it instead of leaving this behind.
  */
-const CONE_GAIN = 30.0;
+const CONE_CAL_CD = 78;         // the candela the 30x was calibrated against
+const CONE_GAIN = 30.0 * CONE_CAL_CD / LAMP_CD_FULL;

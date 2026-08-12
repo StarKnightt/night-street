@@ -614,15 +614,59 @@ Nothing else in the frame moves by more than the one-count floor.
   202 and 190, which is to say a window across the road is being painted as
   bright as a sunlit stucco wall, and the glazing is nominally a sixth of the
   wall it mirrors. Both want a derivation rather than a correction.
-- **`LAMP_CD_FULL = 78` rests on a stale anchor**, and this is a different bug
+- **`LAMP_CD_FULL = 78` rested on a stale anchor**, and this is a different bug
   class worth naming because the sweep found it. Its derivation is scale-free by
   design — the lantern against the skylight it has to beat — and the skylight
-  comes from "shaded carriageway, radiance L = 0.038 (NOTES, measured)". That
-  was measured with the sun at 4.2 degrees. Since 0384f31 the sun is at 12 and
-  the shaded carriageway measures 0.125, so the skylight irradiance in that
-  derivation is 3.3x low and the ratio the lamps were set to hit, 1.5, is being
-  delivered at about 0.45. Raising the lamps threefold is not a change to make
-  on the strength of a sweep; it is a lighting decision.
+  came from "shaded carriageway, radiance L = 0.038 (NOTES, measured)", measured
+  with the sun at 4.2 degrees. Since 0384f31 the sun is at 12, so the divisor in
+  that ratio had moved and the 1.5 the lamps were set to hit was being delivered
+  at about a third of it. **Re-anchored, to 329 cd, on the user's decision.**
+  Written up in full in `scene/lampFixtures.ts`; the three things worth carrying
+  out of it are below.
+
+### Re-levelling the lanterns, and the two things it taught
+
+**A ratio between two lights on one surface needs no albedo, and measuring one
+is how this got hard.** The old derivation went radiance → irradiance → ratio,
+which needs the surface's diffuse transfer, and this scene disagrees with itself
+about that transfer by a factor of 2.2: the sun on against the sun off says
+`rho/PI` is 0.038 to 0.042, differencing two candela settings on the same 107
+probes says 0.0191. Unresolved, and written down in `lampFixtures.ts` rather
+than papered over. It does not have to be resolved, because
+
+    ratio = E_lamp / E_sky = (k E_lamp) / (k E_sky) = dL_lamp / L_ambient
+
+and both of those are contributions to the radiance of one pixel. The lamp's own
+share is separable because it is linear in `LAMP_CD_FULL`, so two builds at 78
+and 329 cd, same frozen world, give it directly:
+`tools/lampanchor.mjs --against <run.json>`. **Prefer differencing the thing
+under test over calibrating an instrument to measure it absolutely.**
+
+**The answer to "what is the lantern worth against the skylight" is a bracket,
+not a number,** and the old text hid that by naming one surface. Measured at 78
+cd against the same shaded ambient of 0.1077: 0.53 on the footway under the
+head, 0.35 on the footway opposite, 0.20 on the crown of the road. Solving for
+1.5 gives 222, 331 and 575 cd. The level is set on the mean over the three
+lanes, which is 324, and 329 ships. Anyone re-levelling should say which of the
+three they are levelling for.
+
+**A downstream exaggeration calibrated against the old level does not survive
+the new one.** `volumetric.ts`'s cone gain was 30x single scattering, chosen so
+that a weak lamp could be seen in its own air. At 329 cd with the gain still at
+30 the frame is a fog bank — the tenth percentile at t=0.8 goes from 0.092 to
+0.221 and the far half of the street loses its shadow structure — while the same
+build on `?novol` is clean, which is what identifies the term. The gain is now
+`30 * 78 / LAMP_CD_FULL`, imported rather than transcribed, so the air holds
+still while the pools brighten. **A multiplier that was tuned against a level is
+a function of that level, however scale-free it looks.**
+
+Two reporting tools were quoting the stale skylight and are corrected with it:
+`tools/poolreport.mjs`, whose "counts above the shaded carriageway" rested on L
+= 0.038 and the sun-derived transfer, and which now says the darkest metre
+between pools is +20 counts rather than +5. Its absolute irradiances come from
+`sunlamp.mjs`, which meters through the HDR path and reads roughly twice the
+surface value because it is looking through two metres of lit air; those are an
+upper bound and its uniformity figures are not affected.
 
 ### The instrument that had to be fixed first
 
@@ -730,3 +774,59 @@ what it is looking at, not just what it measured.** Since `__vol.probe` started
 returning the depth the march reached alongside every value, a region that is
 not what its name says announces itself immediately. A statistic with no
 provenance attached is a statistic about an unknown place.
+
+## An absent term reads as exactly 1.000, and that is the tell
+
+Four of one day's failures were code that looked correct and did nothing. The
+shape they share is worth naming, because it is the cheapest bug in the codebase
+to find once you are looking for it and one of the most expensive to find by
+reading.
+
+**Run the control in the same session and divide.** Render the frame with the
+term, render it without, and take the ratio. A term that is working returns
+something like 1.4 or 0.6, and a term that is not there returns **1.000, to as
+many decimal places as the buffer holds**. The exactness is the signal. A small
+ratio means "this does less than I thought" and is an argument about magnitude; a
+ratio of exactly one means the code never executed, and there is nothing to
+argue about.
+
+That is what found the contact-shadow decal. Its geometry was built, its
+attributes were right, its material compiled, and the road under the cars was
+bit-identical with it enabled and disabled — 1.000 across every channel of every
+sample. The quads were wound the wrong way and were being back-face culled. No
+amount of reading the shader would have found it, because the shader was correct.
+
+Three refinements, each of which cost something to learn:
+
+- **Toggle it at runtime, not by editing a constant and rebuilding.** Two
+  separate runs differ in more than the term: this project dithers, so at a
+  level of 0.02 the noise is ten per cent of the value, and a ratio taken across
+  two runs carries it. Publish a uniform and a handle to it — `m.userData.u =
+  {value: 1}` assigned into `shader.uniforms` inside `onBeforeCompile`, since
+  three keeps no route back from a program to its uniforms — and the control is
+  the same program, the same camera and the same dither.
+- **Never take a ratio from an averaged sample.** A 3x3 mean is right for a
+  level and wrong for a ratio. Averaging nine pixels across a panel edge made a
+  scalar multiply of `outgoingLight` report 1.52x in red and 1.77x in blue,
+  which no single fragment can do, and sent an hour into looking for a hue shift
+  that did not exist: the box straddled two surfaces that take different weights
+  of the term and are different colours, so each channel averaged them in a
+  different proportion. One pixel, with its provenance printed.
+- **Where you apply a scale decides what it scales.** "Multiply the whole thing
+  by k" is not one edit. On `iblIrradiance` it multiplies the sky and not the
+  probe; on all four members of `reflectedLight` it still misses
+  `clearcoatSpecular`, which three adds to `outgoingLight` *after*
+  `lights_fragment_end`; only at `opaque_fragment` is there a single number that
+  is the whole of what the pixel will be. Each of the three is a hue shift
+  dressed as a level change, and the size of the error was 1.35x versus 1.52x
+  versus the intended 2.00x in red.
+
+The provenance rule above extends usefully here too. A car's rear at this scale
+puts a tailgate, a lamp cluster, a chrome surround, a number plate and a
+backlight within 300 mm of each other, and which one a pixel is on is the whole
+question. Reading the part code off `geometry.attributes.aCar` at the face the
+ray hit — rather than inferring it from the sample's height — turned a
+contradictory set of numbers into an obvious one in a single run. Note that the
+car shader *reassigns* `part` locally for the end caps, so the attribute says
+`capR` where the shader is drawing a lamp; a gate written against the attribute
+and a gate written against the local value are different gates.

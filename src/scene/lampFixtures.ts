@@ -84,6 +84,18 @@ export const LAMP_OUTREACH = 1.15;
  */
 export const WARMTH: readonly number[] = [0.90, 0.42, 0.28, 1.00, 0.62, 0.85, 0.35];
 
+/* What the lantern is supposed to be worth against the skylight it stands in:
+ * the peak of its pool on the ground, averaged over the three lanes the meter
+ * samples, divided by the ambient radiance of the same shaded surface.
+ *
+ * It lives here as a constant rather than inside the paragraph below because
+ * `tools/lampanchor.mjs` reads it, and it used to read it out of the prose —
+ * which meant re-wording the derivation broke the instrument that checks it.
+ * Nothing in the render uses this; it is the target `LAMP_CD_FULL` is solved
+ * for, and the two only stay consistent because the tool re-derives one from
+ * the other on demand. */
+export const LAMP_RATIO_TARGET = 1.5;
+
 /* Nadir intensity at full output, in this scene's units.
  *
  * THIS VALUE KNOWINGLY EXCEEDS TECHNIQUE §3.3's RECOMMENDATION, and the reason
@@ -102,33 +114,131 @@ export const WARMTH: readonly number[] = [0.90, 0.42, 0.28, 1.00, 0.62, 0.85, 0.
  *
  * So the level is set from the one ratio that is scale-free and therefore
  * immune to the unit confusion running through the rest of this derivation:
- * the lantern against the skylight it has to beat.
+ * the lantern against the skylight it has to beat. In life,
  *
- *   shaded carriageway, radiance          L = 0.038   (NOTES, measured)
- *   its albedo                            0.106
- *   so the skylight irradiance on it      E = pi L / rho = 1.13
  *   a real 250 W lantern under itself     60-100 lux
  *   real dusk skylight in a canyon        30-80 lux
  *   so the real ratio is                  about 1 to 2
  *
- * At 19 cd this scene's ratio was 0.36 — the lantern was a third of the
- * skylight where life puts it at one and a half times. Setting the ratio to
- * 1.5 gives a peak of 1.7 and needs 78 cd. That is the number below, and it is
- * a correction toward the physical answer rather than away from it.
+ * and this scene is asked to sit at `LAMP_RATIO_TARGET`.
  *
- * Where that leaves the guard rail §3.3 sets. The pool is now 20% of the sun's
- * horizontal 8.42 rather than 6%, which is the third row of that section's own
- * table and still short of the 120 cd at which it warns the lamp starts
- * competing on the SUNLIT footway. On the sunlit side it remains subordinate,
- * and inside block.ts's sun bands it is worth about one count and invisible,
- * which is correct. On the shaded footway — no direct sun at all — it is now
- * the dominant local source, which is the asymmetry §3.3 says you get for free
- * and which at 19 cd this scene was not actually collecting.
+ * ── How the ratio is measured, and why no albedo appears in it ────────────
  *
- * Flux, for the record: 78 x 8.56 sr = 668 in scene units, a 250 W HPS lantern
- * on a 6.8 m column. Unremarkable for this street.
+ * Both halves of it are contributions to the radiance of the same pixel, so the
+ * surface's diffuse transfer is common to both and cancels:
+ *
+ *   ratio = E_lamp / E_sky = (k E_lamp) / (k E_sky) = dL_lamp / L_ambient
+ *
+ * and the lamp's own share of a pixel is separable because it is linear in this
+ * constant. Two builds, 78 cd and 329, same camera, same frozen world, on
+ * `?nohdr&nograde` where neither the volumetric nor the bloom compiles:
+ *
+ *   dL_lamp(78) = (L_329 - L_78) / (329/78 - 1)      L_ambient = L_78 - dL_lamp
+ *
+ * That is two radiances and a known multiplier. No albedo, no pi, no irradiance
+ * meter, and nothing that depends on where the mirror's readings sit.
+ *
+ * Measured, over the shaded crown, 107 probes: as drawn 0.1208, of which the
+ * lamps are 0.0131, so the skylight is L_ambient = 0.1077. The full-output
+ * lantern at z -45 puts, at 78 cd, a peak of
+ *
+ *   footway under its own head       dL 0.0569    ratio 0.53    1.5 at 222 cd
+ *   footway across the road          dL 0.0381    ratio 0.35    1.5 at 331 cd
+ *   carriageway crown                dL 0.0219    ratio 0.20    1.5 at 575 cd
+ *
+ * THE ANSWER IS A BRACKET, NOT A NUMBER, and this is the only judgement in the
+ * derivation: 1.5 means one thing under the head and another 3.5 m to the side,
+ * because a lantern is 4 m up and the crown of the road is not under it. The
+ * three lanes the meter samples are the three the brief names — "a visible cone
+ * of light onto the sidewalk and road below it" — so the level is set where the
+ * peak averaged over them is 1.5. Solved that way the measurement asks for 324
+ * cd; this is 329, which is the answer the earlier reduction gave through the
+ * transfer and is 1.5 per cent off the differenced one, so it stands rather than
+ * being nudged for the sake of matching. It delivers 2.23 under the head, 1.49
+ * across the road and 0.86 on the crown, mean 1.53.
+ *
+ * Read as the old text read it — peak on the carriageway — the same measurement
+ * asks for 575. Read as the 60-100 lux line reads it, directly beneath the
+ * lantern, it asks for 222. Both are in the table above rather than in a
+ * footnote, because the next person to touch this should move it knowing which
+ * of the three they are levelling for.
+ *
+ * ── Both inputs had moved, and one instrument was lying ───────────────────
+ *
+ * This stood at 78 cd, from L = 0.038 and a peak of 0.411 at 19 cd, a ratio of
+ * 0.36. Neither number survives.
+ *
+ * THE SKYLIGHT. L = 0.038 was measured with the sun at 4.2 degrees. Since
+ * 0384f31 it is at 12, and the same surface measures 0.1077 with the lamps' own
+ * contribution taken back off — 2.8x the figure the divisor rested on.
+ *
+ * THE LANTERN. The 0.411 came from `tools/sunlamp.mjs`, which meters through the
+ * shipped pipeline and inverts with `agx.mjs` as though nothing else were in the
+ * path. Since ed265c8 that is not true: `grade.tsx` adds the raymarched
+ * volumetric and the veiling glare to the frame *before* the tone map, and the
+ * meter flies to 2 m above the ground and looks down — which puts two metres of
+ * lamp-lit air between it and the surface it is reading. It reports 1.77 on the
+ * crown where the mirror reads 0.898, and 4.56 under a head against 1.33, the
+ * excess tracking the brightness of the cone it is looking through. Absolute
+ * pool irradiances from that tool are not usable while the HDR path is on; its
+ * uniformity and overlap figures, which are ratios down a lane, still are.
+ *
+ * `tools/lampanchor.mjs` is the instrument. It reads `artificial()` straight off
+ * the mirror on `?nohdr&nograde`, proves its exposure is live by halving it, and
+ * proves per sample that it is looking at a mirrored fragment by doubling the
+ * mirror gain and requiring the reading to double. `--against <run.json>` is the
+ * differenced reduction above.
+ *
+ * ── An unresolved factor of two, which the ratio is immune to ─────────────
+ *
+ * The transfer that cancels above can be measured two ways, and they disagree.
+ * Differencing the two lamp builds gives dL/dE = 0.0191 over 107 probes, an
+ * albedo of 0.060. Differencing the sun on against the sun off, against the
+ * irradiance read off the light itself, gives 0.038 to 0.042 — the 0.106 to
+ * 0.119 asphalt this file used to quote. A factor of 2.2 apart on the same
+ * pixels.
+ *
+ * Both explanations are live and neither is proven. The sun's difference carries
+ * its specular lobe and its probes are eleven samples inside a sun band, where
+ * the crown of the road is also where the centre-line markings are; or the
+ * artificial add is genuinely delivering half of the irradiance the mirror
+ * reports, which would be a shader bug worth having. It is written down here
+ * rather than resolved because the quantity this file sets does not depend on
+ * it: the ratio is measured between two terms in one pixel, and 329 cd delivers
+ * the ratio whichever of the two transfers is the real one. Anything that wants
+ * an absolute lux out of this scene has to settle it first.
+ *
+ * WHAT 329 IS NOT. It is not a photometrically real lantern: 329 cd is 2816 in
+ * flux, four times a 250 W HPS. The honest reading is that the "1 to 2" line
+ * compares a dusk skylight against a scene whose shaded ground is lit by a
+ * bright golden-hour sky, and TECHNIQUE §3.3 and §3.9 are right that a real
+ * lantern at this hour reads as a source and not as a pool. The ratio is the
+ * brief's, not physics': the user asked for pools that overlap and a street that
+ * "feels lit, not dark". What this number does is deliver the ratio the
+ * derivation always claimed, instead of a third of it.
+ *
+ * The bowl does not move with it. `lampBowlTarget` anchors the lantern's own
+ * radiance to a display value, 120 to 178 counts, so the fitting photographs
+ * exactly as it did at 78 cd and the extra output goes to the ground and into
+ * the cone. That is a real inconsistency — a 1 kW lantern with a 250 W bowl —
+ * and it is deliberate: the bowl's level is a signed-off colour decision made
+ * against AgX's shoulder, and coupling it to this would undo it. It is also why
+ * nothing clips: measured over three 1600x900 frames before and after, zero
+ * saturated pixels either side, and the brightest pixel in the frame is the sky
+ * in both.
+ *
+ * Where that leaves the guard rail §3.3 sets. It is past it, and knowingly: the
+ * section warns that above about 120 cd the lamp starts competing on the SUNLIT
+ * footway. Compared the same k-free way — the sun's own share of a sunlit probe
+ * is 0.42 to 0.45, median of 33 in each build — the brightest pool pixel goes
+ * from 13 per cent of the sun's contribution to 57. The lamp at z -45 stands inside `block.ts`'s first
+ * sun band on purpose and it is the one at full output, so that comparison is a
+ * real place in the frame and not a hypothetical. On the shaded footway, which
+ * has no direct sun on it at all, the lantern is now the dominant local source.
+ * That asymmetry is the point of the whole exercise; a further doubling would
+ * not be, which is one reason the bracket's upper end is not taken.
  */
-export const LAMP_CD_FULL = 78;
+export const LAMP_CD_FULL = 329;
 
 /* The distribution, as a cross-street squeeze factor. See ARTIFICIAL in
  * lights.ts, which reads a negative distribution exponent as "this is a street

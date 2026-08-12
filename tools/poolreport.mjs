@@ -24,10 +24,26 @@ import { invert, display } from './agx.mjs';
 
 const files = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 
-/* The shaded carriageway and its diffuse transfer, both from NOTES.md's
- * "display response" section, so an irradiance can be quoted as the thing
- * anyone actually judges: how many code values it is worth. */
-const SHADE_L = 0.038, XFER = 0.0322;
+/* The shaded carriageway and its diffuse transfer, so an irradiance can be
+ * quoted as the thing anyone actually judges: how many code values it is worth.
+ *
+ * Both were NOTES.md's "display response" figures, 0.038 and 0.0322, and both
+ * were stale in the direction that flatters this report. The radiance was
+ * measured with the sun at 4.2 degrees and the sun has been at 12 since
+ * 0384f31; `tools/lampanchor.mjs --against` re-measures the same surface at
+ * 0.1077 by differencing two candela settings, over 107 probes, with the lamps'
+ * own contribution separated out rather than assumed away. The same
+ * differencing gives the transfer as 0.0191 against the 0.0322 the sun implies —
+ * a factor of 2.2 that is written up in `scene/lampFixtures.ts` and is not
+ * resolved. The conservative pair is used here, because the honest failure mode
+ * for a report that claims pools are visible is to overstate them.
+ *
+ * The other caveat is the meter, not this file: `sunlamp.mjs` reads through the
+ * shipped HDR path, so its absolute E is inflated by the volumetric it is
+ * looking through — roughly twofold on the crown. Uniformity and the shape along
+ * a lane are ratios and survive that; the counts below do not, and are an upper
+ * bound. */
+const SHADE_L = 0.1077, XFER = 0.0191;
 const codeOf = (L) => {
   // Bisect the shipped forward transform rather than interpolating a table.
   let lo = 0, hi = 255;
