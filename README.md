@@ -1,213 +1,370 @@
 # night-street
 
-A first-person walkable city street at night, rendered in Next.js + React Three
-Fiber. Every texture, mesh and light is generated procedurally at runtime —
-there are no image, model, HDRI or audio files anywhere in this repository, and
-none are fetched.
+A first-person walkable city street at golden hour, in a browser.
 
-This is **Phase 0 + System 1**: the scaffold, the capture harness, and the road
-and pavement. Buildings, street furniture, vehicles, the real lighting rig,
-atmosphere, sound and post-processing are Systems 2–8 and are not here yet.
+**[Walk it here](https://night-street.vercel.app)** — desktop, keyboard and
+mouse. Give it about thirty seconds on first load; the reason why is the whole
+point of the project.
 
-## Running it
+Every texture, every mesh, every light and every sound in this scene is
+generated in code. There are no image files in this repository, no models, no
+HDRIs, no audio files, and nothing is fetched at runtime. The asphalt is a GLSL
+surface description baked into a PBR texture set in your GPU while you wait. The
+buildings are emitted as indexed triangle soup from a massing solver. The sky is
+a closed-form analytic dome that serves as both the background and the image
+based lighting. The traffic, the tyre noise on the wet gutter and the
+reverberation of the canyon are a Web Audio graph rendered offline. Nothing was
+authored in Blender, Substance or Photoshop, because nothing was authored
+anywhere except in a text editor.
 
-One dev server, port 3000, and nothing starts a second one:
+## Why that constraint is interesting
+
+Procedural generation is normally sold on file size, and that is the least
+interesting thing about it. What the zero-asset rule actually does is make the
+project *answerable*. A downloaded asphalt texture is a fact you cannot argue
+with: it looks how it looks, and if the road reads wrong you can only replace it.
+A procedural one has parameters, and every parameter has to be justified against
+something — a real measurement, a photometric target, a number inverted through
+the tone curve. You cannot hide a decision inside a file.
+
+The consequence is that this repository is much less a pile of art than a pile
+of arguments, and most of them are written down where the code makes them. The
+comment blocks are not documentation of what the code does. They are records of
+what was tried, what it measured, and why it was reverted.
+
+## Running it locally
 
 ```bash
+npm install
 npm run dev
 ```
 
 Then open http://localhost:3000 and click the canvas to capture the pointer.
-`WASD` walks at 1.4 m/s, `Shift` breaks into a jog at 3.1 m/s, the mouse looks,
-`Esc` releases the pointer. There is no jump — the pace is deliberate, because
-the scene is meant to be looked at, and the jog exists mainly as a test
-instrument: stride length, cadence and head-bob amplitude all scale together
-with speed, so a gait term derived wrongly from the others is obvious at 3.1
-m/s and nearly invisible at 1.4.
 
-## Capturing
+| control | does |
+| --- | --- |
+| `W` `A` `S` `D` | walk, at 1.4 m/s |
+| mouse | look, once the pointer is locked by a click |
+| `Shift` | sprint, at 3.1 m/s |
+| `Esc` | release the pointer |
 
-With the dev server already running, in a second terminal:
+There is no jump. The pace is deliberate, because the scene is meant to be
+looked at — and the sprint exists mainly as a test instrument. Stride length,
+cadence and head-bob amplitude all scale together with speed, so a gait term
+derived wrongly from the others is obvious at 3.1 m/s and nearly invisible at
+1.4.
+
+For a production build, `npm run build` then `npm start`.
+
+## The thirty seconds
+
+The hosted build spends between thirty and forty seconds on a black screen
+before the first frame, on a desktop GPU. This is not a loading bar being coy
+about a download. The network is finished in under a second — the entire page is
+about half a megabyte of JavaScript — and everything after that is the street
+being manufactured: every surface description compiled, every texture set baked
+into a render target, every mesh emitted and merged, every material program
+linked.
+
+Measured on the deployed build against an RTX 4060, the first lit frame arrives
+at 32.4 s, and the main thread is blocked for 47.8 s in total across three
+tasks of roughly 5, 20 and 23 seconds. The work is dominated by the GPU bakes
+rather than by JavaScript: throttling the CPU by four times moved the first lit
+frame by less than a second.
+
+This is the honest cost of the constraint, and it is the one place where the
+project's central claim charges the visitor directly. `src/app/Gate.tsx` covers
+the gap with an explanation rather than a black page, and its progress bar is a
+CSS transform animation specifically because the main thread is blocked for the
+entire time the bar is on screen, so anything driven by a timer or an animation
+frame would sit frozen for exactly the interval it exists to cover.
+
+## What is measured
+
+Numbers in this README are measurements rather than estimates, and the tool that
+produced each one is named so it can be re-run.
+
+**Performance.** 66 fps at 1080p on an RTX 4060, with 866,000 triangles and 45
+draw calls. The draw call count is the number that matters: the street is four
+merged building meshes, a merged street-level pass, and one draw call for all
+2,200 dust motes.
+
+**Collision.** Worst-case penetration of 0.09 mm, across every solid on the
+street, approached from sixteen angles each. `scene/collide.ts` is the table the
+page itself collides with, and `tools/route.mjs` traces candidate walks against
+that same table rather than against a copy of it.
+
+**Gait.** Zero measurable foot slide at either pace: 0.700 m of stride measured
+against 0.700 m modelled, over 58 footfalls. `tools/gait.mjs` runs the gait model
+on the CPU with no browser and no GPU; `tools/motion.mjs` checks the delivered
+capture against it.
+
+**Dust.** The motes are real objects with parallax rather than a noise overlay,
+which is a claim worth testing because the cheap version looks similar in a
+still. Frame-to-frame persistence of a mote is 5.05 px, against 76.5 px for a
+randomised control — a field that was being regenerated each frame rather than
+moved through would score like the control.
+
+**Audio.** Synthesised from oscillators, filtered noise and a generated impulse
+response, and recorded by a second real-time pass over the same route rather than
+during the capture, because the capture advances the clock by hand and Web Audio
+cannot be. Both passes integrate against real `dt`, so they agree:
+`tools/audiotake.mjs` checks its own footfalls against the picture's and refuses
+the take if they drift past 60 ms.
+
+## What is not good enough yet
+
+An honest list, because the alternative is that you find these yourself and
+wonder what else is being oversold.
+
+**The road and paving system is the weakest part of the build.** The paving has
+no per-slab variance — every slab is the same slab — and no chamfered edges,
+which is the detail that makes real paving read as a set of separate stones
+rather than as a textured plane. This is the first thing a second pass should
+take.
+
+**The brick lacks albedo variance.** The relief, the mortar and the weathering
+are there; the colour differences between individual bricks are not. Brick in
+reality varies more between neighbours than almost any other common surface.
+
+**The road's hue and saturation are still off.** The carriageway sits at about
+three degrees red with a saturation of 0.23 where real asphalt measures 0.05 to
+0.12. The colour grade takes the sunlit carriageway from 0.263 to 0.227 and that
+is as far as a grade can go without desaturating the sunlight itself, which is
+the look. The residual is in the albedo. One dead end is recorded so it is not
+retried: tinting the inter-chip cavities toward zenith blue made the saturation
+*worse*, because the chip scatter is sparse and leaves too few cavities to act
+on.
+
+**The road centreline is over-worn.** It reads as a crack rather than as paint.
+
+**There are no touch controls.** Movement is read off keyboard events and looking
+requires a locked pointer, so the scene is not drivable on a phone at all. The
+hosted build detects this and says so instead of handing over a street you cannot
+walk down.
+
+Further deferred items, each owned by a pass that has not run, are in
+[`NOTES.md`](NOTES.md).
+
+## The class of bug that cost this project most
+
+This is the part worth reading if you read nothing else, and it is written up at
+greater length at the top of [`NOTES.md`](NOTES.md).
+
+Three separate failures here have the same shape. Each time, a system was
+verified by measuring the things it *makes*, and each time the thing that was
+broken was the way those things were *wired together* — which the measurement
+could not see, and which was reporting itself loudly somewhere nobody was
+reading.
+
+**The entire audio system was silent on every machine, in every capture, from
+the day it was written.** `tools/audio.mjs` checks the generators, and every one
+of them was producing correct samples: the tyre noise, the pink bed, the footstep
+transients, the impulse response. What it could not check was `build()`.
+`ConvolverNode` is the one node in a Web Audio graph that refuses to resample —
+it throws outright if the buffer's rate differs from the context's — and the
+impulse response was rendered at 24 kHz into a context that comes up at 48. The
+throw happened before the bed, the spot sources and the footsteps were
+constructed, so nothing downstream of that line ever existed. The fix is one
+expression, `ctx.sampleRate`. The error was in the page console the whole time,
+and the capture harness writes it into `reel.json` under `errors`, where it sat
+through several reviews.
+
+**A field of dust motes sat 32 m behind the camera in every capture ever
+reviewed**, while the interactive walk looked correct, because the field was
+positioned from a uniform written in `useFrame` and a capture teleports and
+renders inside one synchronous evaluation. Same shape: the particle generator was
+right, the integration was not, and the instrument was pointed at the generator.
+
+**`tools/obstacles.mjs` cleared routes that were not clear**, because it is a
+hand-copy of `world/cars.ts` that drifted — one car short, and the dumpster's
+half-extents transposed. The routine was correct; the data it ran against was not
+the data the page uses.
+
+The defence is cheap and it is now a rule here: **make the check load the real
+assembly.** That is why `tools/route.mjs` imports `scene/collide.ts` instead of a
+copy, why `tools/aim.mjs` derives sign positions from `world/street3.ts` rather
+than from a table typed out of it, and why `tools/audiotake.mjs` records the
+master bus through a `MediaStreamDestination` instead of summing the generators
+itself. The second rule is to read what the assembly says about itself: a
+non-empty `errors` array is a finding, not noise.
+
+A closely related trap has its own write-up in
+[`docs/TECHNIQUE.md`](docs/TECHNIQUE.md): **you cannot judge a linear quantity by
+looking at a display-space image.** Five separate expensive bugs reduce to that
+one sentence, including a haze pass that mixed a linear radiance into a
+display-encoded buffer and produced hard-edged flat orange rectangles that three
+review rounds read as a UV bug. The remedy is to author every radiance by
+inverting a target display value through the measured tone curve, which
+`tools/agx.mjs` does by porting AgX and the sRGB encode out of `node_modules` and
+inverting them numerically. It agrees with nine sky pixels, where the scene
+radiance is known in closed form, to a mean absolute error of 0.0 counts.
+
+## How it is built
+
+### The rendering
+
+Next.js App Router with React Three Fiber, one client-side route, no server
+component doing anything interesting. Three.js renders forward, with AgX tone
+mapping at an exposure of 0.296 rather than ACES: the frame is lit by a
+narrow-band source near the horizon, and ACES turns a saturated orange highlight
+yellow and then white as it rolls off, which is the wrong answer for sodium. AgX
+holds the hue into the clip.
+
+Shadows use `BasicShadowMap`, which is not a downgrade. It is the only type whose
+uniform is a plain `sampler2D` rather than a hardware comparison sampler, and
+reading the stored depth is what makes a blocker search possible. All of the
+filtering is done in `scene/softShadow.ts`, which runs a 12-tap blocker search
+and a 20-tap Vogel filter with a receiver-plane depth gradient solve against a
+4096 square map — strictly softer and better distributed than the PCF kernel it
+replaces. The gradient solve exists because this scene has to shade surfaces
+nearly parallel to their own key light.
+
+### The sun is the level designer
+
+The sun sits at an elevation of 4.2 degrees, which means a four-metre frontage
+throws a fifty-four-metre shadow. There are consequently only two stretches of
+this street lit at street level, and `world/block.ts` decides how tall every
+building is in order to produce them. The sunward row is low on purpose.
+
+Everything else bends around those two bands. They are where the dust ignites,
+they are what the delivered camera route was chosen to end in, and
+`tools/airtime.mjs` exists to count motes per frame along a candidate route so
+that choice could be made from numbers rather than from taste.
+
+### Lighting budget
+
+Four real `Light` objects or fewer, and exactly one of them casts a shadow. This
+is not asceticism. A previous version had fourteen unshadowed spotlights with a
+projected cookie, and disabling all of them changed the shaded frontage by 0.0
+per cent and the carriageway by 0.10 per cent. They were removed anyway, and the
+reason governs the whole design: fourteen lights and a cookie sit in every
+material program in the street, and the texture-unit budget they forced is why
+three paving materials were running without their baked occlusion maps.
+
+The cost of a light in a forward renderer at this hour is not its radiance
+contribution. It is a uniform count in every one of your draw calls, plus a
+texture unit if it carries a cookie, plus a shadow map if it casts. Small sources
+are therefore analytic instead: evaluated in the receiving material from a
+uniform array, at no draw call, no light slot and no texture unit.
+
+### Measuring instead of looking
+
+The tooling is a substantial fraction of this repository, and it exists because
+almost nothing about a frame this dark can be settled by looking at it. The same
+PNG is moody on one panel and crushed on the next.
 
 ```bash
-npm run shoot base
+npm run shoot base          # six fixed stops, PNGs plus a report.json
+npm run reel v3             # a scripted walk, frames plus mp4 plus reel.json
+node tools/reel.mjs --dry   # walk the route on the CPU, no GPU, no lock
+node tools/motion.mjs v3    # what moved, and what moved wrongly
+node tools/gait.mjs         # the gait model alone, no browser
+node tools/route.mjs heroE  # trace a route against the real collider
+node tools/px.mjs --t 0.4   # mean sRGB of named screen regions
+node tools/agx.mjs 3.4 1.42 0.42   # one radiance to the 8-bit code it arrives at
+node tools/expose.mjs shots/heroI/night-street-1080p30.mp4
+node tools/diag.mjs         # scene graph, materials, camera, probe dump
 ```
 
-That launches exactly one headless Chromium, teleports the camera to a fixed set
-of stops along the street, and writes `shots/base/NN.png` at 1600x900 plus a
-`shots/base/report.json` containing the GL renderer string, per-stop draw calls,
-triangle count, luminance histogram, steady-state FPS and any console or page
-errors.
+Three details in there are worth pulling out.
 
-Flags, all optional:
-
-| flag      | default                     | meaning                                  |
-| --------- | --------------------------- | ---------------------------------------- |
-| `--t`     | `0.02,0.2,0.4,0.6,0.8,0.95` | stops along the street, 0..1             |
-| `--yaw`   | `0`                         | heading in radians, 0 looks down -Z      |
-| `--pitch` | `-0.22`                     | pitch in radians, negative looks down    |
-| `--fov`   | `52`                        | vertical field of view in degrees        |
-| `--w`     | `1600`                      | capture width                            |
-| `--h`     | `900`                       | capture height                           |
-| `--js`    | —                           | expression evaluated in-page before each shot |
-| `--cpu`   | —                           | force SwiftShader instead of the real GPU |
-
-## Capturing motion
-
-`shoot` stops and looks. `reel` walks:
-
-```bash
-npm run reel v3            # every shot, frames + mp4 + reel.json
-node tools/reel.mjs --dry  # walk the route on the CPU, no GPU, no lock
-node tools/motion.mjs v3   # what moved, and what moved wrongly
-node tools/gait.mjs        # the gait model alone, no browser
-```
-
-The reel drives the real input path — a `KeyW` keydown into the same window
-listener the keyboard uses, and steering through `walker.look()` at mouse
-sensitivity — and advances the whole r3f frame loop by hand at exactly 1/fps
-via `__scene.step()`, so a capture that takes twelve minutes produces the same
-motion as one that takes two. `setPaused` is not enough for this: it stops only
-the Rig's own update and leaves the dust, the shadow follower and the audio
+`reel.mjs` drives the real input path — a `KeyW` keydown into the same window
+listener the keyboard uses — and advances the whole frame loop by hand at exactly
+one over the frame rate, so a capture that takes twelve minutes produces the same
+motion as one that takes two. Pausing the rig is not enough for this: it stops
+only the rig's own update and leaves the dust, the shadow follower and the audio
 engine running on wall-clock time.
 
-Shots are fixed in the file for the same reason `shoot`'s six stops are. Three
-of them are diagnostics rather than footage: `static` parks the camera so that
-any frame-to-frame difference left is the scene animating rather than parallax,
-`creep` steps at 1/240 s so the camera moves 5.8 mm between frames and anything
-that still changes is aliasing rather than motion, and `car` and `lamp` aim
-deliberately at solid objects.
+`px.mjs` averages named rectangles rather than the whole frame, because
+whole-frame histograms are dominated by the sky and therefore cannot answer "is
+the asphalt reading darker than the concrete beside it".
 
-`reel.json` carries per-frame walker state, frame cost timed around a one-pixel
-`readPixels` rather than `glFinish`, and region means read off the framebuffer
-before any encoding. `motion.mjs` turns that into foot slide, bob-to-footfall
-registration, translation continuity, obstacle clearance and temporal stability.
+Frame cost is timed around a one-pixel `readPixels` rather than around
+`glFinish`. `glFinish` in a page does not wait for the GPU — Chromium runs WebGL
+over a command buffer into a separate process, and `finish` returns once the queue
+has been handed over. Timed the wrong way, a post-processing chain appears to cost
+forty microseconds and a higher quality tier appears to render faster than a
+lower one.
 
-**Run `--dry` before spending a capture slot.** It walks the same `Walker`
-against the same obstacle table in about a second, and a route that grazes a
-parked car is a defect in the route.
+### Capture serialisation
 
-## Composing and delivering the walk
-
-```bash
-node tools/route.mjs heroE          # trace a route against the real collider
-node tools/airtime.mjs heroE        # dust per frame, second by second
-node tools/audiotake.mjs heroE      # record the audio at real speed
-node tools/expose.mjs shots/heroI/night-street-1080p30.mp4
-node tools/expose.mjs a.mp4 b.mp4 --at 3.5,29.3   # p50 / p99 / max / clipped
-node tools/deliver.mjs heroE --fps 60 --half --mbps 12
-node tools/deliver.mjs heroI --mux --audio track.wav   # onto the verified file
-node tools/digestcheck.mjs shots/heroE/reel.json
-```
-
-`expose.mjs` answers "does the clip end brighter than it starts", which is the
-one question about this take that cannot be settled by looking, because the eye
-adapts across thirty seconds and the whole point of the route is a slow arc.
-Without an argument it prints the arc a second at a time; with `--at` it prints
-the four measures a still is judged on, counted from raw gray8 rather than
-estimated. Both modes ask ffmpeg for `out_range=full`, and that matters: the
-review encode off the frame sequence is full-range and the delivered file is
-limited-range, so the same highlight reads 255 in one and 243 in the other, and
-a pixel that clips on screen gets reported as absent.
-
-`deliver.mjs --mux` stream-copies an already-encoded picture and adds only the
-AAC. Audio arrives last on a deadline, and re-encoding to add it would ship a
-file that is not the file the measurements were run against.
-
-`route.mjs` exists because `--dry` reports against `tools/obstacles.mjs`, which
-has drifted from `world/cars.ts` — one car short, the dumpster's half-extents
-transposed — so it clears routes that are not clear. `route.mjs` traces the
-same walk against `scene/collide.ts`, the table the page itself collides with,
-and prints what is beside the camera and how much of the take stands in a sun
-band. A route is a composition before it is a clearance test.
-
-The two sun bands are the constraint everything else bends around. At 4.2° a
-4 m frontage throws a 54 m shadow, so `world/block.ts` leaves only z −49..−32
-and z −84..−73 lit at street level, and those are the only stretches where the
-dust ignites. `airtime.mjs` counts motes per frame along a candidate; it is how
-the delivered route was chosen over one that spent its first third in shade.
-
-Audio is recorded by a second real-time pass over the same route rather than
-during the capture, because the capture advances the clock by hand and Web
-Audio cannot be. Both passes integrate against real `dt`, so they agree:
-`audiotake.mjs` checks its own footfalls against the picture's and refuses the
-take if they drift past 60 ms.
-
-## Capture serialisation
-
-Several agents share this worktree and one GPU. Every tool that renders takes
-`.capture.lock` first (`tools/lock.mjs`), waits if another holds it, and
-releases on exit including the hard exits `harness.mjs` takes. Two headless
-Chromiums on an 866k-triangle street do not fail — they each run at half speed,
-and the frame rate that lands in the report is then a measurement of the other
-agent.
-
-Two smaller tools sit alongside it:
-
-```bash
-node tools/px.mjs --t 0.4    # mean sRGB of fixed screen regions
-node tools/diag.mjs          # scene graph, materials, camera, probe dump
-```
-
-`px.mjs` exists because whole-frame histograms are dominated by the sky, so they
-cannot answer "is the asphalt reading darker than the concrete beside it". It
-averages named rectangles instead, which is the only reliable way to tell a real
-albedo change from no change at all when the frame is this dark.
-
-## Debug API
-
-In development the page exposes `window.__scene`:
-
-| call                       | does                                              |
-| -------------------------- | ------------------------------------------------- |
-| `goTo(t)`                  | teleport along the street, `t` in 0..1             |
-| `setYaw(rad)`              | absolute heading                                   |
-| `setPitch(rad)`            | absolute pitch                                     |
-| `warp(seconds)`            | advance springs and settling without waiting       |
-| `setPaused(bool)`          | stop and restart the render loop                   |
-| `renderOnce()`             | render one frame while paused                      |
-| `setDriven(bool)`          | take the *whole* frame loop off the wall clock     |
-| `step(dt)`                 | advance every `useFrame` by `dt` and render        |
-| `clock`                    | virtual seconds since `setDriven(true)`            |
-| `fps`                      | current measured frame rate                        |
-| `info()`                   | `{ calls, triangles, programs, textures }`         |
-| `probe()`                  | luminance histogram of the current frame           |
-| `walker`                   | the `Walker`, for reading gait phase and speed     |
+Several agents shared this worktree and one GPU. Every tool that renders takes
+`.capture.lock` first and releases it on exit, including on hard exits. Two
+headless Chromium instances on an 866,000-triangle street do not fail — they each
+run at half speed, and the frame rate that then lands in the report is a
+measurement of the other agent rather than of the scene.
 
 ## Layout
 
 ```
-src/world/     procedural generation, no React and no scene knowledge
-  glsl.ts        shared GLSL: hashes, tiling Perlin/FBM/Worley, helpers
-  bake.ts        renders a GLSL surface description into a PBR texture set
-  surfaces.ts    the surface descriptions: asphalt, concrete, iron, steel
-  noise.ts       the CPU-side mirror of the above, for geometry
-  dims.ts        real-world dimensions and fixture positions
-  geometry.ts    road, kerb, pavement, manhole, gully and plate meshes
-  emit.ts        indexed triangle soup with custom attributes, in a local frame
-  block.ts       the massing: where every building stands, and the sun geometry
-                 that decides its height — the sunward row is low on purpose
-  facade.ts      building geometry — walls, windows, fire escapes, roof kit
-src/scene/     the scene itself
-  materials.ts   world-space macro detail layered over the baked tiles
-  buildingMaterials.ts  analytic brick, render, stone, glass, joinery and steel
-  env.ts         procedural golden-hour sky, used as background and as IBL
-  walker.ts      first-person movement, head bob and gait phase
-  Street.tsx     assembles the geometry, materials and temporary lighting
-  Buildings.tsx  the four merged building meshes
-  Rig.tsx        input, camera, and the window.__scene debug API
-  NightStreet.tsx  the canvas, renderer and tonemapping setup
-tools/         harness.mjs, shoot.mjs, px.mjs, diag.mjs
-  lock.mjs       the capture lock; every rendering tool takes it first
-  reel.mjs       scripted walks, frame sequences and mp4
-  motion.mjs     reads reel.json and reports motion defects
-  gait.mjs       the gait model on the CPU, no browser and no GPU
-  obstacles.mjs  the solid things on the street, for clearance checks
-  shots.mjs      the route table, shared by the picture and audio passes
-  route.mjs      trace a route against scene/collide.ts and the landmarks
-  airtime.mjs    dust motes per frame along a take
-  audiotake.mjs  record the procedural audio, aligned to the picture
-  expose.mjs     the luminance arc, and the four measures a still is judged on
-  deliver.mjs    encode the mp4s a social timeline will re-encode well
-  digestcheck.mjs  did the tree that rendered a take change since?
+src/app/
+  page.tsx        the route; hands off to Gate
+  Gate.tsx        capability check and the load veil for the hosted build
+  layout.tsx      metadata, and no next/font because that downloads a file
+
+src/world/        procedural generation; no React, no scene knowledge
+  glsl.ts           shared GLSL: hashes, tiling Perlin/FBM/Worley, helpers
+  bake.ts           renders a GLSL surface description into a PBR texture set
+  surfaces.ts       the surface descriptions: asphalt, concrete, iron, steel
+  noise.ts          the CPU-side mirror of the above, for geometry
+  dims.ts           real-world dimensions and fixture positions
+  geometry.ts       road, kerb, pavement, manhole, gully and plate meshes
+  emit.ts           indexed triangle soup with custom attributes, local frame
+  block.ts          the massing, and the sun geometry that sets every height
+  facade.ts         walls, windows, fire escapes, roof kit
+  street3.ts        shopfronts, awnings, footway furniture
+  cars.ts           body surfaces, and carSolids() for the collider
+  lamps.ts          the luminaires
+  neon.ts           swept tubes and the letterforms on them
+
+src/scene/        the scene itself
+  materials.ts      world-space macro detail layered over the baked tiles
+  streetMaterials.ts    carriageway, footway, kerb, shopfront glazing
+  buildingMaterials.ts  analytic brick, render, stone, glass, joinery, steel
+  carMaterials.ts   paint, glazing, lamp lenses, tyres
+  lightMaterials.ts emissive fittings
+  env.ts            the analytic sky: background and light probe, baked apart
+  haze.ts           directional haze, patched into the fog chunk globally
+  dust.tsx          2,200 motes, one draw call, shadow-gated
+  softShadow.ts     PCSS with a receiver-plane depth gradient
+  sensor.ts         a phone sensor's pedestal, read noise and dither
+  grade.tsx         the colour grade and the tone curve
+  collide.ts        the solid table the page collides with
+  walker.ts         first-person movement, head bob, gait phase
+  Rig.tsx           input, camera, and the window.__scene debug API
+  NightStreet.tsx   the canvas, renderer and tone mapping setup
+
+src/audio/        Web Audio, synthesised
+  dsp.ts            oscillators, filters, the generated impulse response
+  design.ts         what the street sounds like, and where from
+  engine.ts         the graph and the master bus
+  CityAudio.tsx     mounting it, and the gesture that unlocks it
+
+tools/            the harness and the instruments; see the list above
+docs/TECHNIQUE.md the lighting, atmosphere and post-processing brief
+NOTES.md          deferred work, and the post-mortems
 ```
+
+## Debug API
+
+In development the page exposes `window.__scene`. It is absent in production
+builds, deliberately, because it is a remote control for the renderer.
+
+| call | does |
+| --- | --- |
+| `goTo(t)` | teleport along the street, `t` in 0..1 |
+| `setYaw(rad)` / `setPitch(rad)` | absolute heading and pitch |
+| `warp(seconds)` | advance springs and settling without waiting |
+| `setDriven(bool)` | take the whole frame loop off the wall clock |
+| `step(dt)` | advance every `useFrame` by `dt` and render |
+| `info()` | `{ calls, triangles, programs, textures }` |
+| `probe()` | luminance histogram and percentiles of the current frame |
+| `fps` | current measured frame rate |
+| `walker` | the walker, for reading gait phase and speed |
+
+## Stack
+
+Next.js 16, React 19, TypeScript, Tailwind CSS 4, Three.js 0.185 through React
+Three Fiber 9. Playwright drives the capture harness. ffmpeg encodes and
+measures. No asset pipeline, because there are no assets.

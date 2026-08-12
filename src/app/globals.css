@@ -19,3 +19,15 @@ canvas {
   display: block;
   touch-action: none;
 }
+
+/* The load veil's bar. Transform-only and infinite, so the compositor runs it
+ * without the main thread — which is the whole point, because the thread is
+ * blocked baking textures for the entire time the bar is on screen. */
+@keyframes ns-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.ns-sweep {
+  animation: ns-sweep 1.6s ease-in-out infinite;
+}

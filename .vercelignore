@@ -1,0 +1,9 @@
+node_modules
+.next
+out
+shots
+crops
+tmp
+.sys5
+*.tsbuildinfo
+.capture.lock
