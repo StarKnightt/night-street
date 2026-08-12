@@ -442,6 +442,36 @@ function gapDepth(s: Shape, u: number): number {
  * of a car, and pulling the pan in would open a slot along the bottom of the
  * body that the road would show through.
  */
+/**
+ * Cut a horizontal groove into a section at a given height.
+ *
+ * Only where the ring is running roughly vertically, which is what keeps this
+ * off the floor pan and off the underside of the arch: a "constant height" seam
+ * on a surface that is already horizontal is not a seam, it is a dent, and the
+ * arch liner and the pan both pass through this height on their way inboard.
+ */
+function grooveAtHeight(p: [number, number][], y: number, d: number): void {
+  const n = p.length;
+  for (const side of [1, -1]) {
+    let best = -1, bestD = 1e9;
+    for (let j = PT(3); j <= PT(9); j++) {
+      const k = side > 0 ? j : (n - j) % n;
+      if (Math.sign(p[k][0] || side) !== side) continue;
+      const dy = Math.abs(p[k][1] - y);
+      if (dy < bestD) { bestD = dy; best = k; }
+    }
+    if (best < 0 || bestD > 0.055) continue;
+    for (const [k, w] of [[best, 1], [(best + 1) % n, 0.45], [(best + n - 1) % n, 0.45]] as const) {
+      const a = p[(k + n - 1) % n], b = p[(k + 1) % n];
+      const tx = b[0] - a[0], ty = b[1] - a[1];
+      const l = Math.hypot(tx, ty) || 1;
+      // Vertical enough to have a horizontal seam in it at all.
+      if (Math.abs(ty / l) < 0.55) continue;
+      p[k] = [p[k][0] - (ty / l) * d * w, p[k][1] + (tx / l) * d * w];
+    }
+  }
+}
+
 function insetRing(p: [number, number][], d: number): void {
   const n = p.length;
   const out: [number, number][] = p.map((q) => [q[0], q[1]]);
@@ -624,11 +654,24 @@ function station(s: Shape, u: number): Station {
      * light along the top of it at any sun angle. Without it the opening is a
      * hole in a sheet and the tyre reads as pasted behind it.
      *
-     * Proud by 18 mm now rather than 8, and off the widest point of the body
-     * rather than level with it: the flare has to be visible in section from
-     * three-quarters ahead, which is the angle a parked car is nearly always
-     * seen from. It stays inside `hw`, so `carSolids()` is untouched. */
-    [wS * (inArch ? 1.048 : 1.010), yb + (inArch ? 0.032 : 0.042)],
+     * The number moved twice and the second time was the one that mattered.
+     *
+     * 1.048 of the sill width put the lip at 0.830 m on a hatchback. The tyre's
+     * crown is at 0.8595 — track half of 0.755 plus a 205 sidewall — so the lip
+     * was thirty millimetres *inboard* of the tyre it was supposed to be
+     * overhanging. That is the whole of the review's "sitting low and soft on
+     * its wheels" and of "I struggle to see a gap on the front wheel": there was
+     * an 80 mm gap of air over the tread, correctly, and it was invisible
+     * because the body was set back behind the tyre and you were looking at the
+     * outside of the tyre rather than into the opening. No arch can read as an
+     * opening while the wheel is the widest thing on the car.
+     *
+     * 1.094 puts it at 0.99 of the body's widest point, which is 6 mm outboard
+     * of the tyre crown. That is where a road car's flare is — flush with the
+     * widest point of the bodyside, not proud of it — and it is the most the
+     * collider will allow, since `carSolids()` publishes `wide/2` and the
+     * shoulder above already touches it. */
+    [wS * (inArch ? 1.094 : 1.010), yb + (inArch ? 0.032 : 0.042)],
     [wB * 0.968, yb + (ySh - yb) * 0.55],
     [wB, ySh],
     [wB * 0.988, yD - (yD - ySh) * 0.34],
@@ -647,10 +690,33 @@ function station(s: Shape, u: number): Station {
 
   const pt = refine(base);
   /* And the shut lines, cut after the ring is refined rather than before it.
-   * Refinement is a smoothing operator: a groove authored into the coarse ring
-   * would come back out of it as a dish 30 mm wide, which is a dent. */
+   * Refinement is an interpolating subdivision — it keeps every authored point
+   * and inserts a four-point midpoint between them — so a feature authored into
+   * the coarse ring survives it. A groove *across* the car does not exist in the
+   * ring at all, though, so it has to be cut here. */
   const gd = gapDepth(s, u);
   if (gd > 1e-5) insetRing(pt, gd);
+
+  /* The rocker parting line, which runs the other way and so needs the other
+   * treatment.
+   *
+   * "The sill/rocker parting line is a material band rather than geometry. At a
+   * raking sun that line is one of the strongest horizontal cues on a car's
+   * flank." It is — a door skin ends and a rocker panel begins, and the two are
+   * separate pressings with a seam between them that runs the whole length of
+   * the car at a constant height. Unlike a door shut this cannot be done with
+   * extra stations, because it is a feature of the *section* and the section's
+   * points are at whatever heights the body curves put them.
+   *
+   * So it is cut by height instead: find the ring point nearest the seam on each
+   * side and pull it and its neighbours in. Two points at about 30 mm spacing
+   * gives a groove 60 mm wide and 5 mm deep, which is wider than a real seam and
+   * is the honest limit of a 56-point section. What it buys is a real change of
+   * surface direction at a constant height along the whole flank, which at 12
+   * degrees is a hard line — and unlike the painted band it was, it moves with
+   * the light rather than staying put.
+   */
+  grooveAtHeight(pt, at(s.sill, u) + 0.098, 0.0050);
 
   return { u, z: u * s.len, pt, gh };
 }
@@ -1528,27 +1594,63 @@ function emitWheel(
 /*
  * The dark under the car, which the shadow map cannot deliver.
  *
- * At 4.2 degrees the sun's own shadow of a car is a 20 m streak thrown sideways
+ * At 12 degrees the sun's own shadow of a car is a 7 m streak thrown sideways
  * across the street, and it is not under the car at all. What is under the car
  * is an absence of *sky*: the largest source in this scene is the dome, and a
  * car occludes essentially all of it from the metre of road beneath it. Nothing
  * in the renderer models that — the environment probe is unoccluded — so the
  * car would sit on road lit as brightly as the road beside it, which is the
- * "sticker" failure the brief names.
+ * "sticker" failure the brief names, and which the user reports as the car
+ * looking like it is floating.
  *
- * So it is stated: a multiply decal, following the camber, darkest under the
- * body centreline and tightening under each tyre. Multiply rather than an
- * alpha-blended black, because this is an occlusion of light already in the
- * frame and not a new dark object; and unlit and untonemapped, because it has
- * to act on the display value the road has already resolved to.
+ * So it is stated: a multiply decal, following the camber. Multiply rather than
+ * an alpha-blended black, because this is an occlusion of light already in the
+ * frame and not a new dark object.
+ *
+ * What is *new* in this pass is that the decal is no longer a shape. The first
+ * version was a rounded box with a smoothstep from 0.55 to 1.25 of its own
+ * metric and a blob under each axle, with the depth of each chosen by eye, and
+ * tools/stance.mjs shows that both were wrong and wrong in opposite directions.
+ * The cosine-weighted form factor of the underbody — the actual share of sky
+ * irradiance a rectangle 155 mm overhead takes away — runs like this for the
+ * hatch:
+ *
+ *   under the centreline   87.9%          the decal said 86%, near enough
+ *   300 mm off centre      86.5%          the decal had already started fading
+ *   600 mm off centre      79.4%          the decal was down to about half
+ *   at the sill, 875 mm    46.3%
+ *   1000 mm                24.9%
+ *   1200 mm                11.0%
+ *   1600 mm                 4.0%
+ *
+ * So the true occlusion is a *plateau* under the body with a cliff at the sill,
+ * halving inside 125 mm of it, and the decal was a dome peaking under the
+ * centreline where nothing can see it and half gone by the time it emerged into
+ * view. That is precisely a soft grey smudge rather than a car sitting on the
+ * road, and no amount of making it darker would have fixed it — the error was
+ * in the profile.
+ *
+ * The fix is to stop drawing a profile and evaluate the form factor itself,
+ * which is three arctangents and exact. The rectangles are handed over here:
+ * the underbody, and one per wheel at a height of a few millimetres, which is
+ * what produces the tight dark crescent where a tyre flattens against the road.
+ * See makeCarShadeMaterial.
  */
 function emitShade(S: Hull, spec: CarSpec, s: Shape): void {
   const cs = Math.cos(spec.yaw), sn = Math.sin(spec.yaw);
-  const hl = s.len * 0.5 + 0.55, hwd = s.wide * 0.5 + 0.42;
-  const NX = 6, NZ = 10;
-  const axleF = (s.frontOh - s.len * 0.5) / hl;
-  const axleR = (s.frontOh + s.wheelbase - s.len * 0.5) / hl;
-  S.attr('aShade', spec.seed, axleF, axleR, (s.trackHalf + s.tyreW * 0.5) / hwd);
+  /* The footprint has to reach out to where the occlusion is genuinely
+   * negligible or its own edge becomes the artefact. At `wide/2 + 0.42` it
+   * stopped at 1.30 m, where the form factor is still 9 per cent, so the decal
+   * ended in a visible step. 0.78 puts the edge at 1.66 m and 3.6 per cent. */
+  const hl = s.len * 0.5 + 0.85, hwd = s.wide * 0.5 + 0.78;
+  const NX = 8, NZ = 12;
+  const axleF = s.frontOh - s.len * 0.5;
+  const axleR = s.frontOh + s.wheelbase - s.len * 0.5;
+  /* Metres, in the car's own frame, not fractions of the quad. The shader has
+   * to do real geometry now, and handing it normalised coordinates would mean
+   * multiplying them back up by numbers it would also have to be given. */
+  S.attr('aShade', hwd, hl, s.rocker, s.trackHalf);
+  S.attr('aShadeB', s.wide * 0.5 * 0.92, s.len * 0.5 - 0.30, axleF, axleR);
   const P = (fx: number, fz: number): V3 => {
     const lx = fx * hwd, lz = fz * hl;
     const x = spec.x + cs * lx + sn * lz;
@@ -1560,8 +1662,22 @@ function emitShade(S: Hull, spec: CarSpec, s: Shape): void {
     for (let j = 0; j < NX; j++) {
       const z0 = -1 + (2 * i) / NZ, z1 = -1 + (2 * (i + 1)) / NZ;
       const x0 = -1 + (2 * j) / NX, x1 = -1 + (2 * (j + 1)) / NX;
-      S.quad(P(x0, z0), up, P(x1, z0), up, P(x1, z1), up, P(x0, z1), up,
-        [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]);
+      /* Wound so the face points *up*.
+       *
+       * It did not. The order was (x0,z0) (x1,z0) (x1,z1) (x0,z1), whose
+       * geometric normal is X cross Z, which is minus Y — so every one of these
+       * quads was back-facing to a camera above the road, and the material sets
+       * no `side`, so FrontSide culled all of them. The contact shadow has never
+       * drawn a pixel since it was written. The per-vertex normals said `up` and
+       * were believed; the winding is what culling reads.
+       *
+       * This is the whole of "the car looks like it's floating", and no amount
+       * of re-deriving the falloff would have shown up in a frame. It was found
+       * by pairing the probe with a control: hiding the decal changed the road
+       * beside the hero estate by 0.000 at fourteen consecutive samples, which
+       * is not a soft term, it is an absent one. */
+      S.quad(P(x0, z0), up, P(x0, z1), up, P(x1, z1), up, P(x1, z0), up,
+        [[x0, z0], [x0, z1], [x1, z1], [x1, z0]]);
     }
   }
 }
@@ -1802,7 +1918,7 @@ export function buildCars(specs: readonly CarSpec[] = PARKED): BuiltCars {
   const B = new Hull({ aCar: 4, aCarB: 4, aCarC: 4 });
   const G = new Hull({ aGl: 4, aGlUV: 4 });
   const W = new Hull({ aWhl: 4, aWhlB: 2 });
-  const S = new Hull({ aShade: 4 });
+  const S = new Hull({ aShade: 4, aShadeB: 4 });
   const c: Ctx = { B, G, W, S };
   const lights: CarLight[] = [];
 

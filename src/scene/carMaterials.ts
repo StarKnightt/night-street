@@ -2040,12 +2040,15 @@ export function makeCarShadeMaterial(fogDensity: number): THREE.ShaderMaterial {
     uniforms: { uFog: { value: fogDensity } },
     vertexShader: /* glsl */ `
       attribute vec4 aShade;
+      attribute vec4 aShadeB;
       varying vec2 vQ;
       varying vec4 vS;
+      varying vec4 vB;
       varying float vD;
       void main(){
         vQ = uv;
         vS = aShade;
+        vB = aShadeB;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         vD = -mv.z;
         gl_Position = projectionMatrix * mv;
@@ -2055,22 +2058,82 @@ export function makeCarShadeMaterial(fogDensity: number): THREE.ShaderMaterial {
       uniform float uFog;
       varying vec2 vQ;
       varying vec4 vS;
+      varying vec4 vB;
       varying float vD;
+      /* The cosine-weighted form factor from a point on the ground to a
+       * rectangle in a parallel plane above it, with the point under one of its
+       * corners. Standard result; the 1/2pi is what makes an infinite plane
+       * come out as four quarters of unity rather than as four.
+       *
+       * This is the whole of the contact shadow now. Everything below it is the
+       * decomposition of an arbitrary point-and-rectangle into four of these.
+       */
+      float ffCorner(float a, float b, float h){
+        return atan(a * b / (h * sqrt(a * a + b * b + h * h))) * 0.15915494;
+      }
+
+      /* The share of sky irradiance that a rectangle of half-extents (a, b) at
+       * height h, centred on the origin, takes away from the point (x, z).
+       *
+       * Split at the point's own foot: the rectangle becomes two strips of
+       * signed half-width a-|x| and a+|x|, and each of those into two of signed
+       * half-length b-|z| and b+|z|. Where a term is negative the point is
+       * outside the rectangle on that axis and its corner is subtracted rather
+       * than added, which is what makes the falloff outside the footprint come
+       * out as a falloff instead of as a mirror image of the inside.
+       */
+      float skyBlocked(float x, float z, float a, float b, float h){
+        float sx0 = a - abs(x), sx1 = a + abs(x);
+        float sz0 = b - abs(z), sz1 = b + abs(z);
+        float hh = max(h, 0.004);
+        float s = ffCorner(abs(sx0), abs(sz0), hh) * sign(sx0) * sign(sz0)
+                + ffCorner(abs(sx0), abs(sz1), hh) * sign(sx0) * sign(sz1)
+                + ffCorner(abs(sx1), abs(sz0), hh) * sign(sx1) * sign(sz0)
+                + ffCorner(abs(sx1), abs(sz1), hh) * sign(sx1) * sign(sz1);
+        return clamp(s, 0.0, 1.0);
+      }
+
       void main(){
-        /* A rounded box the size of the body, plus a tighter, darker core
-         * under each axle where the tyres are: the darkest place under a
-         * parked car is the wedge between the tyre and the road, and the
-         * ambient occlusion falls off quickly from it. */
-        float bx = abs(vQ.x) / 0.72;
-        float bz = abs(vQ.y) / 0.80;
-        float body = 1.0 - smoothstep(0.55, 1.25, pow(pow(bx, 4.0) + pow(bz, 4.0), 0.25));
-        float axles = 0.0;
+        // Metres in the car's own frame; see emitShade for what is in these.
+        float x = vQ.x * vS.x;
+        float z = vQ.y * vS.y;
+
+        float occ = skyBlocked(x, z, vB.x, vB.y, vS.z);
+
+        /* The tyres, as four rectangles a few millimetres off the road.
+         *
+         * "A tyre does not meet the road at a point; it flattens against it,
+         * and the dark crescent where the sidewall meets the tarmac is a strong
+         * cue." It is, and at 16 mm the form factor above is close to 1 inside
+         * the patch and collapses within 50 mm of its edge, which is that
+         * crescent — out of the same function rather than out of a second
+         * falloff chosen to look like one. The patch is 230 by 210 mm, which is
+         * a 205-section tyre carrying about a third of a tonne.
+         */
         for (int i = 0; i < 2; i++){
-          float az = i == 0 ? vS.y : vS.z;
-          float d = length(vec2((abs(vQ.x) - vS.w) / 0.30, (vQ.y - az) / 0.16));
-          axles = max(axles, 1.0 - smoothstep(0.35, 1.45, d));
+          float az = i == 0 ? vB.z : vB.w;
+          occ = max(occ, skyBlocked(abs(x) - vS.w, z - az, 0.115, 0.105, 0.016));
         }
-        float k = 1.0 - clamp(body * 0.62 + axles * 0.40, 0.0, 0.86);
+
+        /* How much of this road's light comes from the sky, which is the only
+         * part that an occlusion of the sky can take away.
+         *
+         * Not all of it. A shaded carriageway here is lit by the sky slot and by
+         * bounce off the frontages, and the frontages are still largely visible
+         * from under a car — it is the dome that gets cut off, not the horizon.
+         * From the probes taken for streetProbe: the shaded frontage measures
+         * about 0.09 linear over roughly a third of the hemisphere and the sky
+         * slot about 0.3 over a similar solid angle, so the sky is a little over
+         * three quarters of what reaches the tarmac. That puts the deepest
+         * possible multiplier at 1 - 0.879 * 0.78 = 0.31.
+         *
+         * The old decal bottomed out at 0.14, which is darker than removing the
+         * entire sky could justify. It was standing in for the missing sun
+         * shadow as well, from when the shadow box did not reach past ten
+         * metres. It does now, so this term has only its own job to do.
+         */
+        float k = 1.0 - occ * 0.78;
+
         // Haze takes it away at the same rate it takes everything else.
         float fog = 1.0 - exp(-(uFog * vD) * (uFog * vD));
         k = mix(k, 1.0, clamp(fog, 0.0, 1.0));
