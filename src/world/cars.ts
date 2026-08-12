@@ -245,6 +245,13 @@ type Shape = {
   headU: number; headY: [number, number];
   /** Door shut lines, in u. */
   doors: readonly number[];
+  /* Every panel gap that runs *across* the car, in u, as a real groove in the
+   * surface rather than a dark line drawn on it.
+   *
+   * Defaults to the two bumper parting lines and the door shuts, which is what
+   * a saloon or a hatchback has. A van says so itself, because its rear doors
+   * and its sliding door are nowhere near a car's. */
+  gaps?: readonly number[];
 };
 
 /* Every curve below is in metres against the u fraction of the car's length.
@@ -374,8 +381,83 @@ const SHAPES: Record<CarKind, Shape> = {
     lampU: 0.955, lampY: [0.560, 0.980],
     headU: 0.055, headY: [0.700, 0.940],
     doors: [0.300, 0.430],
+    /* A cab door, a sliding side door with a long track over it, and the rear
+     * doors. The sliding door is the one that makes a van a van from the side:
+     * it is a metre and a half of shut line with nothing else on the panel. */
+    gaps: [0.052, 0.300, 0.430, 0.700, 0.955],
   },
 };
+
+/* ── Panel gaps ─────────────────────────────────────────────────────────── */
+
+/*
+ * A shut line is a groove, and it has to be one.
+ *
+ * The first version of this system drew the door shuts in the shader — an
+ * antialiased dark line four millimetres wide against the along-car
+ * coordinate — and the review that produced this pass could not find a single
+ * panel break on any car in the street. Two reasons, and both of them are the
+ * project's recorded failure mode rather than anything specific to cars. A
+ * 4 mm feature is under a pixel past about four metres, so it filtered to
+ * nothing at every distance in the set; and where it did survive it was a
+ * change in albedo, which is a decal. What identifies sheet metal at a raking
+ * sun is not that the gap is dark. It is that the two panels either side of it
+ * have their own edges: the light catches the near lip, the groove is in
+ * shadow, and the far lip catches it again. That is a normal, not a colour,
+ * and no albedo term can produce it.
+ *
+ * So the gap is cut into the loft. Five stations across nine millimetres, with
+ * the middle three pulled in along the section normal, which gives a groove
+ * with two real lips and a floor 7.5 mm down. It costs two extra rings per gap
+ * — about 1.1k triangles a car — and it is the single largest visual change in
+ * this pass.
+ *
+ * `tools/shutline.mjs` measures whether it worked, by walking the sun across
+ * the groove and checking that the near lip and the floor move in opposite
+ * directions. A decal cannot do that and a groove cannot help it.
+ */
+/** Half-width of a groove, in metres of arc along the car. */
+const GAP_W = 0.0045;
+/** How deep the floor of it sits under the skin either side. */
+const GAP_D = 0.0075;
+
+function gapsOf(s: Shape): readonly number[] {
+  return s.gaps ?? [0.050, ...s.doors, 0.950];
+}
+
+/** How far the skin is pulled in at this station, in metres. */
+function gapDepth(s: Shape, u: number): number {
+  let d = 0;
+  for (const g of gapsOf(s)) {
+    const t = ((u - g) * s.len) / GAP_W;
+    if (Math.abs(t) < 2.6) d = Math.max(d, GAP_D * Math.exp(-t * t * 1.15));
+  }
+  return d;
+}
+
+/**
+ * Pull a closed section in along its own normal.
+ *
+ * The floor pan is left alone — a shut line does not run across the underside
+ * of a car, and pulling the pan in would open a slot along the bottom of the
+ * body that the road would show through.
+ */
+function insetRing(p: [number, number][], d: number): void {
+  const n = p.length;
+  const out: [number, number][] = p.map((q) => [q[0], q[1]]);
+  for (let j = 0; j < n; j++) {
+    if (j < PT(2) || j > PT(26)) continue;
+    const a = p[(j + n - 1) % n], b = p[(j + 1) % n];
+    const tx = b[0] - a[0], ty = b[1] - a[1];
+    const l = Math.hypot(tx, ty) || 1;
+    /* The ring is counter-clockwise in (lateral, height), so its outward
+     * normal is (ty, -tx) and inward is the negative of that. Getting this
+     * backwards raises a 7.5 mm welt where the gap should be, which reads as
+     * a rubbing strip and is a surprisingly convincing wrong answer. */
+    out[j] = [p[j][0] - (ty / l) * d, p[j][1] + (tx / l) * d];
+  }
+  for (let j = 0; j < n; j++) p[j] = out[j];
+}
 
 /* ── The section ────────────────────────────────────────────────────────── */
 
@@ -481,9 +563,23 @@ function station(s: Shape, u: number): Station {
    * which is what a parked road car shows; the previous 1.19 r worked out at
    * 56 mm and was never the problem.
    */
+  /* The opening is bigger than it was, and the reason is a measured one about
+   * apparent wheel size rather than a taste for arches.
+   *
+   * The review says the wheels read as too small and sunk into shallow dents.
+   * The wheels are not too small: a 636 mm tyre on a 4.20 m body 1.46 m tall
+   * is 43.6 per cent of the height, which is a current hatchback to the
+   * millimetre, and the diameters here are real. What was too small was the
+   * hole they sit in. A 70 mm crown clearance over a 1.24 r opening leaves an
+   * arch that is barely wider than the tyre and barely taller, so the tyre
+   * fills it and the eye reads the pair as one dark blob let into the
+   * bodyside — which is exactly "sunk into a shallow dent". A parked road car
+   * shows 80 to 100 mm of daylight over the tread and the opening runs a good
+   * deal wider than the contact patch at the bottom.
+   */
   const arch = (axleU: number, sillY: number) => {
-    const apex = s.wheelR * 2 - 0.008 + 0.070;
-    const w = s.wheelR * 1.24;
+    const apex = s.wheelR * 2 - 0.008 + 0.088;
+    const w = s.wheelR * 1.33;
     const d = (u - axleU) * s.len;
     if (Math.abs(d) >= w) return -1;
     const t = d / w;
@@ -515,13 +611,24 @@ function station(s: Shape, u: number): Station {
     [0, yPan],
     [wPan, yPan],
     [wPan, Math.max(yb - 0.010, yPan + 0.020)],
-    [wS * (inArch ? 0.972 : 0.985), yb + 0.004],
+    /* The mouth of the liner, and it is now 100 mm inboard of the lip rather
+     * than 39. That distance is the whole of whether an arch reads as an
+     * opening: what says "there is a cavity behind this" is the band of the
+     * liner that the lip does not hide, seen at a grazing angle and dark. At
+     * 39 mm there was no band, so the tyre appeared to be glued to the outside
+     * of the body with a shadow painted round it. */
+    [wS * (inArch ? 0.918 : 0.985), yb + (inArch ? 0.010 : 0.004)],
     /* The arch lip. A pressed arch is not a cut edge: the skin turns out by ten
      * or fifteen millimetres before it turns under to the liner, and that lip
      * is a hard little convexity that runs the whole arc and catches a line of
      * light along the top of it at any sun angle. Without it the opening is a
-     * hole in a sheet and the tyre reads as pasted behind it. */
-    [wS * (inArch ? 1.022 : 1.000), yb + (inArch ? 0.024 : 0.030)],
+     * hole in a sheet and the tyre reads as pasted behind it.
+     *
+     * Proud by 18 mm now rather than 8, and off the widest point of the body
+     * rather than level with it: the flare has to be visible in section from
+     * three-quarters ahead, which is the angle a parked car is nearly always
+     * seen from. It stays inside `hw`, so `carSolids()` is untouched. */
+    [wS * (inArch ? 1.048 : 1.010), yb + (inArch ? 0.032 : 0.042)],
     [wB * 0.968, yb + (ySh - yb) * 0.55],
     [wB, ySh],
     [wB * 0.988, yD - (yD - ySh) * 0.34],
@@ -538,7 +645,14 @@ function station(s: Shape, u: number): Station {
   for (let j = 0; j < HALF; j++) base[j] = H[j];
   for (let j = 1; j <= 13; j++) base[28 - j] = [-H[j][0], H[j][1]];
 
-  return { u, z: u * s.len, pt: refine(base), gh };
+  const pt = refine(base);
+  /* And the shut lines, cut after the ring is refined rather than before it.
+   * Refinement is a smoothing operator: a groove authored into the coarse ring
+   * would come back out of it as a dish 30 mm wide, which is a dent. */
+  const gd = gapDepth(s, u);
+  if (gd > 1e-5) insetRing(pt, gd);
+
+  return { u, z: u * s.len, pt, gh };
 }
 
 /** Stations: a base rhythm, refined where the surface actually turns. */
@@ -567,6 +681,13 @@ function stations(s: Shape, detail: number): number[] {
   for (const [pu, pw] of s.pillars) { add(pu - pw / 2); add(pu + pw / 2); }
   add(s.dlo[0]); add(s.dlo[1]);
   add(s.lampU); add(s.headU);
+  /* The shut lines. Five rings each: the two lips, the two shoulders they turn
+   * from, and the floor. Anything coarser and the groove has no lip on the
+   * near side, which is the half of it that catches the light. */
+  for (const g of gapsOf(s)) {
+    const w = GAP_W / s.len;
+    for (const k of [-2.1, -1, 0, 1, 2.1]) add(g + k * w);
+  }
   return [...set].sort((a, b) => a - b);
 }
 
@@ -814,9 +935,19 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
          * with daylight coming through the far side rather than as a black
          * card. Outboard 10 mm is the pane itself, in its own geometry so it
          * can be blended. */
+        /* Inboard 62 mm, not 5.
+         *
+         * "Right now they look like solid panels ... add slight transparency so
+         * you can barely see headrests inside." The interior was always there
+         * and it was always five millimetres behind the pane, which is to say
+         * it was co-planar with it for every purpose that matters: no
+         * parallax, no occlusion of one part of the cabin by another, and the
+         * headrests the shader draws could only ever be a pattern on the glass
+         * rather than an object behind it. At 62 mm the seat backs move against
+         * the aperture as the camera walks past, which is the cue. */
         setB(CAR.CABIN, uM, yMid, side);
-        c.B.quad(off(a, na, -0.005), na, off(b, nb, -0.005), nb,
-          off(cc, nc, -0.005), nc, off(d, nd, -0.005), nd, uvs);
+        c.B.quad(off(a, na, -0.062), na, off(b, nb, -0.062), nb,
+          off(cc, nc, -0.062), nc, off(d, nd, -0.062), nd, uvs);
 
         const kind = role === R_GLASS_W ? PANE.SCREEN : role === R_GLASS_B ? PANE.REAR : PANE.SIDE;
         const span = kind === PANE.SCREEN ? s.screen : kind === PANE.REAR ? s.rear : s.dlo;
@@ -835,9 +966,20 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
           : (k - PT(14)) / (PT(16) - PT(12)) + 0.5);
         c.G.attr('aGl', seed, kind, spec.dirt, kind === PANE.SCREEN ? 0.055 : 0.030);
         c.G.attr('aGlUV', px0, py(j), spec.age, side);
+        /* And the pane 18 mm *under* the skin rather than 10 mm over it.
+         *
+         * "No visible glass inset — the glass is flush with the bodyside, where
+         * real glass sits a couple of centimetres proud of or recessed into the
+         * aperture." It was worse than flush: it stood proud, so the aperture
+         * had a step the wrong way round and the greenhouse read as a decal
+         * band wrapped over the body. Recessed, the cant rail above and the
+         * belt below are 28 mm of skin standing over the glass, and at 12° the
+         * upper one throws a hard line of shadow down the top of every pane —
+         * which is the single most recognisable thing about a car's side glass
+         * in low sun. */
         const gq: [V3, V3][] = [
-          [off(a, na, 0.010), na], [off(b, nb, 0.010), nb],
-          [off(cc, nc, 0.010), nc], [off(d, nd, 0.010), nd],
+          [off(a, na, -0.018), na], [off(b, nb, -0.018), nb],
+          [off(cc, nc, -0.018), nc], [off(d, nd, -0.018), nd],
         ];
         // The pane coordinate has to vary across the quad, so it rides in uv
         // rather than in the per-vertex attribute block.
@@ -854,22 +996,123 @@ function emitBody(c: Ctx, spec: CarSpec, s: Shape): void {
   /* The two caps. A car's nose and tail are not points, so the loft stops at a
    * real section and the end is closed with a fan. Both are nearly flat and
    * both are mostly bumper, which is why they are classified by height. */
+  /* Dished, not flat, and that is what makes the lamps possible.
+   *
+   * A flat fan from the section to a point is a lid, and the review reads it as
+   * one: "the taillight is a flat red rectangle". Part of that is the lamp and
+   * part of it is the panel it is in — a real tail panel turns in at the
+   * corners by fifteen or twenty millimetres before it meets the quarter panel,
+   * and the tailgate or the boot lid inside that is a separate pressing again.
+   * So the cap is emitted as a rim band turning inboard, then the panel proper
+   * set back behind it. That gives the corner a lip to catch the light along,
+   * gives the panel a shadow at its edge, and — the reason it is here — leaves
+   * eighteen millimetres of depth for a lamp unit to stand proud in without
+   * any part of it passing the plane `carSolids()` calls the end of the car.
+   */
   for (const end of [0, NS - 1]) {
     const nose = end === 0;
     const st = St[end];
+    const dz = nose ? 0.018 : -0.018;
+    const xs = 0.86, ys = 0.965;
     const cy = (st.pt[PT(0)][1] + st.pt[PT(HALF - 1)][1]) * 0.5;
-    const cen: V3 = fr.p(0, cy, st.z);
+    const inX = (j: number) => st.pt[j][0] * xs;
+    const inY = (j: number) => cy + (st.pt[j][1] - cy) * ys;
+    const nrm = fr.n(0, 0, nose ? -1 : 1);
+    const cen: V3 = fr.p(0, cy, st.z + dz * 1.30);
     setB(nose ? CAR.CAP_F : CAR.CAP_R, nose ? 0 : 1, cy, 0);
     for (let j = 0; j < NSEC; j++) {
       const jb = (j + 1) % NSEC;
       const A = fr.p(st.pt[j][0], st.pt[j][1], st.z);
       const Bp = fr.p(st.pt[jb][0], st.pt[jb][1], st.z);
+      const Ai = fr.p(inX(j), inY(j), st.z + dz);
+      const Bi = fr.p(inX(jb), inY(jb), st.z + dz);
       // (lateral, height), both in metres; see the note on CAP_R.
       const uvA: [number, number] = [st.pt[j][0], st.pt[j][1]];
       const uvB: [number, number] = [st.pt[jb][0], st.pt[jb][1]];
+      const uvAi: [number, number] = [inX(j), inY(j)];
+      const uvBi: [number, number] = [inX(jb), inY(jb)];
       const uvC: [number, number] = [0, cy];
-      if (nose) c.B.tri(A, cen, Bp, [uvA, uvC, uvB]);
-      else c.B.tri(A, Bp, cen, [uvA, uvB, uvC]);
+      if (nose) {
+        c.B.quad(A, nrm, Ai, nrm, Bi, nrm, Bp, nrm, [uvA, uvAi, uvBi, uvB]);
+        c.B.tri(Ai, cen, Bi, [uvAi, uvC, uvBi]);
+      } else {
+        c.B.quad(A, nrm, Bp, nrm, Bi, nrm, Ai, nrm, [uvA, uvB, uvBi, uvAi]);
+        c.B.tri(Ai, Bi, cen, [uvAi, uvBi, uvC]);
+      }
+    }
+  }
+
+  /* ── Lamp units ─────────────────────────────────────────────────────────
+   *
+   * "Recessed, not flat squares. Chrome or clear housing around them."
+   *
+   * The shader has always painted a red band with a prism structure and a
+   * bezel across the tail panel, and it is a good band; what it could not do
+   * is have a thickness. A cluster is a moulding 60 to 80 mm deep bolted into
+   * an aperture, so from three-quarters behind you see the *side* of it, and
+   * that sliver of dark housing beside a bright lens is most of what says the
+   * lamp is an object. Painted, the same lamp is a rectangle.
+   *
+   * So: a housing box let into the dished panel, and a lens on the face of it
+   * three millimetres proud. Both stay inside the body's own plan extents, so
+   * `carSolids()` and `scene/collide.ts` are untouched — which matters, because
+   * a lamp is exactly where a shoulder brushes a car when squeezing past one.
+   */
+  for (const rear of [true, false]) {
+    const yb = rear ? s.lampY : s.headY;
+    const hwEnd = at(s.hw, rear ? 0.968 : 0.032);
+    const xOut = hwEnd * 0.980;
+    const xIn = Math.max(0.20, xOut - (rear ? 0.30 : 0.27));
+    const zFace = rear ? s.len - 0.007 : 0.007;
+    const zRoot = rear ? s.len - 0.078 : 0.078;
+    const yMid = (yb[0] + yb[1]) * 0.5;
+    for (const sgn of [-1, 1]) {
+      setB(CAR.TRIM, rear ? 1 : 0, yMid, sgn);
+      box(c.B, fr, sgn * xIn, yb[0], Math.min(zFace, zRoot),
+        sgn * xOut, yb[1], Math.max(zFace, zRoot));
+      setB(rear ? CAR.LAMP_R : CAR.LAMP_F, rear ? 1 : 0, yMid, sgn);
+      /* The lens. uv is (lateral metres, height metres) on it, which is the
+       * coordinate the lamp branch in the shader already works in — the prism
+       * pitch, the indicator division and the bezel are all functions of it,
+       * so the moulding drawn on the face of this box is the same one that was
+       * drawn on the flat panel and nothing about it has to be retuned. */
+      const zL = rear ? zFace + 0.003 : zFace - 0.003;
+      const n = fr.n(0, 0, rear ? 1 : -1);
+      const x0 = Math.min(sgn * xIn, sgn * xOut) + 0.006;
+      const x1 = Math.max(sgn * xIn, sgn * xOut) - 0.006;
+      const y0 = yb[0] + 0.007, y1 = yb[1] - 0.007;
+      const q: V3[] = rear
+        ? [fr.p(x1, y0, zL), fr.p(x0, y0, zL), fr.p(x0, y1, zL), fr.p(x1, y1, zL)]
+        : [fr.p(x0, y0, zL), fr.p(x1, y0, zL), fr.p(x1, y1, zL), fr.p(x0, y1, zL)];
+      const uvq: [number, number][] = rear
+        ? [[Math.abs(x1), y0], [Math.abs(x0), y0], [Math.abs(x0), y1], [Math.abs(x1), y1]]
+        : [[Math.abs(x0), y0], [Math.abs(x1), y0], [Math.abs(x1), y1], [Math.abs(x0), y1]];
+      c.B.quad(q[0], n, q[1], n, q[2], n, q[3], n, uvq);
+    }
+  }
+
+  /* ── Door handles ───────────────────────────────────────────────────────
+   *
+   * Four boxes, 48 triangles, and worth every one. A handle is 130 mm across
+   * at a metre off the road, which puts it at eye level in the near field and
+   * makes it the only hard little shape on an otherwise continuous surface —
+   * the same argument the number plate wins on. The shader has drawn one since
+   * the first pass and the review could not find it, for the same reason it
+   * could not find the shut lines: a 20 mm albedo feature is not a handle, it
+   * is a smudge. This one has a top face that catches the sun and an underside
+   * that does not.
+   *
+   * The outer face stops at 99.8 per cent of the section's widest point, so
+   * nothing here reaches past the collider either.
+   */
+  for (const du of s.doors.slice(0, 2)) {
+    const zH = du * s.len + 0.30;
+    const wB = at(s.hw, Math.min(0.95, du + 0.06));
+    const yH = at(s.deck, Math.min(0.95, du + 0.06)) - 0.135;
+    for (const sgn of [-1, 1]) {
+      setB(CAR.TRIM, du, yH, sgn);
+      box(c.B, fr, sgn * wB * 0.962, yH - 0.017, zH,
+        sgn * wB * 0.998, yH + 0.017, zH + 0.132);
     }
   }
 
@@ -1175,27 +1418,107 @@ function emitWheel(
     }
   }
 
-  // The rim face, fanned. The spokes are drawn in the shader: at 150 mm across
-  // in the near field and eight pixels at forty metres, modelled spokes would
-  // be several hundred triangles that alias into a grey disc.
-  for (const outer of [1, -1]) {
-    W.attr('aWhl', spec.seed, WHL.RIM, spec.dirt, spec.age);
-    const wf = outer * 0.80;
-    const n = fr.n(outer * cst, 0, outer * sst);
+  /* ── The rim, with the spokes as real geometry ─────────────────────────
+   *
+   * "Add depth to the rims. Right now they're flat circles with painted
+   * spokes." Which is exactly what they were, and the note in the previous
+   * version defends it on aliasing grounds: modelled spokes at eight pixels
+   * would be a grey disc. That is true of *thin* spokes on a fine wheel and it
+   * is not an argument against depth. A road wheel's spokes sit 45 to 60 mm
+   * behind the flange and the openings between them look through to the brake
+   * and the dark of the arch, so the face of a wheel is two planes and a set of
+   * walls between them, not one plane. Those walls are what carry the wheel's
+   * shape at low sun: the sunward side of every spoke is lit and the other side
+   * is not, which is why a photographed alloy has a bright half and a dark half
+   * rather than an even sheen.
+   *
+   * Built as a ring of segments at four per spoke pitch, each one at the spoke
+   * plane or at the recessed plane, with a wall wherever two neighbours
+   * disagree. The shader keeps its own polar detail — the brake dust, the
+   * kerbing, the hub — and stops drawing the spokes, because they are here now.
+   * About 160 triangles a wheel, 5.8k over the street.
+   */
+  const spokes = 5 + Math.floor(h2(spec.seed, 3.7) * 3) * 2;
+  const SEG = 4;
+  const segs = spokes * SEG;
+  const isSpoke = (i: number) => ((i % SEG) + SEG) % SEG < 2;
+  /** A point on the wheel's face: angle index, radius, lateral fraction. */
+  const face = (q: number, r: number, wf: number): V3 => {
+    const a = (q / segs) * Math.PI * 2;
+    let py = yc + Math.sin(a) * r;
+    const pr = Math.cos(a) * r;
+    if (py < flat) py = flat;
+    const off = hw * wf;
+    return fr.pw(lx + off * cst - pr * sst, py, lz + off * sst + pr * cst);
+  };
+  const uvAt = (q: number, r: number): [number, number] => {
+    const a = (q / segs) * Math.PI * 2;
+    return [(Math.cos(a) * r) / rim, (Math.sin(a) * r) / rim];
+  };
+  const rFl = rim, rSp = rim * 0.90, rHub = rim * 0.30;
+  const wFace = 0.80, wBack = 0.44;
+  const nOut = fr.n(cst, 0, sst);
+  W.attr('aWhl', spec.seed, WHL.RIM, spec.dirt, spec.age);
+  for (let i = 0; i < segs; i++) {
+    const i2 = (i + 1) % segs;
+    /* The flange: the bright ring at the outer edge, always at the outer
+     * plane. It is the part a kerb scrapes and the part that catches a hard
+     * line of light all the way round. */
+    W.quad(face(i, rFl, wFace), nOut, face(i, rSp, wFace), nOut,
+      face(i2, rSp, wFace), nOut, face(i2, rFl, wFace), nOut,
+      [uvAt(i, rFl), uvAt(i, rSp), uvAt(i2, rSp), uvAt(i2, rFl)]);
+
+    const wf = isSpoke(i) ? wFace : wBack;
+    W.quad(face(i, rSp, wf), nOut, face(i, rHub, wf), nOut,
+      face(i2, rHub, wf), nOut, face(i2, rSp, wf), nOut,
+      [uvAt(i, rSp), uvAt(i, rHub), uvAt(i2, rHub), uvAt(i2, rSp)]);
+
+    /* The side of a spoke, where the two planes meet. Its normal is
+     * tangential, so it takes the sun from a completely different direction
+     * from the face beside it — which is the whole point of building this. */
+    if (isSpoke(i) !== isSpoke(i2)) {
+      const a = (i2 / segs) * Math.PI * 2;
+      const sa = Math.sin(a), ca = Math.cos(a);
+      /* The tangential direction in the wheel's own plane, taken from the
+       * parameterisation in `face` rather than guessed: the in-plane radial
+       * axis maps to local (-sin(steer), 0, cos(steer)) and the other axis is
+       * up, so d/da of the section is (sa·sst, ca, -sa·cst).
+       *
+       * Emitted with both windings. The wheels of this project have already
+       * shipped once with 85.7 per cent of their triangles facing the axle
+       * under FrontSide culling, and the failure is silent: no error, correct
+       * normals, and a see-through wheel. Twenty triangles a wheel is a
+       * cheaper insurance than another capture round. */
+      const uvs: [number, number][] = [
+        uvAt(i2, rSp), uvAt(i2, rHub), uvAt(i2, rHub), uvAt(i2, rSp)];
+      const lo = isSpoke(i) ? wFace : wBack, hi = isSpoke(i) ? wBack : wFace;
+      const p: V3[] = [face(i2, rSp, lo), face(i2, rHub, lo),
+        face(i2, rHub, hi), face(i2, rSp, hi)];
+      for (const sw of [1, -1]) {
+        const nw = fr.n(sa * sst * sw, ca * sw, -sa * cst * sw);
+        if (sw > 0) W.quad(p[0], nw, p[1], nw, p[2], nw, p[3], nw, uvs);
+        else W.quad(p[3], nw, p[2], nw, p[1], nw, p[0], nw,
+          [uvs[3], uvs[2], uvs[1], uvs[0]]);
+      }
+    }
+  }
+  // The hub cap, proud of the spoke plane as every wheel's is.
+  {
+    const cen = fr.pw(lx + hw * 0.84 * cst, yc, lz + hw * 0.84 * sst);
+    for (let i = 0; i < segs; i++) {
+      const i2 = (i + 1) % segs;
+      W.tri(face(i, rHub, 0.84), cen, face(i2, rHub, 0.84),
+        [uvAt(i, rHub), [0, 0], uvAt(i2, rHub)]);
+    }
+  }
+  // The inboard face, which is never seen from outside the arch: one fan.
+  {
+    const wf = -0.80;
     const cen = fr.pw(lx + hw * wf * cst, yc, lz + hw * wf * sst);
-    for (let i = 0; i < sides; i++) {
-      const i2 = (i + 1) % sides;
-      const p = (q: number): V3 => {
-        const a = (q / sides) * Math.PI * 2;
-        let py = yc + Math.sin(a) * rim;
-        const pr = Math.cos(a) * rim;
-        if (py < flat) py = flat;
-        return fr.pw(lx + hw * wf * cst - pr * sst, py, lz + hw * wf * sst + pr * cst);
-      };
-      const uvA: [number, number] = [Math.cos((i / sides) * Math.PI * 2), Math.sin((i / sides) * Math.PI * 2)];
-      const uvB: [number, number] = [Math.cos((i2 / sides) * Math.PI * 2), Math.sin((i2 / sides) * Math.PI * 2)];
-      if (outer > 0) W.tri(p(i), cen, p(i2), [uvA, [0, 0], uvB]);
-      else W.tri(p(i), p(i2), cen, [uvA, uvB, [0, 0]]);
+    for (let i = 0; i < segs; i++) {
+      const i2 = (i + 1) % segs;
+      W.tri(face(i, rim, wf), face(i2, rim, wf), cen,
+        [uvAt(i, rim), uvAt(i2, rim), [0, 0]]);
     }
   }
 }

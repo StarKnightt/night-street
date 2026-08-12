@@ -77,6 +77,9 @@ vec3 gRefl = vec3(0.0);
 /** The same ray at the clearcoat's own roughness, which is far sharper. */
 vec3 gReflC = vec3(0.0);
 float gReflBlur = 0.0;
+/* How far up the reflected ray leaves, which decides whether this pixel is
+ * looking at the canyon or at open sky. See CAR_MAPS. */
+float gReflUp = 0.0;
 /** Set by the wheel body on the flat the tyre is squashed onto. */
 float gPatch = 0.0;
 /* A tilt of the shaded normal toward world up, in the same units as a slope.
@@ -178,10 +181,50 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * struck stucco, so a pane reflecting it could only ever be luminous, and
    * flat with it, because a constant is what a wall with no lighting variation
    * across it returns. */
-  vec3 wall = mix(vec3(0.335, 0.243, 0.216), vec3(1.05, 0.675, 0.562),
+  /* ── Re-measured under the 12 degree sun, and every one of them moved ────
+   *
+   * The three constants below were set by inverting a display value through
+   * display = 0.284 * L^0.4545, which NOTES.md has since withdrawn: it
+   * over-predicts the radiance behind a given code by three to six times over
+   * exactly this band. They are now read off the HDR buffer directly, before
+   * the tone curve, with the AgX inverse in tools/agx.mjs used only to check
+   * the prediction against the graded frame. tools/carsun.mjs, stops
+   * envSunward and envAway, is the run; every number is a probe that reports
+   * the world position and depth it sampled.
+   *
+   *   surface                      was                measured
+   *   sunlit west frontage    6.27 2.97 1.73     3.09 0.851 0.227  @ 7.6 m
+   *   shaded frontage, low    0.335 0.243 0.216  0.089 0.048 0.053 @ 4.3 m
+   *   shaded frontage, high   1.05 0.675 0.562   0.081 0.045 0.062 @ 7.2 m
+   *
+   * Two of those are a level error of three to eight times. The sunlit wall is
+   * worse than that: at 6.27/1.73 it had a red-to-blue ratio of 3.6 where the
+   * surface measures 13.6, so a car reflecting it was being handed a wall four
+   * times too blue as well as twice too bright. That is the hue error the brief
+   * predicted from the beam being less reddened at 12 degrees, and it has the
+   * opposite sign to the guess: the beam that *reaches the ground* is less
+   * reddened, but the wall it lands on is brick, and the product is redder than
+   * the constant that was standing in for it.
+   *
+   * The vertical gradient collapses with them. Measured, the shaded frontage is
+   * flat within twenty per cent from the ground storey to the shade line — it
+   * does not brighten with height, because what lights it is a strip of sky the
+   * same width all the way up. The 1.4-to-6.0 ramp from 0.335 to 1.05 was a
+   * three-fold climb that no surface in the frame performs.
+   */
+  vec3 wall = mix(vec3(0.089, 0.048, 0.053), vec3(0.104, 0.058, 0.070),
                   smoothstep(1.4, 6.0, yHit));
-  wall = mix(wall, vec3(6.27, 2.97, 1.73),
-             smoothstep(litLine - 1.0, litLine + 3.0, yHit));
+  /* And the shade line itself is the one constant here that survived.
+   *
+   * 6.5 m was authored at 4.2 degrees and I expected it to be wrong, because it
+   * is a geometric quantity and the beam has since risen 7.8 degrees. Measured
+   * up the west frontage in 300 mm steps, the transition is at 6.6 m: dark
+   * masonry at 6.26 m and 1.49 linear at 6.75 m. So it stays. What was wrong
+   * was the *width* — a four-metre ramp from 5.5 to 9.5 for an edge that the
+   * profile crosses inside 500 mm, which smeared the brightest thing a car
+   * flank reflects over half the terrace. */
+  wall = mix(wall, vec3(2.60, 0.780, 0.215),
+             smoothstep(litLine - 0.20, litLine + 0.70, yHit));
   wall *= 0.78 + 0.44 * hash21(vec2(bay, 5.1));
   float st = fract((yHit - 0.55) / 3.15);
   float winRow = smoothstep(0.14, 0.24, st) * (1.0 - smoothstep(0.58, 0.68, st));
@@ -198,7 +241,9 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
   float awnB = hash21(vec2(floor(zHit / 5.1), 17.3));
   float awn = step(0.62, awnB)
     * smoothstep(2.34, 2.42, yHit) * (1.0 - smoothstep(3.02, 3.10, yHit));
-  vec3 awnC = mix(vec3(0.62, 0.20, 0.16), vec3(1.55, 1.44, 1.30),
+  // Measured off the striped awning over the hero at 12 m: 0.94, 0.82, 0.98 on
+  // the pale stripe and 0.64, 0.47, 0.60 where the two mix. Down from 1.55.
+  vec3 awnC = mix(vec3(0.375, 0.121, 0.097), vec3(0.940, 0.870, 0.930),
                   step(0.5, fract(zHit / 0.32)));
   // The soffit is in its own shadow and the top of the valance catches sky.
   awnC *= 0.30 + 0.85 * smoothstep(2.40, 2.92, yHit);
@@ -224,14 +269,30 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * brightness was defensible and the content was a constant. */
   float unitU = fract(zHit / 4.35);
   float pier = smoothstep(0.03, 0.11, unitU) * (1.0 - smoothstep(0.86, 0.95, unitU));
-  vec3 fasciaC = vec3(0.150, 0.135, 0.132);
-  vec3 shopC = vec3(0.520, 0.400, 0.330)
-    * (0.35 + 1.30 * hash21(vec2(floor(zHit / 4.35), 47.7)));
+  /* Measured, and this one splits in two rather than scaling.
+   *
+   * Two probes landed on the ground storey opposite in the same frame and
+   * disagreed by twelve times: the shop *panel* between the piers reads 0.037
+   * at 14.5 m and a glazed bay reads 0.475 at 18.2 m. Both are right — the
+   * fascia and the piers are matt and in shade, and the glass beside them is
+   * throwing back the sunlit terrace behind the camera. So the fascia comes
+   * down by four times to what a shaded board actually measures, and the
+   * glazing keeps most of its brightness but is now the exception in the band
+   * rather than its average. That contrast is the reason this term exists. */
+  vec3 fasciaC = vec3(0.042, 0.038, 0.037);
+  vec3 shopC = vec3(0.300, 0.226, 0.186)
+    * (0.30 + 1.55 * hash21(vec2(floor(zHit / 4.35), 47.7)));
   float shopG = pier * smoothstep(0.58, 0.70, yHit)
               * (1.0 - smoothstep(2.62, 2.78, yHit));
   vec3 ground = mix(fasciaC, shopC, shopG);
   // The stallriser and the pavement shadow under it, which is the darkest
   // band in the whole reflection and the one that reads as ground.
+  /* Left alone, and deliberately: the probe aimed at the stallriser came back
+   * having hit a parked car's side glass at 6.2 m instead, 12 m short of the
+   * frontage. So there is no measurement of this surface and it keeps its
+   * authored value — it is the darkest term in the function, the one the
+   * withdrawn curve's error matters least on, and guessing at it to keep the
+   * table tidy is how this project got here. */
   ground = mix(vec3(0.062, 0.056, 0.058), ground, smoothstep(0.10, 0.42, yHit));
   wall = mix(ground, wall, smoothstep(2.92, 3.20, yHit));
 
@@ -254,9 +315,37 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * All three are now measured off the rendered scene through the same
    * inversion as the walls: the hazed street end toward the sun, the murk away
    * from it, and the zenith overhead. */
-  vec3 skyC = mix(vec3(1.10, 1.05, 1.55), vec3(4.18, 2.50, 2.03),
+  /* Measured, and the anti-sunward sky is the biggest single error in the file.
+   *
+   *   sky 30 deg up, sunward   4.18 2.50 2.03    1.005 0.388 0.480
+   *   sky 30 deg up, away      1.10 1.05 1.55    0.146 0.100 0.389
+   *
+   * A factor of four toward the sun and of seven and a half away from it, and
+   * again the hue is the more interesting half. Both measurements have blue
+   * above green — 0.388 green against 0.480 blue sunward, and 0.100 against
+   * 0.389 away — which is the ozone Chappuis band taking the yellow-green out
+   * of a long slant path, and no version of this constant had it. The old pair
+   * ran warm-to-warmer; the sky in this scene runs violet away from the sun and
+   * amber only within twenty degrees of it. A windscreen facing up-street was
+   * being handed a tan veil for a sky that is measurably blue.
+   *
+   * These are the values the *frame* has, not the values the atmosphere model
+   * has at the horizon; that distinction is the one the note below the road
+   * term makes and it is why uHorizonSun is not read here. */
+  vec3 skyC = mix(vec3(0.146, 0.100, 0.389), vec3(1.005, 0.388, 0.480),
                   smoothstep(-0.35, 0.95, az));
-  skyC = mix(skyC, vec3(1.71, 1.36, 2.22), smoothstep(0.02, 0.55, max(R.y, 0.0)));
+  /* The zenith term is the one sky value here that is *not* measured: a camera
+   * in this scene cannot pitch far enough to put the zenith on screen, so the
+   * probe that aimed at it landed off the top of the frame in both directions
+   * and is reported as a miss rather than as a number. It is set to the
+   * anti-sunward slant measurement, which is the closest thing in the set and
+   * is an underestimate if anything.
+   *
+   * It also matters much less than it did, because the panels that look
+   * anywhere near straight up now take three's own IBL instead of this — see
+   * SKY_REFL and CAR_MAPS. This term is what a *flank* gets when its ray
+   * clears the roofline, which is a shallow, distant, hazed piece of sky. */
+  skyC = mix(skyC, vec3(0.146, 0.100, 0.389), smoothstep(0.02, 0.55, max(R.y, 0.0)));
   /* The halo, and on a car it is not optional. Aerosol scattering piles light
    * up around the disc over twenty degrees, and a windscreen or a bonnet with
    * a reflected ray anywhere near the sun returns that glare as a soft bloom
@@ -270,7 +359,20 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
   /* The carriageway, between the gutter looking away from the sun and the
    * hazed road looking down it. Both measured; the previous pair was an order
    * of magnitude below either. */
-  vec3 road = mix(vec3(0.49, 0.34, 0.53), vec3(2.29, 1.36, 1.27),
+  /* Measured too, in five places, and the sunward end needed the most work.
+   *
+   *   carriageway 5 m sunward     0.105 0.079 0.060
+   *   carriageway 15 m sunward    0.205 0.131 0.087
+   *   gutter, sunlit strip        1.081 0.374 0.130
+   *   carriageway 16 m away       0.043 0.038 0.037
+   *
+   * So the sunward mix ends between the shaded carriageway and the one sunlit
+   * strip a ray down the street can find, which is the gutter on the west side
+   * — hence a value redder and dimmer than the 2.29 1.36 1.27 that was here,
+   * and eleven times lower at the away end. The old anti-sunward value of
+   * 0.49 0.34 0.53 was brighter than the *sunward* road actually measures at
+   * five metres, which is the error running in both directions at once. */
+  vec3 road = mix(vec3(0.043, 0.038, 0.037), vec3(0.620, 0.295, 0.155),
                   smoothstep(0.1, 0.95, az));
   /* The road a car actually reflects is the road it is standing on.
    *
@@ -349,7 +451,17 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
    * wall and road constants to their true values turned a dark blue saloon
    * white — the surfaces were three times too dim and the terminal was five
    * times too bright, and the two errors had been cancelling. */
-  vec3 hazeC = mix(vec3(0.85, 0.80, 0.95), vec3(4.18, 2.50, 2.03),
+  /* And the terminal, measured at both ends of the street in the same pair of
+   * captures: 1.347 0.591 0.235 at the hazed end 78 m sunward, and
+   * 0.071 0.051 0.098 at 37 m the other way. Was 4.18 2.50 2.03 and
+   * 0.85 0.80 0.95 — three times and twelve times too bright respectively.
+   *
+   * This is the term the previous pass called the one that "mattered more than
+   * the surfaces", and it still does: it is mixed in at up to 88 per cent on a
+   * grazing ray, which is where Fresnel is largest, so it sets the value of
+   * every flank seen along the street. Two thirds of 4.18 over a wall that
+   * measures 0.09 is why the cars came back as a continuous cream field. */
+  vec3 hazeC = mix(vec3(0.071, 0.051, 0.098), vec3(1.347, 0.591, 0.235),
                    smoothstep(-0.25, 0.90, az));
   float ext = 1.0 - exp(-pow(dHit * 0.0150, 1.75));
   /* And it is the length of the path the ray *actually* travelled, which is
@@ -415,14 +527,67 @@ vec3 streetProbe(vec3 P, vec3 R, float blur){
 const CAR_MAPS = (gain: number) => /* glsl */ `
 #include <lights_fragment_maps>
 #if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular )
-  radiance = gRefl;
+  /* The sky, on the one part of a car that can actually see it.
+   *
+   * streetProbe is a canyon: a road, two frontages and a slot of sky, with
+   * the sky term an analytic gradient. That is the right model for a flank,
+   * whose rays go across the street and die on the terrace opposite, and it is
+   * the wrong one for a bonnet and a roof. A horizontal panel's reflected ray
+   * leaves straight up, so what it sees is most of the dome — and the dome in
+   * this scene has three cloud decks and an ozone Chappuis term in it that no
+   * two-colour gradient can stand in for. The sunset on the bonnet is the
+   * user's first note and it is the thing an analytic sky cannot deliver.
+   *
+   * radiance as it arrives here is three's own resolution of
+   * scene.environment at this roughness, which is the IBL with the clouds in
+   * it — the same probe every other material in the scene reads, and the
+   * reason for taking it here rather than sampling the cubemap again is that
+   * three has already done the roughness-correct lookup and the mip selection.
+   *
+   * It is *blended*, not switched, on how far up the reflected ray goes: at
+   * the crown of a bonnet the answer is the sky, at the shoulder of a door it
+   * is the canyon, and across the curve between them it is both, which is what
+   * a real body panel does. The occlusion the canyon term applies to the
+   * diffuse is applied here too, because a roof 1.4 m up in an 11.4 m slot
+   * still cannot see the whole dome.
+   *
+   * Note which way this cuts against System 3's finding on the shopfronts: a
+   * street-level vertical pane genuinely cannot see sky and its analytic model
+   * was right. A car is not that case and the conclusion does not transfer.
+   */
+  /* The ramp starts below the horizon, and that is not a fudge — it is the
+   * difference between a mirror direction and a lobe.
+   *
+   * First attempt used smoothstep(0.10, 0.62), which is the honest answer for a
+   * perfect mirror and produced a roof with no sky on it at all. The reason is
+   * geometry: a camera at eye height three metres from a car looks at its roof
+   * along a ray that is almost horizontal, so the mirror direction off an
+   * upward normal comes back up at about three degrees and lands on the far end
+   * of the street rather than on the dome. Which is true of a mirror, and a car
+   * roof is not one. The base coat is roughness 0.30, so what it returns is a
+   * cone forty-odd degrees wide centred on that direction, and half of that
+   * cone is sky even when its axis is level. The clearcoat lobe is much
+   * tighter and is what carries the hard reflection of the terrace and the
+   * horizon; the wide lobe underneath is what carries the sky.
+   *
+   * So the weight opens from below the horizon. At gReflUp = 0 — a ray straight
+   * down the street — a panel takes about a quarter sky, which is what the
+   * upper half of a wide cone off a horizontal surface sees, and it is why a
+   * real bonnet photographs as sky at the near edge and street at the far one.
+   */
+  float skyMix = smoothstep(-0.22, 0.48, gReflUp) * gSpecAO;
+  vec3 skyRad = radiance * ${SKY_REFL.toFixed(2)};
+  #ifdef USE_CLEARCOAT
+    vec3 skyRadC = clearcoatRadiance * ${SKY_REFL.toFixed(2)};
+  #endif
+  radiance = mix(gRefl, skyRad, skyMix);
   #ifdef USE_CLEARCOAT
     /* The two lobes get two different images and that is the whole point of
      * the split: the base coat under the lacquer is roughness 0.30 and returns
      * the street as a smear, while the clearcoat is 0.03 and returns it as a
      * picture. Feeding both the same blurred probe is what makes a car look
      * like painted clay. */
-    clearcoatRadiance = gReflC;
+    clearcoatRadiance = mix(gReflC, skyRadC, skyMix);
   #endif
 #endif
 #if defined( RE_IndirectDiffuse )
@@ -486,20 +651,70 @@ totalEmissiveRadiance += gEmit;
 const DBGR = 1.0;
 const DBGP = 0;
 
+/* How much of the IBL's own sky an up-facing panel returns; see CAR_MAPS.
+ *
+ * It ships at 1, which is to say the probe is taken as it stands. That needs
+ * defending rather than assuming, because the probe is unoccluded and a bonnet
+ * in an 11.4 m canyon sees a slot rather than a dome. The occlusion is already
+ * applied, twice: gSpecAO carries how much of the bright half of the world a
+ * panel at that height can see, and the blend weight itself only opens up as
+ * the reflected ray turns skyward, which on a body panel seen from a standing
+ * eye it mostly does not. Adding a third scalar on top of those would be the
+ * 0.35 fudge this file has already had to remove once.
+ *
+ * The knob is here because it is the one number in this mechanism that cannot
+ * be derived, and if a later measurement says a bonnet is too bright this is
+ * where it gets fixed. Measured now: the hero's bonnet reads 0.049 linear
+ * facing away from the sun against 0.041 for the frontage behind it, and its
+ * hue has gone blue-violet, which is the Chappuis sky arriving where a warm
+ * analytic gradient used to be. */
+const SKY_REFL = 1.0;
+
 const PAINT_DECL = /* glsl */ `
 vec3 carPaint(float g, out float metalFlake){
   float i = floor(clamp(g, 0.0, 0.999) * 10.0);
   metalFlake = 0.0;
-  if (i < 0.5)      { return vec3(0.2700, 0.2670, 0.2590); }   // white
-  if (i < 1.5)      { metalFlake = 1.0; return vec3(0.1050, 0.1085, 0.1150); } // silver
-  if (i < 2.5)      { metalFlake = 0.7; return vec3(0.0520, 0.0542, 0.0590); } // light grey
-  if (i < 3.5)      { metalFlake = 0.8; return vec3(0.0230, 0.0248, 0.0298); } // gunmetal
-  if (i < 4.5)      { return vec3(0.1050, 0.0125, 0.0105); }   // red
-  if (i < 5.5)      { return vec3(0.0092, 0.0093, 0.0099); }   // black
-  if (i < 6.5)      { return vec3(0.0090, 0.0195, 0.0150); }   // dark green
-  if (i < 7.5)      { metalFlake = 0.6; return vec3(0.0125, 0.0205, 0.0510); } // deep blue
-  if (i < 8.5)      { metalFlake = 0.5; return vec3(0.0940, 0.0810, 0.0625); } // champagne
-                      return vec3(0.0195, 0.0200, 0.0215);     // graphite
+  /* Twice what they were, at exactly the same hue, and the factor is a
+   * consequence of the probe recalibration above rather than a restyle.
+   *
+   * The convergence the brief asks about is real and it is measured: with the
+   * reflection left on, a *black* car's flank came back at 0.4755 linear and
+   * the *white* van's at 0.3890, so the black car was the brighter of the two
+   * and every one of the nine sat between 0.35 and 0.48 whatever its nominal
+   * colour. But the cause was not the palette. Rendering the same frames with
+   * DBGR = 0 — the diagnostic scale on the resolved reflection, which is in
+   * this file precisely so that this question can be measured rather than
+   * argued — put the hero's flank at 0.0177 against 0.3498 with it on. The
+   * mirror was 95 per cent of the value, so of course the paint underneath made
+   * no difference to it; correcting streetProbe is what fixes the convergence,
+   * and this is not.
+   *
+   * What this is for is the level. The mirror term has come down by about four
+   * times, and if the diffuse under it does not come up to meet it every car in
+   * the street loses a stop and a half. The right place to find it is the
+   * albedo, because that is the term that differs per car: a real light-silver
+   * hatchback is 0.35 to 0.45 reflectance and this palette had it at 0.052,
+   * which is the two-to-five-times-too-dark authoring error this project has
+   * now found in the prop kit, the awnings, the shutters, the sign boards and
+   * here. Every entry is scaled by the same factor so that no hue moves, which
+   * is the one thing the user asked to keep.
+   *
+   * White is the exception and stays deliberately unphysical, up by 1.48 rather
+   * than 2. A real white car is 0.70 to 0.80 and at this exposure that lands on
+   * the AgX shoulder, where the slope is shallow enough that the road film, the
+   * dust line, the shut lines and the shoulder highlight all arrive as the same
+   * code value and the car is a white cutout. 0.40 keeps it the brightest thing
+   * in the row with its panel structure intact. */
+  if (i < 0.5)      { return vec3(0.4000, 0.3956, 0.3837); }   // white
+  if (i < 1.5)      { metalFlake = 1.0; return vec3(0.2100, 0.2170, 0.2300); } // silver
+  if (i < 2.5)      { metalFlake = 0.7; return vec3(0.1040, 0.1084, 0.1180); } // light grey
+  if (i < 3.5)      { metalFlake = 0.8; return vec3(0.0460, 0.0496, 0.0596); } // gunmetal
+  if (i < 4.5)      { return vec3(0.2100, 0.0250, 0.0210); }   // red
+  if (i < 5.5)      { return vec3(0.0184, 0.0186, 0.0198); }   // black
+  if (i < 6.5)      { return vec3(0.0180, 0.0390, 0.0300); }   // dark green
+  if (i < 7.5)      { metalFlake = 0.6; return vec3(0.0250, 0.0410, 0.1020); } // deep blue
+  if (i < 8.5)      { metalFlake = 0.5; return vec3(0.1880, 0.1620, 0.1250); } // champagne
+                      return vec3(0.0390, 0.0400, 0.0430);     // graphite
 }
 `;
 
@@ -874,10 +1089,25 @@ const PAINT_BODY = /* glsl */ `
      * and reads at three metres. */
     float milk = smoothstep(0.35, 0.95, age);
     col = mix(vec3(0.0300, 0.0300, 0.0320), vec3(0.1350, 0.1250, 0.1080), milk * 0.75);
-    // The reflector bowl behind it, in two lobes: dip and main beam.
+    /* The reflector bowl behind it, in two lobes: dip and main beam — and it is
+     * aluminised, which is the note the brief makes and which this branch did
+     * not have. An unlit headlamp is not a dark hole. It is a clear
+     * polycarbonate cover over a vacuum-metallised paraboloid, so at low sun it
+     * is one of the two or three brightest specular hits anywhere on a car:
+     * the cover catches the sky at its curved edges and the bowl behind throws
+     * back a hard compressed image of whatever is in front of the car. Stated
+     * as metal rather than as a bright albedo, because the whole character of
+     * it is that it is a mirror with a shape — a bright diffuse patch in the
+     * same place reads as a headlamp switched on, which the brief rules out. */
     float bowl = smoothstep(0.55, 0.18, abs(fract(featX * 3.4 + 0.5) - 0.5) * 2.0);
-    col = mix(col, col * 0.42 + vec3(0.0180, 0.0180, 0.0190), bowl * 0.6);
-    rgh = mix(0.06, 0.42, milk); coat = 1.0;
+    col = mix(col, vec3(0.6100, 0.6050, 0.5900), bowl * 0.80);
+    met = bowl * 0.85;
+    /* And the bowl is a paraboloid, so the ray sweeps right across the sky
+     * between the middle of the lamp and its rim. That sweep is what makes a
+     * reflector read as a reflector rather than as a chrome disc; it is the
+     * same argument the door mirror's own curvature makes. */
+    gSlope += vec2(fract(featX * 3.4 + 0.5) - 0.5, 0.0) * 1.20 * bowl;
+    rgh = mix(0.06, 0.42, milk) * (1.0 - bowl * 0.45); coat = 1.0;
     gEmit += vec3(0.620, 0.500, 0.315) * litOn * 0.55;
     grime = 1.2;
 
@@ -957,9 +1187,24 @@ const PAINT_BODY = /* glsl */ `
      * the transmitted daylight where it was measuring correctly; the clamp is
      * up a little because it is now doing its job against real radiance rather
      * than against a value that was four times too small to need clamping. */
-    vec3 through = min(streetProbe(vWPos, Vw, 0.45) * 0.008, vec3(0.42));
-    gEmit += through * (1.0 - solid);
-    col *= 1.0 + 0.4 * solid;
+  vec3 through = min(streetProbe(vWPos, Vw, 0.45) * 0.026, vec3(0.42));
+  gEmit += through * (1.0 - solid);
+  col *= 1.0 + 0.4 * solid;
+  /* And the seats have to be findable, which is the other half of "you can
+   * barely see headrests inside".
+   *
+   * The cabin surface now sits 62 mm inboard of the pane rather than 5, so
+   * there is parallax between the two and the headrests move against the
+   * aperture as the camera passes. But the shader was drawing them as a 45 per
+   * cent darkening of an interior already at 0.017 — a two-count difference on
+   * screen, which is nothing. A headrest is a separate object catching what
+   * daylight gets in through the far side, so it is lighter than the trim
+   * behind it and it occludes the transmitted light rather than tinting it,
+   * which is what the solid term above is already doing. The contrast is now in
+   * both directions: the seat faces catch a little, the pillar and the
+   * headliner shadow behind them do not. */
+  col = mix(col, vec3(0.0330, 0.0312, 0.0288), max(seatF, seatR) * 0.55);
+  gAO *= 1.0 - pil * 0.45;
 
   } else if (part < 7.5){
     /* ── Number plate ───────────────────────────────────────────────────
@@ -1268,7 +1513,25 @@ normal = normalize(normal + vec3(0.0, gTiltY, 0.0));
   gReflC = streetProbe(vWPos, Rw, gCoatRough * 1.6) * gSpecAO * DBGR;
   gRefl = streetProbe(vWPos, Rw, gReflBlur) * gSpecAO * DBGR;
 }`)
-      .replace('#include <lights_fragment_maps>', CAR_MAPS(2.00))
+      /* 2.60, up from 2.00, and the reason it can move is that the thing it was
+       * holding down has gone.
+       *
+       * The note in CAR_MAPS records why it was dropped to what the road uses
+       * rather than what the walls use: with the full canyon boost and a wall-
+       * sized gain, a silver estate in shade rendered brighter than sunlit
+       * brickwork. That was true, and the cause was not the diffuse gain — it
+       * was a mirror term running three to eight times over the surfaces it
+       * claimed to be reflecting, which is now measured and corrected. With the
+       * reflection honest, the diffuse is the term that has to carry a car's
+       * level, and it is also the only term that differs per car. That is the
+       * right place for it: raising the gain multiplies each body's own albedo,
+       * where raising the reflection would push all nine back toward one value.
+       *
+       * Measured, in the same frame as its controls: the hero's flank sits at
+       * display 56 against 47 for the shaded frontage 12 m behind it and 103 for
+       * the sunlit carriageway beside it, which is the order a parked car in a
+       * building's shadow actually reads in. */
+      .replace('#include <lights_fragment_maps>', CAR_MAPS(2.60))
       .replace('#include <emissivemap_fragment>', CAR_EMISSIVE)
       /* After <lights_physical_fragment> and not at the clearcoat normal,
        * which is the intuitive place and is one include too early: three
@@ -1391,7 +1654,21 @@ const GLASS_BODY = /* glsl */ `
    * turns on and the one this scene can settle, because both are in the same
    * frame. A car window is not a better mirror than a shop window; it is a
    * smaller, dirtier, more curved one with more standing in its way. */
-  gRefl *= 0.30 * DBGR;
+  /* 0.55, up from 0.30, and it is the same recalibration running backwards.
+   *
+   * 0.30 was set when streetProbe returned a sunward haze terminal of 4.18 and
+   * a sunlit wall of 6.27 — against those, a pane had to be cut to a third to
+   * stop it being the brightest thing in the frame, and the note above records
+   * that honestly as an occlusion standing in for a level error. The probe is
+   * now measured and about four times lower, so the same third would take the
+   * glass to a fifth of what a car window is: the previous pass measured a good
+   * pane at display 55, and 0.30 through the corrected probe lands at 33.
+   *
+   * What is left is a real occlusion and it is worth roughly a half: a side
+   * window 1.2 m off the road has the rest of the parked row, both kerbs, the
+   * footway furniture and the car's own pillars between it and the empty canyon
+   * this function models. */
+  gRefl *= 0.55 * DBGR;
 #if DBGP
   /* The pane rendered as an opaque mirror of the raw probe, which is the only
    * way to read what streetProbe actually returns along a given ray instead of
@@ -1620,25 +1897,44 @@ const WHEEL_BODY = /* glsl */ `
     float a = atan(uv.y, uv.x);
     float spokes = 5.0 + floor(hash21(vec2(seed, 3.7)) * 3.0) * 2.0;
     float sp = abs(fract(a / 6.28318 * spokes + 0.5) - 0.5) * 2.0;
-    float web = 1.0 - smoothstep(0.30, 0.62, sp);      // the spoke itself
-    float face = smoothstep(0.30, 0.36, r) * (1.0 - smoothstep(0.90, 0.97, r));
+    /* The spokes are geometry now — see the rim section of world/cars.ts — so
+     * what used to be drawn here is only the *shading* that follows from them:
+     * the openings are recessed 45 mm and see the brake and the inside of the
+     * arch rather than the street, and that occlusion is not something the
+     * geometry can state on its own.
+     *
+     * Drawing them twice was the alternative and it is worse than either: a
+     * painted spoke pattern over a modelled one lands out of register at every
+     * angle except dead ahead, and a wheel with eight spokes and eight painted
+     * shadows in the wrong places is less convincing than a plain disc. */
+    float web = 1.0 - smoothstep(0.34, 0.66, sp);
+    float face = smoothstep(0.28, 0.34, r) * (1.0 - smoothstep(0.88, 0.95, r));
     float open = face * (1.0 - web);
 
-    // Painted alloy: not chrome. A modern wheel is a matt silver lacquer.
-    col = vec3(0.1250, 0.1270, 0.1300);
-    met = 0.55; rgh = 0.36 + 0.20 * age;
+    /* Painted alloy: not chrome, but a great deal more metal than it was.
+     *
+     * "Make the rim metallic and reflective." At metalness 0.55 it was half a
+     * dielectric, which is not a thing a lacquered alloy is: the lacquer is
+     * 40 microns of clear over a machined and painted metal face, so what the
+     * eye gets is a metal reflection through a thin film. The rise from 0.55 to
+     * 0.88 is most of what makes a wheel catch the sky at all, and the drop in
+     * roughness is the rest — a clean face on a modern wheel is a soft mirror,
+     * and it is the second brightest thing on a parked car after the glass. */
+    col = vec3(0.2050, 0.2080, 0.2120);
+    met = 0.88; rgh = 0.30 + 0.22 * age;
     // The rim flange, which is the bright ring at the edge.
-    float flange = smoothstep(0.90, 0.965, r) * (1.0 - smoothstep(0.99, 1.0, r));
-    col = mix(col, vec3(0.1750, 0.1780, 0.1800), flange * 0.7);
-    rgh = mix(rgh, 0.26, flange * 0.6);
+    float flange = smoothstep(0.88, 0.955, r) * (1.0 - smoothstep(0.99, 1.0, r));
+    col = mix(col, vec3(0.2650, 0.2680, 0.2700), flange * 0.7);
+    rgh = mix(rgh, 0.20, flange * 0.6);
     // Behind the spokes: the brake disc and the dark of the arch.
     col = mix(col, vec3(0.0170, 0.0165, 0.0170), open * 0.92);
     rgh = mix(rgh, 0.80, open);
     met = mix(met, 0.2, open);
-    gAO *= 1.0 - open * 0.75;
+    gAO *= 1.0 - open * 0.82;
+    gSpecAO *= 1.0 - open * 0.70;
     // The hub cap and the bolt circle.
     float hub = 1.0 - smoothstep(0.24, 0.30, r);
-    col = mix(col, vec3(0.0680, 0.0670, 0.0690), hub * 0.7);
+    col = mix(col, vec3(0.1150, 0.1140, 0.1160), hub * 0.7);
 
     /* Brake dust. The one thing that stops an alloy wheel reading as new: iron
      * dust off the pads bakes onto the face and it is heaviest at the centre
@@ -1701,8 +1997,15 @@ vWhlBase = aWhlB.x;`);
       .replace('#include <normal_fragment_maps>', `${FACADE_NORMAL}
 {
   vec3 Vw = normalize(vWPos - cameraPosition);
-  gRefl = streetProbe(vWPos, reflect(Vw, normalize(normal)), gReflBlur)
-        * (1.0 - gPatch);
+  vec3 Rw = reflect(Vw, normalize(normal));
+  /* gSpecAO carries the spoke openings, which are 45 mm behind the face and
+   * look at a brake disc rather than at the street. It is written in
+   * WHEEL_BODY, which runs at <metalnessmap_fragment> — three orders that
+   * before the normal includes, which is the only reason any of these globals
+   * can be read here at all. */
+  gRefl = streetProbe(vWPos, Rw, gReflBlur) * (1.0 - gPatch) * gSpecAO;
+  gReflC = gRefl;
+  gReflUp = max(Rw.y, 0.0);
 }`)
       .replace('#include <lights_fragment_maps>', CAR_MAPS(1.60));
   };
