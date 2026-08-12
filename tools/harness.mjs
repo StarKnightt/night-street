@@ -121,20 +121,31 @@ export function reachable(url, timeoutMs = 2500) {
  * evaluate, because the drawing buffer is not preserved and is gone by the
  * next task.
  */
-export async function capture(page, file) {
+/**
+ * Capture one frame deterministically.
+ *
+ * `opts.before` is a statement evaluated in the page inside the same task as
+ * the draw, immediately before it. It exists because the two things worth
+ * doing at that instant — deliberately staling something to prove the guard
+ * catches it, and switching one term between two otherwise identical frames —
+ * both stop working if anything yields first, for exactly the reason the guard
+ * exists. Nothing else should use it.
+ */
+export async function capture(page, file, opts = {}) {
   /* The liveness assertion runs inside the same evaluate as the draw, between
    * the render and the read, so it observes the exact state the PNG was made
    * from. Asking afterwards would let an animation frame fix the very thing
    * it is there to catch — which is the bug, one level up. */
-  const { url, live } = await page.evaluate((label) => {
+  const { url, live } = await page.evaluate(([label, before]) => {
     const s = window.__scene;
     s.setPaused(true);
+    if (before) new Function('s', before)(s);
     s.renderOnce();
     const live = window.__liveness ? window.__liveness(label) : null;
     const data = s.renderer.domElement.toDataURL('image/png');
     s.setPaused(false);
     return { url: data, live };
-  }, path.basename(file));
+  }, [path.basename(file), opts.before || '']);
   if (live && live.failures && live.failures.length) {
     livenessFailures.push({ file: path.basename(file), ...live });
   }
