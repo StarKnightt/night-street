@@ -75,6 +75,29 @@ function prism(
   q([u0, y0 - t, dA], [u0, y0, dA], [u0, y0, dB], [u0, y0 - t, dB]);
 }
 
+/**
+ * A member sloping in the (y, d) plane: a bracket stay, an angled coupling,
+ * anything that leans out from a wall rather than along it.
+ *
+ * `Face.bar` wants its section counter-clockwise in (y, d) and turns inside
+ * out — invisible in the beauty pass and in the shadow pass both — if it is
+ * handed the other order, so the two offsets are derived from the member's
+ * own direction rather than written down. u has to ascend for the same reason
+ * the stair stringers do.
+ */
+function stay(
+  f: Face, u0: number, u1: number,
+  yA: number, dA: number, yB: number, dB: number, t: number,
+): void {
+  if (u1 < u0) [u0, u1] = [u1, u0];
+  const ly = yB - yA, ld = dB - dA;
+  const l = Math.hypot(ly, ld) || 1;
+  const py = (-ld / l) * t * 0.5, pd = (ly / l) * t * 0.5;
+  f.bar(u0, u1, [
+    [yA - py, dA - pd], [yB - py, dB - pd], [yB + py, dB + pd], [yA + py, dA + pd],
+  ]);
+}
+
 /* ── The ground storey, shared with System 3 ────────────────────────────── */
 
 /**
@@ -723,6 +746,675 @@ function emitFurniture(c: WinCtx): void {
   void dBack;
 }
 
+/* ── The walked rows ────────────────────────────────────────────────────── */
+
+/*
+ * Everything above is applied to all fifty-seven buildings in the layout, and
+ * fifty of them are seen at twenty metres or more, through a gap, past a
+ * parked car. The two rows the camera walks between are seen at three, and at
+ * three metres what `emitFurniture` leaves behind is a blank wall: a downpipe
+ * at each end, one meter box, one standpipe, one conduit run and some roof
+ * clutter is about ten objects spread over twelve metres of frontage and
+ * thirteen of height. That reads as an unfinished model rather than as a
+ * quiet building, and no amount of brick shader fixes it, because what the
+ * eye is counting is *events* — places where something is bolted on, casts a
+ * shadow, has been repainted round, and has a pipe leaving it.
+ *
+ * The rule this function follows, and the one the sparse pass broke, is that
+ * real wall furniture comes in systems rather than in props. A split air
+ * conditioner is a condenser, two brackets, a lagged pipe pair, a hole in the
+ * wall with cement round it, a drip tray and a condensate pipe going
+ * somewhere it should not — six objects inside 800 mm, all of them there
+ * because of one decision somebody made in 1998. Nothing below is placed on
+ * its own and no run of pipe, conduit or cable in it floats: each one starts
+ * on a box and finishes on another one.
+ *
+ * And every part of it is held off the masonry. At 4.2 degrees a fixture
+ * flush to a wall has no cast shadow at all and reads as a decal — the long
+ * post-mortem in the conduit block above is exactly that failure, diagnosed.
+ * So every run here is on clips at 25 to 50 mm, every box is on a backplate
+ * or a spacer, and the only things touching the brick are the fixings
+ * themselves, which is both what the real detail is and what puts a hard
+ * dark line down the render beside each object.
+ */
+function emitStreetFixtures(c: WinCtx): void {
+  const { wf, mf, W, M, b, d } = c;
+  const s = b.seed;
+  const originY = b.base + b.gh;
+  const yTop = b.base + b.H;
+  const { plinthTop, openTop } = groundLevels(b);
+  const holes = groundOpenings(b);
+
+  /* Every stretch of solid ground-storey wall, with how much of it there is.
+   *
+   * `pierCentres` gives the middle of each one and that is all the existing
+   * furniture needs. A fixture 300 mm across also has to know whether 300 mm
+   * is there: a pier between two openings is one `b.pier` wide — 420 to 820
+   * mm — the end ones are 250 mm plus half of that, and System 3 takes the
+   * outer 155 to 235 mm of whichever piers a shop unit ends on for its
+   * pilaster. Which is why the street-level kit below is narrow and centred.
+   * A gas meter cupboard is 400 mm wide in the catalogue and 260 here,
+   * because the other 140 would be standing on somebody's joinery.
+   */
+  const piers: { u: number; half: number }[] = [];
+  if (holes.length === 0) {
+    piers.push({ u: b.L * 0.5, half: Math.min(0.5, b.L * 0.45) });
+  } else {
+    piers.push({ u: holes[0].u0 * 0.5, half: holes[0].u0 * 0.5 });
+    for (let i = 1; i < holes.length; i++) {
+      piers.push({
+        u: (holes[i - 1].u1 + holes[i].u0) * 0.5,
+        half: (holes[i].u0 - holes[i - 1].u1) * 0.5,
+      });
+    }
+    const e = holes[holes.length - 1];
+    piers.push({ u: (e.u1 + b.L) * 0.5, half: (b.L - e.u1) * 0.5 });
+  }
+  /** A stretch of solid wall wide enough to take a fixture `w` across. */
+  const pierFor = (w: number, k: number): number => {
+    const fit = piers.filter((p) => p.half >= w * 0.5 + 0.04);
+    if (fit.length === 0) return -1;
+    return fit[Math.floor(h2(s * 83 + k * 3.7, 11.9) * fit.length) % fit.length].u;
+  };
+
+  /* The service line: the one column on an elevation that is solid from the
+   * plinth to the eaves.
+   *
+   * A ground floor opening is inset half a pier from the bay boundary and an
+   * upper window is centred in its bay, so u = 0.25 + i * bayW misses the
+   * glazing below by half a pier and the window reveal above by 390 mm at the
+   * tightest bay this layout produces. Anything that has to travel more than
+   * one storey — the soil stack, a refrigerant drop, the cable to the first
+   * floor — runs on one of these, and so does everything real, because it is
+   * the only place a drill goes through into brick rather than into a shop.
+   */
+  const service: number[] = [];
+  for (let i = 1; i < b.bays; i++) service.push(0.25 + i * b.bayW);
+  const svc = (k: number): number =>
+    service[Math.floor(h2(s * 29 + k * 5.1, 2.7) * service.length) % service.length];
+
+  /* Lanes across a service pier.
+   *
+   * Four different things below can want the same 420 mm of brickwork, and
+   * on a two-bay building there is only one pier for them to want, so each
+   * subsystem gets a fixed offset from the centre line instead of a hashed
+   * one. The order is the order a real riser diagram ends up in: the soil
+   * stack on the centre because it is the fattest and went up first, the
+   * electrical drop to one side of it, waste and telecoms to the other,
+   * every one of them inside 210 mm of the centre, which is half of the
+   * narrowest pier `layoutBlock` produces. Hashing these instead would put
+   * a 20 mm condensate pipe through a 100 mm soil stack about a third of
+   * the time, and two pipes occupying the same 40 mm of wall is the one
+   * modelling error that shows up as flicker rather than as clutter. */
+  const LANE = { elec: -0.115, cond: 0.105, cable: 0.165 };
+
+  /* Where a fire escape already occupies the elevation. Hanging a condenser
+   * inside the pickets of a landing is not a clash the shadow pass forgives:
+   * the whole assembly prints itself on the wall and a box in the middle of
+   * it prints as a blot. */
+  const escU = b.escape >= 0 ? 0.25 + (b.escape + 0.5) * b.bayW : -99;
+  const escHalf = Math.min(2.35, b.bayW * 0.95) + 0.35;
+  const clearOfEscape = (u: number) => Math.abs(u - escU) > escHalf;
+
+  /* System 3's sign board, restated the way `upperWindows` restates the
+   * window lattice, and for the same reason: something has to cross it.
+   *
+   * The fascia stands 78 mm off the wall with a 112 mm cornice over it and
+   * System 2's own string course another 55 mm, so a 45 mm conduit dropping
+   * straight from the first floor to the street is buried in the board for
+   * half a metre of its length. A real one is cranked out and back on two
+   * bends, because the electrician met the same board and solved it in ten
+   * minutes, and the crank is worth having in its own right: two horizontal
+   * jogs in a vertical line are three more shadows.
+   */
+  const fasciaY0 = openTop + 0.01;
+  const fasciaY1 = Math.min(originY - 0.14, openTop + 0.62);
+
+  /* How much wider every gate below opens on a single-storey building.
+   *
+   * Two of the twenty-one walked buildings are one storey — a workshop or a
+   * lock-up, which is exactly what `layoutBlock` puts on the sunward row to
+   * drag the shade line down into frame — and they have no first floor for
+   * any of this to stand on. On the standard odds they came out carrying a
+   * downpipe, a meter box and nothing else across eight metres of frontage,
+   * which is the blank wall the whole function exists to remove. They get
+   * the same *number* of events as their neighbours, crowded into a third
+   * of the wall, which is also what a real lock-up looks like: everything
+   * anyone ever fitted is within reach of a ladder. */
+  const lift = b.nUp === 0 ? 0.22 : 0;
+
+  /** A vertical run from first-floor level to the street, over the board. */
+  const riser = (u: number, hw: number, thk: number,
+    yA: number, yB: number, off: number): void => {
+    const oF = 0.135;
+    mf.box(u - hw, u + hw, fasciaY1 + 0.06, yA, d + off, d + off + thk);
+    mf.box(u - hw, u + hw, fasciaY1 + 0.02, fasciaY1 + 0.08, d + off, d + oF + thk);
+    mf.box(u - hw, u + hw, fasciaY0 - 0.08, fasciaY1 + 0.04, d + oF, d + oF + thk);
+    mf.box(u - hw, u + hw, fasciaY0 - 0.08, fasciaY0 - 0.02, d + off, d + oF + thk);
+    mf.box(u - hw, u + hw, yB, fasciaY0 - 0.04, d + off, d + off + thk);
+  };
+
+  /* ── 1. Split air conditioning ─────────────────────────────────────────
+   *
+   * The one thing that has been bolted to the first floor of every building
+   * on a street like this since about 1995, and the only piece of wall
+   * furniture on the elevation with a fan in it.
+   *
+   * A 3.5 kW wall-hung condenser is 800 x 550 x 285 mm over its brackets;
+   * the 5 kW is 950 x 700. The pipe pair is 6 and 12 mm copper inside 19 mm
+   * lagging, taped into one bundle about 65 mm across, and it goes through
+   * the wall within a metre of the unit because nobody runs refrigerant
+   * further than they are paid to. The condensate is the giveaway: a 20 mm
+   * pipe clipped down four metres of brick and discharging onto whatever is
+   * underneath, which on half of these is the shop's own sign.
+   *
+   * Placed on the piers rather than at hashed u, two or three per building,
+   * and never on a pier `emitFurniture` has already hung its own condenser
+   * off — two units on one 900 mm pier is one too many.
+   */
+  const acAt: { u: number; f: number; r: number }[] = [];
+  for (let i = 1; i < b.bays; i++) {
+    const u = 0.25 + i * b.bayW;
+    if (!clearOfEscape(u)) continue;
+    for (let f = 0; f < Math.min(2, b.nUp); f++) {
+      if (h2(s * 40 + f * 3.1, (i - 1) * 7.7) >= 0.83) continue;
+      acAt.push({ u, f, r: h2(s * 71 + i * 2.3, f * 5.9) });
+    }
+  }
+  acAt.sort((a, z) => a.r - z.r);
+  for (const sp of acAt.slice(0, 2 + (h2(s, 26.5) > 0.45 ? 1 : 0))) {
+    const r1 = h2(sp.u * 13.7, sp.f * 5.1 + 1.3);
+    const r2 = h2(sp.u * 7.9, sp.f * 11.3 + 2.9);
+    const r3 = h2(sp.u * 3.1, sp.f * 17.7 + 4.7);
+    // Clamped to the pier it is standing on rather than to the catalogue: a
+    // 950 mm unit on a 1.0 m pier overhangs the window reveal either side.
+    const hw = Math.min(0.35 + r1 * 0.125, (b.bayW - b.winW) * 0.5 - 0.15);
+    const hgt = 0.50 + r2 * 0.15;
+    const dep = 0.25 + r3 * 0.08;
+    const fb = originY + sp.f * b.fh;
+    // Under the window on some, alongside it on the rest, and never at the
+    // same height twice: the fitter stood on a ladder and put it where the
+    // pipe run was shortest.
+    const y = fb + 0.58 + r1 * 0.62;
+    const off = 0.052 + r2 * 0.014;
+
+    M.attr('aMetal', s * 67 + sp.u, 1);
+    mf.box(sp.u - hw, sp.u + hw, y, y + hgt, d + off, d + off + dep);
+    // The discharge grille. Three bars, which is what stops the case reading
+    // as a grey box and what breaks up the shadow it throws.
+    for (let k = 0; k < 3; k++) {
+      const yy = y + hgt * (0.24 + k * 0.22);
+      mf.box(sp.u - hw + 0.055, sp.u + hw - 0.055, yy, yy + 0.028,
+        d + off + dep, d + off + dep + 0.02);
+    }
+    M.attr('aMetal', s * 67 + sp.u, 5);
+    for (const sg of [-1, 1]) {
+      const uu = sp.u + sg * (hw - 0.08);
+      mf.box(uu - 0.024, uu + 0.024, y - 0.055, y + hgt * 0.4, d, d + off);
+      mf.box(uu - 0.022, uu + 0.022, y - 0.035, y + 0.012, d, d + off + dep * 0.8);
+      stay(mf, uu - 0.019, uu + 0.019, y - 0.30, d + 0.012, y - 0.02, d + off + dep * 0.66, 0.042);
+    }
+
+    /* The pipe pair and the hole it goes into.
+     *
+     * Lagged, taped, and sagging a little between the two clips because
+     * armaflex is not a structural material. It enters the wall 400-700 mm
+     * below the unit, and the 300 mm of cement the fitter smeared round the
+     * core hole is the part that gives it away at ten metres: a pale patch
+     * on a dirty wall is a brighter event than the pipe is.
+     */
+    const up = sp.u + (r3 < 0.5 ? -1 : 1) * (hw - 0.16);
+    const yIn = y - 0.42 - r2 * 0.27;
+    M.attr('aMetal', s * 67 + sp.u, 3);
+    for (const k of [-1, 1]) {
+      const uu = up + k * 0.043;
+      /* Leaning out 7 to 12 mm over its length, because lagged copper hung
+       * on two clips is not plumb and nothing else on this elevation is off
+       * the vertical by anything. A wall of exactly parallel lines is the
+       * cheapest tell there is, and a prism costs four triangles more than
+       * the box it replaces. */
+      stay(mf, uu - 0.031, uu + 0.031, yIn + 0.02, d + 0.059 + r1 * 0.004,
+        y + 0.05, d + 0.070 + r2 * 0.006, 0.062);
+    }
+    M.attr('aMetal', s * 67 + sp.u, 4);
+    mf.box(up - 0.088, up + 0.088, (yIn + y) * 0.5, (yIn + y) * 0.5 + 0.035, d, d + 0.10);
+    mf.box(up - 0.10, up + 0.10, yIn - 0.06, yIn + 0.03, d, d + 0.034);
+    W.attr('aRole', ROLE.STONE);
+    /* The patch stops 85 mm short of the sill nose in the worst bay the
+     * layout produces, which is why the pipe lane is 160 mm in from the end
+     * of the case rather than 115: the make-good is wider than the hole and
+     * a cement patch lapping onto a projecting cast stone sill is a junction
+     * fault visible from across the road. */
+    wf.box(up - 0.13, up + 0.13, yIn - 0.10, yIn + 0.07, d, d + 0.012);
+
+    if (r2 > 0.40) {
+      // Drip tray, and then the condensate. Half of them are run properly to
+      // the ground and half stop over the fascia, which is why every sign
+      // board on a street like this has a green stain down one end of it.
+      M.attr('aMetal', s * 67 + sp.u, 1);
+      mf.box(sp.u - hw - 0.022, sp.u + hw + 0.022, y - 0.06, y - 0.018,
+        d + off, d + off + dep + 0.035);
+      M.attr('aMetal', s * 67 + sp.u, 6);
+      /* Weathered white plastic has no kind of its own and the galvanised
+       * branch is the closest thing to it in the shader: a chalky matt oxide
+       * at 0.145 albedo is very nearly what a twenty-year-old overflow pipe
+       * returns once the city has had it.
+       *
+       * The drop is on the pier's waste lane rather than under the end of
+       * the tray, because below the fascia this is running down a 420 mm
+       * pier and the end of a 950 mm unit is out over the shop window. */
+      const uc = sp.u + LANE.cond;
+      mf.box(uc - 0.014, sp.u + hw, y - 0.048, y - 0.02, d + off, d + off + 0.03);
+      if (r3 > 0.5) {
+        riser(uc, 0.014, 0.028, y - 0.05, b.base + 0.42 + r1 * 0.5, 0.03);
+      } else {
+        mf.box(uc - 0.014, uc + 0.014, fasciaY1 + 0.09, y - 0.05, d + 0.03, d + 0.058);
+      }
+      for (let yy = fasciaY1 + 0.35; yy < y - 0.25; yy += 1.15) {
+        mf.box(uc - 0.026, uc + 0.026, yy, yy + 0.034, d, d + 0.036);
+      }
+    }
+  }
+
+  /* ── 2. The second and third conduit runs ──────────────────────────────
+   *
+   * One run across a facade is a line. Three at different heights, dropping
+   * onto each other and onto things that need feeding, is an installation —
+   * and the difference is what the eye uses to date a building.
+   *
+   * Both of these sit in the band between a floor level and the sill above
+   * it, which is 675 mm of uninterrupted wall on the tightest storey in the
+   * layout and the only horizontal corridor an elevation like this has.
+   * 20 mm galvanised conduit on saddle clips at 1.4 m centres, held 42 mm
+   * clear so the wall behind it stays a different value from the conduit.
+   */
+  if (b.nUp >= 1) {
+    const cOff = 0.042;
+    const uA = service[0];
+    const uB = service.length > 1
+      ? service[service.length - 1]
+      : Math.min(b.L - 0.5, uA + 1.8 + h2(s, 41.9) * 1.4);
+    const runY = originY + 0.16 + h2(s, 33.1) * 0.26;
+
+    M.attr('aMetal', s * 87, 3);
+    mf.box(uA, uB, runY, runY + 0.048, d + cOff, d + cOff + 0.048);
+    for (let u = uA + 0.35; u < uB - 0.15; u += 1.4) {
+      mf.box(u, u + 0.046, runY - 0.012, runY + 0.060, d, d + cOff + 0.008);
+    }
+    // A box at each end, because conduit does not simply stop.
+    M.attr('aMetal', s * 87, 5);
+    mf.box(uA - 0.15, uA + 0.06, runY - 0.075, runY + 0.135, d, d + 0.088);
+    mf.box(uB - 0.055, uB + 0.085, runY - 0.075, runY + 0.135, d, d + 0.088);
+
+    /* The drop out of the near box, down to a meter at waist height. The
+     * pier it runs on is the same one the run starts on, which is the whole
+     * point of putting the junction box there. */
+    M.attr('aMetal', s * 87, 3);
+    const uD = uA + LANE.elec;
+    riser(uD, 0.024, 0.048, runY - 0.06, b.base + 1.52, cOff);
+    for (let yy = b.base + 0.45; yy < fasciaY0 - 0.3; yy += 1.25) {
+      mf.box(uD - 0.045, uD + 0.045, yy, yy + 0.046, d, d + cOff + 0.008);
+    }
+    M.attr('aMetal', s * 87, 5);
+    mf.box(uA - 0.13, uA + 0.13, b.base + 1.10, b.base + 1.52, d, d + 0.135);
+    mf.box(uA - 0.10, uA + 0.10, b.base + 1.14, b.base + 1.48, d + 0.135, d + 0.158);
+
+    /* The third run, a storey up and linked to the second by a vertical leg
+     * on the same pier, because that is how a rewire actually spreads: one
+     * board in the basement, one riser, a spur onto every floor it reaches. */
+    if (b.nUp >= 2) {
+      const y3 = originY + b.fh + 0.15 + h2(s, 37.3) * 0.28;
+      const u3 = service.length > 1 ? service[1 % service.length] : uA;
+      const uE = Math.max(uA + 0.9, Math.min(b.L - 0.55, u3 + 1.6 + h2(s, 43.7) * 1.9));
+      M.attr('aMetal', s * 87, 3);
+      mf.box(uD - 0.024, uD + 0.024, runY + 0.10, y3, d + cOff, d + cOff + 0.048);
+      for (let yy = runY + 0.55; yy < y3 - 0.3; yy += 1.4) {
+        mf.box(uD - 0.045, uD + 0.045, yy, yy + 0.046, d, d + cOff + 0.008);
+      }
+      mf.box(Math.min(uD, uE), Math.max(uD, uE), y3, y3 + 0.048, d + cOff, d + cOff + 0.048);
+      for (let u = Math.min(uD, uE) + 0.5; u < Math.max(uD, uE) - 0.15; u += 1.4) {
+        mf.box(u, u + 0.046, y3 - 0.012, y3 + 0.060, d, d + cOff + 0.008);
+      }
+      // It ends on an isolator, which is what a spur is for.
+      M.attr('aMetal', s * 87, 5);
+      mf.box(uD - 0.075, uD + 0.075, y3 - 0.055, y3 + 0.135, d, d + 0.082);
+      mf.box(uE - 0.075, uE + 0.075, y3 + 0.048, y3 + 0.235, d, d + 0.098);
+      mf.box(uE - 0.055, uE + 0.02, y3 + 0.09, y3 + 0.13, d + 0.098, d + 0.125);
+    }
+
+    /* A drop cable slung between the two junction boxes, sagging because
+     * nobody clipped it. Three straight segments read as a catenary at any
+     * distance this is seen from, and the sag is the only curve anywhere on
+     * this elevation. */
+    if (uB - uA > 1.6) {
+      M.attr('aMetal', s * 87, 3);
+      const sag = 0.11 + h2(s, 47.1) * 0.13;
+      const yc = runY - 0.06;
+      const seg: [number, number][] = [
+        [uA, yc], [uA + (uB - uA) * 0.34, yc - sag * 0.86],
+        [uA + (uB - uA) * 0.66, yc - sag], [uB, yc - sag * 0.28],
+      ];
+      for (let i = 0; i < 3; i++) {
+        prism(mf, seg[i][0], seg[i][1], seg[i + 1][0], seg[i + 1][1],
+          0.017, d + 0.052, d + 0.069);
+      }
+    }
+  }
+
+  /* ── 3. Risers and standpipes at street level ──────────────────────────
+   *
+   * A cast-iron soil stack is the tallest thing on any back elevation and it
+   * turns up on the front of any building that has been converted to flats,
+   * which is most of these. It is 100 mm bore in 1.83 m lengths — six feet,
+   * which is why the collars are where they are — and every joint is a
+   * socket standing 25 mm proud of the barrel with a holderbat behind it. At
+   * this sun that is a stack of hard little shadow rings up thirteen metres
+   * of wall, and it costs one box each.
+   */
+  if (h2(s, 12.7) > 0.40 - lift) {
+    const u = svc(3);
+    /* A one-storey building has no soil stack because it has no bathroom
+     * over the shop. What it has is the waste from a sink at the back,
+     * brought through the front wall by whoever fitted the kitchen and taken
+     * down to the gully at the kerb: the same pipe, a third of the height,
+     * and it stops under the fascia rather than crossing it. */
+    const full = b.nUp >= 1;
+    const top = full ? yTop - 0.55 - h2(s, 14.1) * 0.6 : fasciaY0 - 0.38;
+    M.attr('aMetal', s * 97, 3);
+    if (full) riser(u, 0.058, 0.112, top, b.base + 0.20, 0.032);
+    else mf.box(u - 0.058, u + 0.058, b.base + 0.20, top, d + 0.032, d + 0.144);
+    let k = 0;
+    for (let yy = b.base + 0.62; yy < top - 0.4; yy += 1.83, k++) {
+      if (yy > fasciaY0 - 0.20 && yy < fasciaY1 + 0.20) continue;
+      mf.box(u - 0.078, u + 0.078, yy, yy + 0.072, d + 0.024, d + 0.152);
+      if (k % 2 === 0) mf.box(u - 0.034, u + 0.034, yy + 0.018, yy + 0.054, d, d + 0.030);
+    }
+    // The branch that says it is a soil stack and not a rainwater pipe: a
+    // boss off the side at the height of a first-floor bathroom.
+    const yBoss = full ? originY + 0.55 + h2(s, 16.5) * 0.5 : top - 0.85;
+    mf.box(u - 0.062, u + 0.16, yBoss, yBoss + 0.09, d + 0.030, d + 0.128);
+    mf.box(u + 0.13, u + 0.19, yBoss - 0.02, yBoss + 0.11, d + 0.024, d + 0.134);
+  }
+
+  /* The gas riser. Yellow in life, galvanised here, and its whole reason for
+   * existing on the elevation is that the pipe goes into the ground on one
+   * side of it and into the wall on the other — a box with nothing entering
+   * it is a prop. */
+  if (h2(s, 15.3) > 0.46 - lift) {
+    const u = pierFor(0.28, 5);
+    if (u > 0) {
+      M.attr('aMetal', s * 101, 6);
+      mf.box(u - 0.13, u + 0.13, b.base + 0.52, b.base + 1.14, d + 0.025, d + 0.16);
+      mf.box(u - 0.105, u + 0.105, b.base + 0.56, b.base + 1.10, d + 0.16, d + 0.182);
+      M.attr('aMetal', s * 101, 3);
+      mf.box(u - 0.032, u + 0.032, plinthTop - 0.05, b.base + 0.55, d + 0.05, d + 0.114);
+      mf.box(u + 0.02, u + 0.084, b.base + 1.12, b.base + 1.46, d + 0.05, d + 0.114);
+      mf.box(u + 0.008, u + 0.096, b.base + 1.40, b.base + 1.48, d, d + 0.10);
+    }
+  }
+
+  /* A fire-service inlet, low down where the hose can reach it: a cabinet
+   * with two instantaneous couplings in it, angled down so the rain does not
+   * sit in them. The couplings are the only 45-degree lines at street level
+   * on the whole frontage. */
+  if (h2(s, 18.9) > 0.52 - lift) {
+    const u = pierFor(0.36, 9);
+    if (u > 0) {
+      const y = plinthTop + 0.24;
+      M.attr('aMetal', s * 103, 6);
+      mf.box(u - 0.155, u + 0.155, y, y + 0.30, d + 0.022, d + 0.135);
+      M.attr('aMetal', s * 103, 4);
+      for (const sg of [-1, 1]) {
+        const uu = u + sg * 0.072;
+        stay(mf, uu - 0.036, uu + 0.036, y + 0.20, d + 0.135, y + 0.10, d + 0.245, 0.072);
+      }
+      mf.box(u - 0.175, u + 0.175, y + 0.30, y + 0.335, d + 0.022, d + 0.155);
+    }
+  }
+
+  /* ── 4. Vents and extract ──────────────────────────────────────────────
+   *
+   * The cheapest silhouette available on a blank wall and the most
+   * informative: a louvred grille says there is a plant room behind it, a
+   * cowl three metres up says there is a fryer behind it, and a 100 mm cap
+   * says somebody put a tumble dryer in a back room. They cluster, because
+   * the kitchen is in one place, so they are all hung off one hashed bay
+   * rather than sprinkled along the frontage.
+   */
+  const kitchen = h2(s, 22.3);
+  if (kitchen > 0.38 - lift) {
+    const u = svc(7) - 0.14;
+    M.attr('aMetal', s * 107, 6);
+    // The extract duct, climbing the wall from the back of the shop to a
+    // cowl above first-floor window head height, which is where the
+    // environmental health officer made them put it.
+    if (b.nUp >= 1) {
+      /* Above the head of the first-floor window, or as far up as it can go
+       * without fouling the cornice — a 300 mm duct standing 290 mm proud
+       * and a cornice projecting up to 300 mm occupy the same air, and the
+       * clash is at the top of the elevation where the silhouette is. */
+      const yC = Math.min(originY + b.sill + b.winH + 0.35, yTop - 0.75);
+      mf.box(u - 0.16, u + 0.16, fasciaY1 + 0.08, yC, d + 0.035, d + 0.29);
+      // Bands at the duct joints, and a bracket back to the wall.
+      for (let yy = fasciaY1 + 0.7; yy < yC - 0.3; yy += 1.25) {
+        mf.box(u - 0.185, u + 0.185, yy, yy + 0.05, d + 0.02, d + 0.31);
+        mf.box(u - 0.03, u + 0.03, yy + 0.012, yy + 0.04, d, d + 0.04);
+      }
+      // The cowl: a hood over the mouth, and a lip under it. Both of them
+      // are pure silhouette against the wall behind and both of them drop a
+      // horizontal shadow the width of the duct.
+      mf.box(u - 0.20, u + 0.20, yC, yC + 0.20, d + 0.03, d + 0.34);
+      mf.box(u - 0.23, u + 0.23, yC + 0.18, yC + 0.245, d + 0.02, d + 0.40);
+      mf.box(u - 0.17, u + 0.17, yC - 0.06, yC + 0.02, d + 0.29, d + 0.38);
+    }
+    // A louvred grille at high level on the pier below it, and the louvres
+    // are individual because four blades with air between them is a grille
+    // and one hatched box is a panel.
+    const ug = pierFor(0.30, 11);
+    if (ug > 0) {
+      const yg = openTop - 0.62 - h2(s, 24.7) * 0.5;
+      mf.box(ug - 0.145, ug + 0.145, yg, yg + 0.34, d + 0.018, d + 0.048);
+      for (let k = 0; k < 4; k++) {
+        const yy = yg + 0.045 + k * 0.072;
+        mf.box(ug - 0.135, ug + 0.135, yy, yy + 0.026, d + 0.048, d + 0.082);
+      }
+    }
+    /* Two dryer vents, capped. 110 mm, and a square backplate rather than a
+     * round one: an eight-sided tube is twenty triangles against a box's
+     * twelve for an outline four pixels across at the distance this is ever
+     * read from. One goes on the pier beside the duct, the other low down on
+     * a ground-storey pier, because a back room has one too. */
+    const caps: [number, number][] = [
+      [u + 0.39, originY + 0.30 + h2(s, 26.9) * 0.28],
+      [pierFor(0.20, 27), b.base + 2.05 + h2(s, 28.1) * 0.45],
+    ];
+    for (const [uu, yy] of caps) {
+      if (uu < 0 || yy > yTop - 0.5) continue;
+      mf.box(uu - 0.075, uu + 0.075, yy, yy + 0.15, d + 0.012, d + 0.042);
+      mf.box(uu - 0.058, uu + 0.058, yy + 0.02, yy + 0.13, d + 0.042, d + 0.105);
+    }
+  }
+
+  /* ── 5. Bulkheads ──────────────────────────────────────────────────────
+   *
+   * Geometry only — there is not a light source anywhere in this file and
+   * this does not add one. An unlit bulkhead still earns its place twice
+   * over: it is a 240 mm object standing 150 mm off a wall at head height,
+   * which at this sun throws a shadow two metres long, and a doorway with
+   * nothing over it reads as a hole rather than as an entrance.
+   */
+  {
+    const ul = pierFor(0.26, 13);
+    if (ul > 0) {
+      const y = openTop - 0.35 - h2(s, 31.7) * 0.45;
+      M.attr('aMetal', s * 109, 5);
+      mf.box(ul - 0.06, ul + 0.06, y, y + 0.13, d, d + 0.028);
+      mf.box(ul - 0.028, ul + 0.028, y + 0.035, y + 0.095, d + 0.028, d + 0.095);
+      M.attr('aMetal', s * 109, 6);
+      mf.box(ul - 0.115, ul + 0.115, y - 0.02, y + 0.145, d + 0.095, d + 0.235);
+      // The visor, which is the part that makes it read as a light fitting
+      // rather than as another box.
+      mf.box(ul - 0.135, ul + 0.135, y + 0.13, y + 0.175, d + 0.075, d + 0.26);
+    }
+    /* A second one at first floor, on the end of the run that is looking for
+     * something to feed. The 300 mm of conduit between the two is what stops
+     * the lamp being a sticker and the run being a line. */
+    if (b.nUp >= 1) {
+      const uu = Math.min(b.L - 0.4, service[service.length - 1] + 0.25);
+      const y = originY + 0.95 + h2(s, 34.9) * 0.5;
+      M.attr('aMetal', s * 109, 3);
+      mf.box(uu - 0.022, uu + 0.022, originY + 0.42, y, d + 0.042, d + 0.086);
+      M.attr('aMetal', s * 109, 6);
+      mf.box(uu - 0.10, uu + 0.10, y, y + 0.15, d + 0.03, d + 0.175);
+      mf.box(uu - 0.12, uu + 0.12, y + 0.135, y + 0.175, d + 0.02, d + 0.20);
+    }
+  }
+
+  /* ── 6. Cables ─────────────────────────────────────────────────────────
+   *
+   * The service head is in the shop and the flat above it was wired off it
+   * in about 1970, which means a 25 mm cable stapled up the outside of the
+   * building because running it inside would have meant lifting a floor.
+   * Every one of these starts on a box and ends on one; a cable that fades
+   * out halfway up a wall is worse than no cable, because the eye follows
+   * cables and finds the end of them.
+   */
+  if (b.nUp >= 1) {
+    const u = svc(17) + LANE.cable;
+    const yEnd = originY + 0.62 + h2(s, 39.5) * 0.55;
+    M.attr('aMetal', s * 113, 5);
+    mf.box(u - 0.045, u + 0.045, b.base + 1.18, b.base + 1.54, d, d + 0.075);
+    mf.box(u - 0.06, u + 0.06, yEnd, yEnd + 0.13, d, d + 0.062);
+    M.attr('aMetal', s * 113, 3);
+    riser(u, 0.017, 0.032, yEnd + 0.02, b.base + 1.5, 0.026);
+    // Staples, at the spacing a man on a ladder actually works to rather
+    // than at the spacing the regulations ask for.
+    for (let yy = b.base + 1.9; yy < yEnd - 0.3; yy += 0.95 + h2(s, yy) * 0.35) {
+      if (yy > fasciaY0 - 0.15 && yy < fasciaY1 + 0.15) continue;
+      mf.box(u - 0.03, u + 0.03, yy, yy + 0.03, d, d + 0.03);
+    }
+  }
+
+  /* ── 7. A dish at first floor ──────────────────────────────────────────
+   *
+   * The parapet is where the last one went and it is not where most of them
+   * are. A dish put up for a first-floor flat is bolted to the wall beside
+   * the window of the room the cable has to reach, 400 mm of arm out from
+   * the brickwork, and the coaxial downlead runs from it straight into a
+   * hole drilled through the frame reveal.
+   *
+   * Wound to face the street, which the roof one is not: its fan is listed
+   * anti-clockwise seen from outside, so its dished face is a back face and
+   * only the rim ring survives. Nothing here can afford that, since a first
+   * floor dish is four metres from the lens rather than fifty.
+   */
+  /* One dish, and a second on the buildings that were split into two flats,
+   * which is why they are never on the same pier and never at the same
+   * height: two tenants, two installers, two years apart. */
+  const dishes = h2(s, 57.7) > 0.40 ? (h2(s, 58.7) > 0.58 ? 2 : 1) : 0;
+  for (let k = 0; k < (b.nUp >= 1 ? dishes : 0); k++) {
+    const u = svc(19 + k * 8) + (h2(s, 58.1 + k) - 0.5) * 0.12;
+    if (k === 1 && Math.abs(u - svc(19)) < 0.5) continue;
+    if (clearOfEscape(u)) {
+      const y = originY + 1.35 + h2(s, 59.3 + k * 3.1) * 0.9 + k * 0.42;
+      M.attr('aMetal', s * 127, 2);
+      mf.box(u - 0.05, u + 0.05, y - 0.16, y + 0.16, d, d + 0.035);
+      mf.box(u - 0.026, u + 0.026, y - 0.02, y + 0.02, d + 0.035, d + 0.30);
+      stay(mf, u - 0.02, u + 0.02, y - 0.14, d + 0.03, y - 0.01, d + 0.24, 0.036);
+      M.attr('aMetal', s * 127, 9);
+      /* 550 mm across, squashed in d because it is turned 20-odd degrees off
+       * the wall and tipped up: a dish square to the elevation is pointing at
+       * the building opposite, which is not where the satellite is. */
+      const r = 0.27;
+      const cy = y + 0.06, cd = d + 0.30;
+      const rim = (a: number, k: number): [number, number, number] => [
+        u + Math.cos(a) * r * k * 0.92 + Math.sin(a) * r * k * 0.16,
+        cy + Math.sin(a) * r * 0.86 * k,
+        cd + Math.cos(a) * r * 0.22 * k,
+      ];
+      const cn: [number, number, number] = [u + 0.03, cy, cd - 0.075];
+      /* The lip, standing 50 mm off the dished face along the axis rather
+       * than lying in it. A ring drawn inside the face is a ring whose
+       * normal is the face's own, which is to say no edge at all; what makes
+       * a dish read as a dish at four metres is the band of shadow the lip
+       * drops across its own inside. */
+      const lip = (a: number): [number, number, number] => {
+        const p = rim(a, 1);
+        return [p[0] + 0.018, p[1], p[2] + 0.05];
+      };
+      for (let i = 0; i < 8; i++) {
+        const a0 = (i / 8) * Math.PI * 2, a1 = ((i + 1) / 8) * Math.PI * 2;
+        mf.quadFree(cn, rim(a1, 1), rim(a0, 1), rim(a0, 1),
+          [[0, 0], [1, 0], [1, 1], [1, 1]]);
+        mf.quadFree(rim(a0, 1), lip(a0), lip(a1), rim(a1, 1),
+          [[i, 0], [i, 1], [i + 1, 1], [i + 1, 0]]);
+      }
+      // Feed arm and LNB, which is the part of a dish the eye recognises.
+      mf.box(u - 0.016, u + 0.016, cy - 0.19, cy - 0.02, cd + 0.03, cd + 0.26);
+      mf.box(u - 0.036, u + 0.036, cy - 0.225, cy - 0.135, cd + 0.21, cd + 0.30);
+      // The downlead, dropping off the arm and clipped into the reveal.
+      M.attr('aMetal', s * 127, 3);
+      mf.box(u + 0.02, u + 0.044, y - 0.35, cy - 0.16, d + 0.05, d + 0.074);
+      mf.box(u + 0.02, u + 0.16, y - 0.38, y - 0.35, d + 0.05, d + 0.074);
+    }
+  }
+
+  /* ── 8. What is left on a wall after forty years ───────────────────────
+   *
+   * None of this is worth anything on its own and together it is most of
+   * what separates a used wall from a new one: the hoop somebody chains a
+   * bike to, the bracket a sign came off, a stub of pipe cut back to the
+   * wall when the boiler was moved inside, and a gas service capped and left
+   * because it was cheaper than digging it out.
+   */
+  {
+    const uh = pierFor(0.34, 23);
+    if (uh > 0 && h2(s, 61.1) > 0.35 - lift) {
+      // A hoop, out of the same painted ironwork as the lot railings.
+      M.attr('aMetal', s * 131, 0);
+      const y = plinthTop + 0.18;
+      for (const sg of [-1, 1]) {
+        mf.box(uh + sg * 0.14 - 0.018, uh + sg * 0.14 + 0.018, y, y + 0.36, d + 0.02, d + 0.056);
+      }
+      mf.box(uh - 0.158, uh + 0.158, y + 0.34, y + 0.376, d + 0.02, d + 0.056);
+      mf.box(uh - 0.055, uh + 0.055, y - 0.03, y + 0.05, d, d + 0.03);
+    }
+    const ub = pierFor(0.22, 29);
+    if (ub > 0 && h2(s, 63.3) > 0.42 - lift) {
+      // The bracket a projecting sign hung off, with the sign long gone.
+      M.attr('aMetal', s * 131, 2);
+      const y = openTop - 0.9 - h2(s, 65.5) * 0.6;
+      mf.box(ub - 0.05, ub + 0.05, y, y + 0.20, d, d + 0.03);
+      mf.box(ub - 0.022, ub + 0.022, y + 0.14, y + 0.18, d + 0.03, d + 0.30);
+      stay(mf, ub - 0.018, ub + 0.018, y + 0.02, d + 0.025, y + 0.145, d + 0.255, 0.032);
+    }
+    if (b.nUp >= 1 && h2(s, 67.7) > 0.40) {
+      // A pipe stub, cut off and capped where something used to hang.
+      M.attr('aMetal', s * 131, 3);
+      const u = svc(31) + 0.19;
+      const y = originY + 0.5 + h2(s, 69.9) * 1.3;
+      mf.box(u - 0.028, u + 0.028, y, y + 0.22, d + 0.03, d + 0.086);
+      mf.box(u - 0.038, u + 0.038, y + 0.20, y + 0.245, d + 0.024, d + 0.094);
+    }
+    const uc2 = pierFor(0.20, 37);
+    if (uc2 > 0 && h2(s, 71.3) > 0.5 - lift) {
+      // A capped gas service, left in the wall because taking it out costs
+      // more than leaving it. The cap is a different metal from the pipe.
+      M.attr('aMetal', s * 131, 3);
+      const y = plinthTop + 0.06;
+      // Pulled 9 mm away from the wall at the top, the way a pipe that lost
+      // its middle clip thirty years ago is.
+      stay(mf, uc2 - 0.034, uc2 + 0.034, y, d + 0.062, y + 0.42, d + 0.071, 0.068);
+      M.attr('aMetal', s * 131, 4);
+      mf.box(uc2 - 0.046, uc2 + 0.046, y + 0.40, y + 0.455, d + 0.02, d + 0.104);
+      W.attr('aRole', ROLE.STONE);
+      // The make-good round it, which is the part that reads: a hand-sized
+      // patch of cement on brick is a brighter thing than the pipe.
+      wf.box(uc2 - 0.115, uc2 + 0.115, y - 0.04, y + 0.16, d, d + 0.014);
+    }
+  }
+}
+
 /* ── One building ───────────────────────────────────────────────────────── */
 
 function emitBuilding(b: Bldg, W: Emit, G: Emit, T: Emit, M: Emit): void {
@@ -904,6 +1596,11 @@ function emitBuilding(b: Bldg, W: Emit, G: Emit, T: Emit, M: Emit): void {
 
   if (b.escape >= 0) emitEscape(c, b.escape);
   emitFurniture(c);
+  /* And, on the two rows the camera walks between and nowhere else, the layer
+   * of fixtures that only pays for itself inside about eight metres. Applied
+   * to all fifty-seven buildings it would be forty thousand triangles spent
+   * on backland ranges nothing ever looks at. */
+  if (b.street) emitStreetFixtures(c);
 }
 
 /* ── The rest of the town ───────────────────────────────────────────────── */

@@ -30,6 +30,7 @@
 import { DIMS, LAMPS } from '@/world/dims';
 import { carSolids } from '@/world/cars';
 import { roadHeight, walkHeight } from '@/world/geometry';
+import { LEGACY, propSolids } from '@/world/placement';
 
 /* Half a shoulder, plus a 10 mm skin.
  *
@@ -51,54 +52,59 @@ export type Solid =
     hw: number; hl: number;
   };
 
-/* Footway furniture.
+/* Footway furniture — no longer a copy, which is what NOTES.md asked for.
  *
- * These five are copied out of `buildStreetLevel` in world/street3.ts, which
- * is the one table in this file that is not imported, because System 3 writes
- * its positions as literal arguments at the call site rather than as a shared
- * constant and that file is not mine to restructure at this hour. The x values
- * are re-derived here the way street3.ts derives them — off `DIMS`, not off
- * the 3.35 it prints in a comment — so a change to the kerb or the footway
- * width still moves both together. The offsets and the radii are the copies.
+ * The note read: "The footway furniture is still copied. `scene/collide.ts`
+ * carries the five positions from `buildStreetLevel`, because System 3 writes
+ * them as literal arguments at the call site rather than as a table. Whoever
+ * next touches `world/street3.ts` should lift them into an exported constant;
+ * the collider will import it and the copy can go."
  *
- *   street3.ts:1485   hydrant   -(WALK_KERB + 0.45), -7.0
- *   street3.ts:1492   dumpster  -(WALK_WALL - 0.66), -70.4, rot 0.14
- *   street3.ts:1493   bags      -(WALK_WALL - 0.55), -68.75
- *   street3.ts:1494   bags      -(WALK_WALL - 0.42), -72.15
- *   street3.ts:1501   sign      +(WALK_KERB + 0.42), -63.2
- *   street3.ts:1508   sign      -(WALK_KERB + 0.38), -25.5
- *   street3.ts:1515   sign      +(WALK_KERB + 0.40), -84.5
+ * It has gone. `world/placement.ts` now holds every position on the footway —
+ * the original seven and the hundred and fifty added by the prop pass — and
+ * `buildStreetLevel` takes its arguments from the same records this reads. So
+ * the two cannot drift, and more to the point a prop *cannot be added without
+ * a collider*, because the collider is derived from the placement record
+ * rather than written beside it. That is the same defence NOTES.md draws out
+ * of the `tools/obstacles.mjs` failure: make the check load the real assembly.
  *
- * Radii: the hydrant's widest part is the steamer cap at 176 mm, not the
- * 150 mm base flange. A signpost is a 60 mm tube with 80 mm fixing bands on
- * it. The dumpster is 1.83 along its own u axis and 1.22 across, and `frame()`
- * puts u along +Z for it — so it is 1.22 across the street and 1.83 along it,
- * which is the way round that leaves the 1.1 m of clear footway street3.ts's
- * comment claims. **`tools/obstacles.mjs` has that pair the other way round**
- * and reports the alley as blocked across the wrong axis; it is not mine to
- * edit and the delivered walk never reaches z = -70, but it is wrong.
+ * The radii and half extents still live next to the thing they describe. A
+ * hydrant's widest part is the steamer cap at 176 mm and not the 150 mm base
+ * flange; the dumpster is 1.83 along its own u axis and 1.22 across, which is
+ * the only reading that leaves the 1.1 m of clear footway street3.ts claims.
+ * Those numbers are in placement.ts now, beside the position they belong to.
  */
 const WALK_KERB = DIMS.roadHalf + DIMS.kerbDepth;
 const WALK_WALL = WALK_KERB + DIMS.walkWidth;
+void WALK_KERB; void WALK_WALL;
 
-const FURNITURE: Solid[] = [
-  { what: 'fire hydrant', kind: 'disc', x: -(WALK_KERB + 0.45), z: -7.0, r: 0.176 },
-  { what: 'sign post', kind: 'disc', x: -(WALK_KERB + 0.38), z: -25.5, r: 0.060 },
-  { what: 'sign post', kind: 'disc', x: +(WALK_KERB + 0.42), z: -63.2, r: 0.060 },
-  { what: 'sign post', kind: 'disc', x: +(WALK_KERB + 0.40), z: -84.5, r: 0.060 },
-  {
-    what: 'dumpster', kind: 'box',
-    x: -(WALK_WALL - 0.66), z: -70.4, yaw: 0.14,
-    hw: 1.22 * 0.5 + 0.03, hl: 1.83 * 0.5 + 0.03,
-  },
-  /* The two bag piles, as the discs that enclose the footprint the bags are
-   * hashed into. They are soft and half a metre tall and a shin would go
-   * through them, but a camera that glides through a pile of rubbish sacks
-   * reads as a camera with no collision at all, which is the thing being
-   * fixed. Each leaves 1.2 m of footway clear past it. */
-  { what: 'bin bags', kind: 'disc', x: -(WALK_WALL - 0.55), z: -68.75, r: 0.62 },
-  { what: 'bin bags', kind: 'disc', x: -(WALK_WALL - 0.42), z: -72.15, r: 0.48 },
-];
+function furniture(): Solid[] {
+  const L = LEGACY;
+  const out: Solid[] = [
+    { what: 'fire hydrant', kind: 'disc', x: L.hydrant.x, z: L.hydrant.z, r: L.hydrant.r },
+    { what: 'sign post', kind: 'disc', x: L.signNoPark.x, z: L.signNoPark.z, r: L.signNoPark.r },
+    { what: 'sign post', kind: 'disc', x: L.signCorner.x, z: L.signCorner.z, r: L.signCorner.r },
+    { what: 'sign post', kind: 'disc', x: L.signLot.x, z: L.signLot.z, r: L.signLot.r },
+    {
+      what: 'dumpster', kind: 'box',
+      x: L.dumpster.x, z: L.dumpster.z, yaw: L.dumpster.rot,
+      hw: L.dumpster.hw, hl: L.dumpster.hl,
+    },
+    /* The two bag piles, as the discs that enclose the footprint the bags are
+     * hashed into. They are soft and half a metre tall and a shin would go
+     * through them, but a camera that glides through a pile of rubbish sacks
+     * reads as a camera with no collision at all, which is the thing being
+     * fixed. Each leaves 1.2 m of footway clear past it. */
+    { what: 'bin bags', kind: 'disc', x: L.bagsA.x, z: L.bagsA.z, r: L.bagsA.r },
+    { what: 'bin bags', kind: 'disc', x: L.bagsB.x, z: L.bagsB.z, r: L.bagsB.r },
+  ];
+  /* And the prop kit, derived rather than transcribed. Everything flush with
+   * the paving — cellar doors, gully grates — reports no footprint and is not
+   * in this list, because a walker stopped by a manhole cover is a worse lie
+   * than one that steps over it. */
+  for (const p of propSolids()) out.push(p as Solid);
+  return out;
+}
 
 /** Column radius. A street lighting column is about 110 mm across the base. */
 const LAMP_R = 0.055;
@@ -136,7 +142,7 @@ export function solids(): Solid[] {
       ? { what: c.what, kind: 'box', x: c.x, z: c.z, yaw: c.yaw, hw: c.hw, hl: c.hl }
       : { what: c.what, kind: 'disc', x: c.x, z: c.z, r: c.r });
   }
-  out.push(...FURNITURE, ...WALLS);
+  out.push(...furniture(), ...WALLS);
   cache = out;
   return out;
 }

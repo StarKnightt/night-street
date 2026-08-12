@@ -123,7 +123,22 @@ export class Emit {
  * that could repeat.
  */
 export class Face {
-  constructor(readonly e: Emit, readonly f: Frame) {}
+  readonly e: Emit;
+  readonly f: Frame;
+
+  /* Written out rather than as constructor parameter properties, which is the
+   * same two fields and one line longer. The reason is tooling: Node runs the
+   * TypeScript in this tree directly, in strip-only mode, and a parameter
+   * property is the one piece of TypeScript syntax that has a runtime effect
+   * and so cannot be stripped. With it here, *any* tool that reaches this file
+   * through an import chain dies at load — which as of the prop pass includes
+   * `tools/route.mjs` and `tools/collide.mjs`, because the collider now reads
+   * the shared placement table and that reaches the facade layout. Being
+   * loadable outside a bundler is worth a line. */
+  constructor(e: Emit, f: Frame) {
+    this.e = e;
+    this.f = f;
+  }
 
   /** Local (u, y, d) to world. */
   p(u: number, y: number, d: number): V3 {

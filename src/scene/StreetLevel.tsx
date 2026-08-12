@@ -21,6 +21,7 @@ import {
   makeShopMaterial, makeShopGlassMaterial, makeShutterMaterial,
   makeAwningMaterial, makeFurnitureMaterial, LIT_GAIN,
 } from './streetMaterials';
+import { Props } from './Props';
 
 declare global {
   interface Window { __litGain?: { value: number } }
@@ -81,6 +82,11 @@ export function StreetLevel() {
         * It also renders after the opaque meshes above so the room is already
         * in the buffer to blend over. */}
       <mesh geometry={level.glass} material={built.glass} renderOrder={2} receiveShadow />
+      {/* The prop kit and the projecting signage. Part of System 3 rather than
+        * a system of its own: it is the same claim — that this is a street
+        * somebody uses — made with the things left standing on the paving
+        * instead of with the shopfronts behind them. */}
+      <Props />
     </group>
   );
 }

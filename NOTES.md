@@ -278,11 +278,50 @@ things it found in files that are not the collision pass's to edit.
   header of that file says it is a copy pending an export; the export now
   exists as `carSolids()` in `world/cars.ts`, and `node tools/collide.mjs
   drift` reports the disagreements.
-- **The footway furniture is still copied.** `scene/collide.ts` carries the
-  five positions from `buildStreetLevel`, because System 3 writes them as
-  literal arguments at the call site rather than as a table. Whoever next
-  touches `world/street3.ts` should lift them into an exported constant; the
-  collider will import it and the copy can go.
+- ~~**The footway furniture is still copied.**~~ Fixed by the density pass.
+  `world/placement.ts` is now the single table: `LEGACY` holds the six original
+  positions that used to be literal arguments in `buildStreetLevel` and literal
+  records in `scene/collide.ts`, `props()` generates the new kit, and
+  `propSolids()` derives the colliders from the same records the geometry is
+  built from. Three consumers, one table. Nothing about a prop's position can
+  now be changed in one place and not the other.
+- **`collide.ts` cannot import anything that reaches `world/street3.ts`.** That
+  file declares a `const enum`, which Node's strip-only TypeScript refuses, so
+  anything downstream of it is unloadable by every tool in `tools/`. It is the
+  reason the placement table is its own module rather than an export from
+  System 3, and it is why `world/emit.ts` no longer uses a constructor
+  parameter property — that is the other piece of TypeScript syntax with a
+  runtime effect, and it was breaking `route.mjs` and `collide.mjs` the moment
+  the collider started reading the shared table.
+- **`tools/collide.mjs corner` now fails its two shallow wall-slide cases, and
+  the failure is the test's premise rather than the solver.** It walks from
+  (-5.0, -20) along the building line for ten seconds and asserts the
+  tangential speed survives, which was true when the wall lane was thirteen
+  clear metres. It is not any more: at z -29.4 there is a service cabinet
+  against the frontage and the walker stops on it. `tmp/wallslide.mjs` prints
+  the rest point and shows that steering 0.9 rad off the wall frees it
+  immediately, so the body is stopped and not wedged. Penetration everywhere on
+  the street is 0.09 mm, which is the pre-existing dumpster figure. Do not
+  "fix" this by thinning the props; either move the test to a clear stretch or
+  have it assert recovery rather than uninterrupted speed.
+- **A gap between two solids is either shut or walkable, never 300 mm.**
+  `placement.ts` refuses any placement that would leave a neighbour gap between
+  touching and one body width plus 60 mm. Without it the eight-sweep
+  depenetration in `collide.ts` has nothing to converge on — the walker gets
+  squeezed into a slot where every position is inside something — and
+  `collide.mjs approach` measured 4.22 mm of resting penetration as soon as the
+  density went up. The solver is not at fault and adding sweeps does not help.
+- **The corridor is booked, not hoped for.** The same file reserves a 780 mm
+  walkable lane per side per metre of z before it places anything. The first
+  dense run put down 175 props, every one of them individually plausible, and
+  `collide.mjs sweep` reported the near footway sealed at z -21.3 with a 0 mm
+  lane. Two intermediate versions of the booking were also wrong in ways worth
+  knowing: charging a prop against both footway edges instead of the nearer one
+  refused every solid prop on the street — the count went to zero and the sweep
+  went green, which is this codebase's signature failure wearing a new hat —
+  and booking against the packing radius rather than the collider radius left
+  the footway sealed at 160 mm, because sacks interleave with each other and a
+  body does not interleave with anything.
 - **The eye is no longer at a constant height.** It follows `roadHeight` and
   `walkHeight`, so it sits about 1.64 m above the datum on the carriageway and
   about 1.79 m on the footway. Anything that assumed 1.65 — the shadow

@@ -38,6 +38,12 @@ import { layoutBlock, type Bldg } from './block';
 import { groundLevels, groundOpenings } from './facade';
 import { walkHeight } from './geometry';
 import { DIMS } from './dims';
+/* The six original pieces of footway furniture now take their positions from
+ * the shared placement table rather than from literals written here, so that
+ * `scene/collide.ts` can import the same records instead of carrying a copy of
+ * them. NOTES.md asked for exactly this exchange under "The footway furniture
+ * is still copied". */
+import { LEGACY } from './placement';
 
 /* ── Material part codes ────────────────────────────────────────────────── */
 
@@ -304,9 +310,34 @@ const FORCED: { east: boolean; z: number; type: UnitType }[] = [
   { east: false, z: -95.0, type: UnitType.VACANT },
 ];
 
-/** Awnings, placed the same way and for the same reason. */
+/* Awnings, placed the same way and for the same reason.
+ *
+ * The list has roughly doubled, and the reason is worth writing down because
+ * it is not "more is better". An awning is the only thing on this street that
+ * puts a *horizontal* shadow bar across a shopfront. Everything else at street
+ * level — piers, blades, downpipes, the shutters — is vertical or is a
+ * rectangle, so a frontage seen down the length of the street is a picket
+ * fence of verticals with one long horizontal fascia over it. Fabric out over
+ * the footway is what interrupts that, and at 4.2 degrees each one lays a hard
+ * band across two metres of paving as well.
+ *
+ * They are still a minority of the units, they are still never two in a row on
+ * one building, and the far end of the block has more of them than the near
+ * end — which is the opposite of the shutter distribution and is deliberate:
+ * at forty metres a shutter is legible as pattern and an awning is legible as
+ * a horizontal, and the far end needs the horizontal more.
+ */
 const AWNING_AT: { east: boolean; z: number }[] = [
+  { east: false, z: -4.0 },
+  { east: true, z: -9.5 },
   { east: false, z: -11.0 },
+  { east: true, z: -19.0 },
+  { east: false, z: -33.0 },
+  { east: true, z: -52.0 },
+  { east: false, z: -57.5 },
+  { east: true, z: -76.0 },
+  { east: false, z: -88.5 },
+  { east: true, z: -92.0 },
   /* In the shaft. The sun band on the carriageway runs -49 to -32 and the west
    * elevation catches the low end of it, so this one is the only piece of
    * fabric in the scene with direct light on it: it will throw a hard shadow
@@ -1482,39 +1513,42 @@ export function buildStreetLevel(): StreetLevel {
    * kerb face, which is where one actually stands. At that distance it is
    * ninety-odd pixels tall in a 900 line frame — the largest single object at
    * street level in the first composition. */
-  emitHydrant(F, -(WALK_KERB + 0.45), -7.0, +1, 0.31);
+  emitHydrant(F, LEGACY.hydrant.x, LEGACY.hydrant.z, LEGACY.hydrant.facing, LEGACY.hydrant.seed);
 
   /* The dumpster, in the mouth of the service alley at z = -68.5 to -72.6,
    * pushed back against the building line with a metre of footway still clear
    * past it. Fifteen metres in front of stop four. An alley with a bin in it
    * is also the only thing that stops that gap reading as a hole in the
    * frontage, which System 2 left it as. */
-  emitDumpster(F, -(WALK_WALL - 0.66), -70.4, 0.14, 0.57);
-  emitBags(F, -(WALK_WALL - 0.55), -68.75, +1, 4, 0.83);
-  emitBags(F, -(WALK_WALL - 0.42), -72.15, +1, 2, 0.19);
+  emitDumpster(F, LEGACY.dumpster.x, LEGACY.dumpster.z, LEGACY.dumpster.rot, LEGACY.dumpster.seed);
+  emitBags(F, LEGACY.bagsA.x, LEGACY.bagsA.z, LEGACY.bagsA.facing, LEGACY.bagsA.n, LEGACY.bagsA.seed);
+  emitBags(F, LEGACY.bagsB.x, LEGACY.bagsB.z, LEGACY.bagsB.facing, LEGACY.bagsB.n, LEGACY.bagsB.seed);
 
   /* The street name blades, at the far corner of the cross street where a
    * corner sign belongs — nine metres in front of stop four, on the opposite
    * footway to the bin so the two are never stacked in one frame. Two blades
    * at right angles, because that is what a corner has and because the one
    * across the street is the one that is legible from the road. */
-  emitSignPost(F, WALK_KERB + 0.42, -63.2, -1, 2.86, [
-    { kind: FURN.SIGN_STREET, w: 0.78, h: 0.155, y: 2.52 },
-    { kind: FURN.SIGN_STREET, w: 0.70, h: 0.155, y: 2.33, cross: true },
-  ], 0.44);
+  emitSignPost(F, LEGACY.signCorner.x, LEGACY.signCorner.z, LEGACY.signCorner.facing,
+    LEGACY.signCorner.h, [
+      { kind: FURN.SIGN_STREET, w: 0.78, h: 0.155, y: 2.52 },
+      { kind: FURN.SIGN_STREET, w: 0.70, h: 0.155, y: 2.33, cross: true },
+    ], LEGACY.signCorner.seed);
 
   /* No parking, ten metres in front of stop two on the near footway, with the
    * tow-away plate under it that every one of them carries. */
-  emitSignPost(F, -(WALK_KERB + 0.38), -25.5, +1, 2.62, [
-    { kind: FURN.SIGN_REG, w: 0.30, h: 0.46, y: 2.02 },
-    { kind: FURN.SIGN_BACK, w: 0.30, h: 0.21, y: 1.74 },
-  ], 0.71);
+  emitSignPost(F, LEGACY.signNoPark.x, LEGACY.signNoPark.z, LEGACY.signNoPark.facing,
+    LEGACY.signNoPark.h, [
+      { kind: FURN.SIGN_REG, w: 0.30, h: 0.46, y: 2.02 },
+      { kind: FURN.SIGN_BACK, w: 0.30, h: 0.21, y: 1.74 },
+    ], LEGACY.signNoPark.seed);
 
   /* And one against the vacant lot, ten metres in front of stop five, so the
    * last third of the walk has something upright on the far footway. */
-  emitSignPost(F, WALK_KERB + 0.40, -84.5, -1, 2.55, [
-    { kind: FURN.SIGN_REG, w: 0.30, h: 0.46, y: 1.94 },
-  ], 0.26);
+  emitSignPost(F, LEGACY.signLot.x, LEGACY.signLot.z, LEGACY.signLot.facing,
+    LEGACY.signLot.h, [
+      { kind: FURN.SIGN_REG, w: 0.30, h: 0.46, y: 1.94 },
+    ], LEGACY.signLot.seed);
 
   const shop = S.geometry(), glass = G.geometry();
   const shutter = R.geometry(), awning = A.geometry(), furniture = F.geometry();
