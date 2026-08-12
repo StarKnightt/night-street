@@ -3,6 +3,7 @@ node_modules
 out
 shots
 crops
+media
 tmp
 .sys5
 *.tsbuildinfo

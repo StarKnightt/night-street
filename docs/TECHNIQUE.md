@@ -70,7 +70,7 @@ needs, and roughly 70% of this brief comes from them. **If you read one thing
 before starting, read `grade.js` top to bottom.**
 
 **The installed `threejs-*` skills and skills.sh were surveyed and are not
-worth further consultation.** `C:\Users\prase\.claude\skills\threejs-lighting`,
+worth further consultation.** The locally installed `threejs-lighting`,
 `threejs-postprocessing`, `threejs-shaders` and `threejs-materials` are the
 `cloudai-x/threejs-skills` package (the `.claude` entries are symlinks). They
 are flat API catalogues with no measurement, no ordering discipline and no

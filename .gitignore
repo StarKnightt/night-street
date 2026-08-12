@@ -48,3 +48,7 @@ next-env.d.ts
 
 .capture.lock
 .sys6*.log
+
+# scratch
+/tmp/
+*.bak

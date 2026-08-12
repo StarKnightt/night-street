@@ -2,8 +2,20 @@
 
 A first-person walkable city street at golden hour, in a browser.
 
+![Looking down the street from the gap station: parked cars, fire escapes, the
+sun behind the far end of the block](media/01-street.webp)
+
+*Straight out of the running build at one of the six fixed capture stations,
+via `npm run shoot`. Nothing in it is composited, nothing is retouched, and
+every pixel of it — the brick, the asphalt, the sky, the cloud — was computed
+in the GPU a few seconds before the shutter.*
+
 **[Walk it here](https://night-street.vercel.app)** — desktop, keyboard and
 mouse.
+
+**Read the prompts it was built from: [PROMPTS.md](PROMPTS.md).** Five of them,
+verbatim and unedited, including the one at hour five that changed the time of
+day and therefore most of the project.
 
 **It takes between thirty and forty seconds to start, and the page will not
 respond while it works.** That is not a download and it is not broken. The
@@ -67,6 +79,9 @@ derived wrongly from the others is obvious at 3.1 m/s and nearly invisible at
 1.4.
 
 For a production build, `npm run build` then `npm start`.
+
+![Shopfronts down the sunlit side: florist, TO LET, the awnings and the
+fire escapes](media/02-shopfronts.webp)
 
 ## The thirty to forty seconds
 
@@ -187,6 +202,8 @@ during the capture, because the capture advances the clock by hand and Web Audio
 cannot be. Both passes integrate against real `dt`, so they agree:
 `tools/audiotake.mjs` checks its own footfalls against the picture's and refuses
 the take if they drift past 60 ms.
+
+![The lot station, looking down the shaded side toward the sun](media/03-lot.webp)
 
 ## What is not good enough yet
 
@@ -400,6 +417,9 @@ was quoted as confirmation. Both of its inputs were wrong, in opposite
 directions, and cancelled. **Agreement with an independently derived number is
 strong evidence that the machinery is sound and no evidence at all that the
 inputs are.**
+
+![Facing the sun down the block, with the haze carrying the far
+end](media/04-sunward.webp)
 
 ## How it is built
 
@@ -786,3 +806,78 @@ box has ever been stale on a render, with the distribution of the drift.
 Next.js 16, React 19, TypeScript, Tailwind CSS 4, Three.js 0.185 through React
 Three Fiber 9. Playwright drives the capture harness. ffmpeg encodes and
 measures. No asset pipeline, because there are no assets.
+
+## How it was built
+
+The five prompts are in [PROMPTS.md](PROMPTS.md), verbatim. The first of them
+sets the method as well as the subject: eight numbered systems, built strictly
+in order, and after each one a separate sub-agent acting as a harsh visual
+critic that sees only the rendered output and never the source, comparing the
+result against real photography and sending it back if it reads as a render.
+
+The build did follow that order — the commit history still names the systems as
+it goes — and the critic loop ran throughout, against the screenshot archive
+rather than against the code. One honest difference from
+[jungle-trail](https://github.com/StarKnightt/jungle-trail), where the same
+method was used: no score ledger was kept here, so there is no per-system "5/10
+after six rounds" table to publish. What stands in its place is the "what is not
+good enough yet" section above, which is the same information written down after
+the fact instead of during.
+
+The instruction against fanning out parallel sub-agents was relaxed partway
+through, as it was on jungle-trail, and it left a mark on the codebase that is
+worth knowing about: several agents shared this worktree and one GPU, which is
+why every tool that renders takes `.capture.lock` first, and why the README
+keeps saying that a measurement taken an hour apart from its control is a
+measurement of somebody else's work.
+
+What reviewing renders caught, which reading the source would not have:
+
+- **The cars' ground-contact decal was invisible.** Its geometry was built, its
+  material compiled, and the road under the cars was bit-identical with it on
+  and off, because the quads were wound the wrong way and were being back-face
+  culled.
+- **The entire audio system was silent on every machine, from the day it was
+  written.** A `ConvolverNode` threw on a sample-rate mismatch before the bed,
+  the spot sources and the footsteps were constructed. The error was in the page
+  console the whole time.
+- **A field of 2,200 dust motes sat 32 m behind the camera in every capture ever
+  reviewed**, while the interactive walk looked correct.
+- **The sun's shadow box was stale in still captures**, so those stills had no
+  cast shadows on the visible street at all and the volumetric sun-shaft term
+  integrated to exactly zero.
+
+All four are written up at length above and in [`NOTES.md`](NOTES.md). The
+pattern they share is the reason the tooling in `tools/` is a substantial
+fraction of this repository.
+
+## Agent skills
+
+This project leaned on [agent skills](https://skills.sh) — small packaged
+briefs that give a coding agent procedural knowledge it would otherwise have to
+be told. The original prompt named three Three.js skill repositories and pointed
+at the directory for more, and a survey of what was installed and what was
+available is written up in [`docs/TECHNIQUE.md`](docs/TECHNIQUE.md) under "what
+the sources turned out to be worth".
+
+None of the skill files used here are vendored into this repository. If you want
+to find the same class of thing, the directory has a CLI. Searching it looks
+like this:
+
+```bash
+npx skills find three          # Three.js
+npx skills find webgl          # graphics and rendering
+npx skills find game           # game development
+```
+
+Each result prints as `owner/repo@skill` with an install count and a
+`skills.sh` link, and installing one is `npx skills add <owner/repo@skill>`.
+Running `npx skills find` with no query opens an interactive search instead.
+
+The honest finding from the survey is worth passing on, because it will save
+somebody the same afternoon: for a project at this level of detail, the
+available Three.js rendering skills were flat API catalogues with no measurement
+discipline and no colour-space reasoning, and several of their recommendations
+were actively wrong for this scene. By far the most useful source of technique
+was the previous project's own code comments. Skills are good at telling an
+agent what an API is. They were no help at all with what number to put in it.
