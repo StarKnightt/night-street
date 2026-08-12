@@ -187,7 +187,10 @@ const DECKS: Deck[] = [
  * exactly that: the cosine-weighted irradiance on an upward-facing surface is
  * E = (0.5045, 0.5087, 1.1332), and for a conservative scatterer the outgoing
  * radiance is E/pi = (0.161, 0.162, 0.361). Blue-violet, and measured rather
- * than chosen.
+ * than chosen — then carried through the same Chappuis factor the dome is,
+ * (1.34, 0.56, 1.13), giving (0.216, 0.091, 0.408). The probe it came from has
+ * no ozone in it, so leaving it unfiltered would light cloud tops with a sky
+ * that is no longer above them.
  *
  * Looking down, a cloud base sees the ground and the lower atmosphere. Ground
  * albedo 0.15 against the sun's horizontal irradiance of 115 x sin(4.2) = 8.42
@@ -207,11 +210,11 @@ const DECKS: Deck[] = [
  * of five changed the image by nothing that could be seen. Ambient is supposed
  * to be the floor, not the picture.
  */
-const AMB_TOP: [number, number, number] = [0.161, 0.162, 0.361];
+const AMB_TOP: [number, number, number] = [0.216, 0.091, 0.408];
 const AMB_BASE: [number, number, number] = [0.235, 0.108, 0.087];
 /* Plus a share of the sky immediately behind the cloud, which is the term that
  * keeps a cloud sitting *in* the sky rather than on top of it. */
-const AMB_SKY = 0.10;
+const AMB_SKY = 0.16;
 
 /* ── Multiple scattering ─────────────────────────────────────────────────────
  *
@@ -227,13 +230,13 @@ const AMB_SKY = 0.10;
  *
  *   L = sum_n  a^n . beam . P(mu, g.b^n) . exp( -c^n . tau_sun )
  *
- * a = 0.50, b = 0.58, c = 0.28, four octaves. c is the one that matters: at
+ * a = 0.36, b = 0.58, c = 0.28, four octaves. c is the one that matters: at
  * n = 3 the effective optical depth is 2.2% of the true one, so a column that
  * blocks single scattering by e^-40 still passes e^-0.9 of the fourth octave at
  * 7% weight. That is the glow.
  */
 const MS_OCTAVES = 4;
-const MS_A = 0.50, MS_B = 0.58, MS_C = 0.28;
+const MS_A = 0.36, MS_B = 0.58, MS_C = 0.28;
 const HG_G = 0.76;
 
 const NOISE_GLSL = /* glsl */ `
@@ -305,7 +308,7 @@ float sunDisc(vec3 dir){
   return exp(-ang * 150.0) * 190.0;
 }
 
-vec3 skyBase(vec3 dir, float withDisc){
+vec3 skyRaw(vec3 dir, float withDisc){
   float up = dir.y;
   vec2 fz = dir.xz;
   float azW = pow(max(0.0, 0.5 + 0.5 * (
@@ -335,6 +338,55 @@ vec3 skyBase(vec3 dir, float withDisc){
     col = mix(col, gnd, d * 0.85);
   }
   return col;
+}
+
+/* ── Ozone, the Chappuis band ────────────────────────────────────────────────
+ *
+ * The clear-sky model above is an empirical gradient with no absorber in it,
+ * and the measurement says exactly what that costs: tools/skyband.mjs put the
+ * zenith at hue 219 and the 46-60 degree band at 17% saturation — blue-grey,
+ * and grey is the word. It is the standard signature of a sky built out of
+ * Rayleigh and aerosol alone at low sun, and the missing term is ozone.
+ *
+ * Ozone's Chappuis band is a broad, weak absorption centred near 600 nm. It
+ * therefore eats the middle of the spectrum and leaves both ends: the vertical
+ * optical depth is only a few hundredths, but the light illuminating the upper
+ * air at four degrees of sun elevation arrives along a nearly tangential path
+ * of fifteen-odd air masses, so the middle gets a real bite taken out of it.
+ * What survives at the zenith is red — from a beam that has already lost its
+ * blue over that same path — plus blue, which Rayleigh's lambda^-4 preference
+ * keeps putting back. Red and blue with the green pulled out of the middle is
+ * violet, and that is why a clear zenith at this hour is not grey.
+ *
+ * Two gates, and both of them are about not lying:
+ *
+ *   - Elevation. The tint ramps in between about 3.4 and 37 degrees and is
+ *     exactly 1.0 below that. Near the horizon the radiance is dominated by
+ *     short-path aerosol forward scattering, which is warm and barely ozoned,
+ *     so the physics wants identity there anyway — and so does haze.ts, which
+ *     carries its own port of the untinted function and meets this sky exactly
+ *     where distant geometry fades into it. The handoff stays bit-exact.
+ *   - Distance from the sun. The aureole is single-scattered light that has
+ *     travelled the shortest path in the hemisphere. Tinting it would turn the
+ *     warm band the user explicitly asked for into magenta.
+ *
+ * The strength is authored, not derived: (1.34, 0.56, 1.13) is where
+ * tools/agx.mjs says the displayed 46-60 degree band reaches the pink the brief
+ * asks for without going candied. It darkens by about 22% in luminance, which
+ * is the right direction — ozone is an absorber, and the upper sky at golden
+ * hour is darker than the model had it.
+ */
+vec3 chappuis(vec3 col, vec3 dir){
+  float ang = acos(clamp(dot(dir, uSun), -1.0, 1.0));
+  float w = smoothstep(0.06, 0.60, dir.y) * smoothstep(0.30, 0.90, ang);
+  return col * mix(vec3(1.0), vec3(1.34, 0.56, 1.13), w);
+}
+
+/* The sky as it is drawn. skyRaw() is the port and stays the port; everything
+ * downstream — the clouds' fill light, their aerial perspective, the gaps
+ * between them — reads this one, so there is exactly one sky in the frame. */
+vec3 skyBase(vec3 dir, float withDisc){
+  return chappuis(skyRaw(dir, withDisc), dir);
 }
 `;
 
@@ -610,7 +662,11 @@ ${cloudGlsl()}
 
 void main(){
   vec3 dir = normalize(vWorldDirection);
-  vec3 col = ${withClouds ? 'skyWithClouds(dir)' : 'skyBase(dir, 1.0)'};
+  /* ?sky=noclouds draws skyRaw, not skyBase, and deliberately: it is the null
+   * test for the projection change and has to stay comparable with ?sky=flat,
+   * which is the CPU equirect and has no ozone in it either. Differencing the
+   * two still isolates the cube, and nothing else. */
+  vec3 col = ${withClouds ? 'skyWithClouds(dir)' : 'skyRaw(dir, 1.0)'};
   gl_FragColor = vec4(max(col, 0.0), 1.0);
 }
 `;
