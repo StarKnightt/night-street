@@ -197,7 +197,14 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
       /* Shafts must *move*. A wedge that is static as the camera translates is
        * a screen-space artifact wearing a shaft's clothes, and a still cannot
        * tell the two apart. Four stops a metre and a half apart, sampling one
-       * fixed strip of open air, with the march on and off. */
+       * fixed strip of open air, with the sun term on and off.
+       *
+       * On and off here is __vol.sunOn, not uVol. uVol drops the lamp cones
+       * with the shafts, and the cones are worth up to ninety code values and
+       * slide across a strip of air under translation exactly as a shaft
+       * would. This row previously read uVol and was cited as evidence the
+       * shafts swept, during a period when the shaft term was measured to be
+       * identically zero. It was the cones. */
       s.setYaw(yaw); s.setPitch(pitch);
       const sweep = [];
       for (const tt of [0.36, 0.375, 0.39, 0.405, 0.42]) {
@@ -212,11 +219,12 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
           for (let i = 0; i < d.length; i += 4) { t += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; n++; }
           return t / n;
         };
-        if (hdr) u.uVol.value = VOL;
+        const vol = window.__vol;
+        if (vol) vol.sunOn = 1;
         const on = grab();
-        if (hdr) u.uVol.value = 0;
+        if (vol) vol.sunOn = 0;
         const off = grab();
-        if (hdr) u.uVol.value = VOL;
+        if (vol) vol.sunOn = 1;
         sweep.push({ t: tt, on, off, d: on - off });
       }
 
@@ -410,12 +418,12 @@ await run({ width: 1600, height: 900 }, async ({ page, readShaderErrors }) => {
 
   if (out.sweep && out.sweep.length) {
     console.log(`\n  shaft sweep, one fixed strip of open air, luma counts`);
-    console.log(`    t        on      off     march`);
+    console.log(`    t     sunOn=1  sunOn=0   shaft`);
     for (const s of out.sweep) {
       console.log(`    ${s.t.toFixed(3)}  ${(s.on * 1).toFixed(2).padStart(6)}  ${(s.off).toFixed(2).padStart(6)}  ${(s.d).toFixed(2).padStart(6)}`);
     }
     const ds = out.sweep.map((s) => s.d);
-    console.log(`    march term range over 3 m of walk: ${(Math.max(...ds) - Math.min(...ds)).toFixed(2)} counts`);
+    console.log(`    shaft term range over 3 m of walk, cones excluded: ${(Math.max(...ds) - Math.min(...ds)).toFixed(2)} counts`);
   }
 
   console.log('\n  clipped pixels, whole frame of ' + (1600 * 900).toLocaleString());

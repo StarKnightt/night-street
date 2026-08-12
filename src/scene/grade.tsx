@@ -63,6 +63,7 @@ import * as THREE from 'three';
 import { AGX_GLSL, makeSceneTarget, pipeFlags, useHdr } from './pipeline';
 import { Volumetric } from './volumetric';
 import { Bloom } from './bloom';
+import { sunFollowState } from './sunFollow';
 
 /* The look, as coefficients, so that switching it off is a swap of the whole
  * set rather than a branch in the shader. */
@@ -641,6 +642,10 @@ export function Grade() {
       ? { get cones() { return rig.vol.lastConeCount; },
           get shadow() { return rig.vol.lastShadow; },
           get air() { return rig.vol.lastAir; },
+          /* The analytic occluder's planes, so a tool can hold a measured
+           * shaft against the gap that is supposed to cast it. */
+          get gap() { return rig.vol.lastGap; },
+          get follow() { return sunFollowState; },
           /* The subtractive gain, writable, so it can be swept without a
            * reload. It lives on the march's own material rather than on the
            * grade's, and a tool reaching for window.__grade.uniforms.uSunShare
@@ -649,6 +654,14 @@ export function Grade() {
           get gain() { return rig.vol.gain; },
           set gain(v: number) { rig.vol.gain = v; },
           set debug(v: number) { rig.vol.debug = v; },
+          /* The two halves of the pass, switchable independently. `uVol`
+           * drops both, so anything differenced against it measures the
+           * shafts and the lamp cones together — which is how the shafts were
+           * last reported to sweep under motion when it was the cones. */
+          get sunOn() { return rig.vol.sunOn; },
+          set sunOn(v: number) { rig.vol.sunOn = v; },
+          get coneGain() { return rig.vol.coneGain; },
+          set coneGain(v: number) { rig.vol.coneGain = v; },
           /* One texel of the march's own output, in its own units: rgb is the
            * signed in-scatter it wrote and a is the view depth it marched to.
            * Added because a gate on that depth failed silently and reading the

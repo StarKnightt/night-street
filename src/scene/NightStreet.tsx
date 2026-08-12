@@ -6,6 +6,7 @@ import { Street } from './Street';
 import { Rig } from './Rig';
 import { Grade } from './grade';
 import { installSoftSunShadows } from './softShadow';
+import { SunFollow } from './sunFollow';
 import { installShaderErrorWatch } from './shaderWatch';
 import { CityAudio, footstep } from '@/audio/CityAudio';
 
@@ -72,6 +73,13 @@ export default function NightStreet() {
         }}
       >
         <Street />
+        {/* The sun's shadow box is positioned from a `useFrame` in Street.tsx,
+          * and `renderOnce()` runs no `useFrame` at all — so in every still
+          * this project has taken, the box sat wherever the walk had last been
+          * on the animation loop. This re-derives the same placement from
+          * `scene.onBeforeRender`, which is the last hook before the depth
+          * pass and runs on every render however the frame was asked for. */}
+        <SunFollow />
         <Rig onFootstep={footstep} />
         {/* Last child on purpose. It subscribes to the frame loop at a
           * non-zero priority, which is what tells r3f to stop rendering the

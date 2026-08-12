@@ -136,7 +136,7 @@ export function hazeFogVertex(depthScale = 1): string {
  * carriageway lit between z = -49 and -32, and between -84 and -73 — from the
  * gap list rather than from its comment.
  */
-function gapPlanes(sunDir: THREE.Vector3) {
+export function gapPlanes(sunDir: THREE.Vector3) {
   const nl = Math.hypot(sunDir.z, sunDir.x);
   const nx = sunDir.z / nl, nz = -sunDir.x / nl;
   const dAt = (x: number, z: number) => nx * x + nz * z;

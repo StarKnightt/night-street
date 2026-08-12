@@ -90,7 +90,7 @@ import * as THREE from 'three';
 import {
   Blit, IGN_GLSL, RAY_GLSL, makeColourTarget, rayUniforms, setRayUniforms,
 } from './pipeline';
-import { gapLitGLSL, hazePhaseGLSL, hazeSkyGLSL, sunwardAirlight } from './haze';
+import { gapLitGLSL, gapPlanes, hazePhaseGLSL, hazeSkyGLSL, sunwardAirlight } from './haze';
 import { LAMP_CROSS, LAMP_CUT, LAMP_PEAK, lampFixtures } from './lampFixtures';
 
 /* The most lanterns the march will carry in one frame.
@@ -240,38 +240,42 @@ function findSun(scene: THREE.Object3D): Sun | null {
  * so it is kept, but kept as a clamp that the gain is allowed to reach rather
  * than as a number the gain must stay under.
  *
- * ── MEASURED: THIS GAIN CURRENTLY MULTIPLIES ZERO ─────────────────────────
+ * ── WAS ZERO. FIXED. WHAT IT WAS, AND WHAT THE NUMBER IS NOW ──────────────
  *
- * Read this before tuning the number. With uDebug at 1 the pass writes its own
- * integrals, and across all ten of tools/atmo.mjs's regions:
+ * This gain used to multiply nothing. With uDebug at 1 the pass wrote its own
+ * integrals and, across all ten of tools/atmo.mjs's regions, shadeSharp was
+ * exactly 0 and shadeSoft under 0.0003 against 0.024 to 0.123 of available
+ * airlight. Two causes were on record. Only one of them was real:
  *
- *     shadeSharp = 0.00000     every region, without exception
- *     shadeSoft  < 0.0003      every region except sky, against an available
- *                              airlight of 0.024 to 0.123
+ *   shadeSharp, the shadow-map branch — real, and the whole of the zero. Not
+ *     coverage, which was the standing suspicion, and so not a Street.tsx
+ *     change. Street.tsx moves the sun and its shadow camera to a texel-
+ *     snapped copy of the camera position from useFrame, and useFrame does not
+ *     run for a renderOnce() capture — nor for any still, nor for the first
+ *     frame after a seek. So the map was left wherever the camera last was
+ *     under animation, which for a freshly-seeked capture is the walk's
+ *     origin, tens of metres from the marched air. `inside` was 0 for every
+ *     sample because the frustum was genuinely elsewhere. sunFollow.ts fixes
+ *     it from scene.onBeforeRender, which runs for every render including
+ *     stills, and re-asserts the same snapped placement Street.tsx computes.
+ *   shadeSoft, gapLit reporting near-field air as lit — not real. Measured
+ *     after the above, gapLit returns 0.000 for near-field air in the shaded
+ *     stretches and about 0.99 inside the sunlit bands, which is what it is
+ *     supposed to do. The slab test was correct all along; it looked wrong
+ *     because it was the only term contributing and it was contributing the
+ *     far field only. No change was needed and none was made.
  *
- * So both occlusion sources report that essentially no air in this frame is in
- * shadow, and a sweep of this gain from 1 to 8 moves the term by 0.0001 of
- * radiance, which is the arithmetic of multiplying zero. The shafts that
- * earlier captures appeared to show sweeping under motion were the lamp cones
- * moving; the sun term was not participating.
- *
- * Two independent causes, both located and neither yet fixed:
- *
- *   shadeSharp — the shadow-map branch never runs. uShadowOn is 1 and the map
- *     is bound, so lastShadow reports true and everything downstream looks
- *     wired, but `inside` evaluates to 0 for every sample, meaning no marched
- *     point lands within the shadow camera's frustum in shadow-UV space. The
- *     map is 44 m across and follows the camera, so the leading suspect is that
- *     it is centred somewhere the marched air is not.
- *   shadeSoft — gapLit reports near-field air as lit almost everywhere, so its
- *     slab test believes the beam covers the street rather than two gaps in it.
- *
- * The consequence for anyone picking this up: fixing either one will switch a
- * gain of six on, at full strength, over air that is currently contributing
- * nothing. The min() clamp below bounds what that can do to one frame's worth
- * of airlight, which is why it is safe to leave the gain here rather than
- * reverting it — but expect the frame to change materially, and re-measure the
- * blob described under SUN_SHARE before assuming the number is still right.
+ * The gain is 1.0 rather than the 6.0 it was left at, and that is the whole of
+ * the retune. Six was chosen against the inert term, where nothing it could do
+ * was visible; over a working shadow-map share it saturates. Swept with the
+ * sun term isolated by uSunOn — cones held, one frozen world state, difference
+ * boxed 4x4 against the noise floor — the darkening at the 99.9th percentile
+ * runs 25 to 32 code values at gain 0.5, 35 to 60 at gain 1.0, and 50 to 60 at
+ * 1.5, where the min() clamp has started to bind at three of the four stops
+ * and the frame is losing the difference between a shaft and a shadow. Gain
+ * 1.0 is the last value at which every stop is still on the linear part of its
+ * own response. Clipped pixels are 0 at every gain from 0 to 6, at all four
+ * stops, which is the subtractive construction doing its job.
  *
  * ── Why a gain was needed at all ──────────────────────────────────────────
  *
@@ -292,7 +296,7 @@ function findSun(scene: THREE.Object3D): Sun | null {
  * addition, and they are the only place a photometric absolute is needed —
  * which is where `uAir` comes in, below.
  */
-const SUN_SHARE = 6.0;
+const SUN_SHARE = 1.0;
 
 function marchFragment(sunDir: THREE.Vector3): string {
   return /* glsl */ `
@@ -311,6 +315,16 @@ uniform vec3  uSunDir;         // towards the sun
 uniform float uSigma;          // extinction, 1/m, at eye height
 uniform float uKHeight;        // 1 / scale height
 uniform float uSunShare;
+/* A hard on/off for the whole subtractive sun term, cones untouched.
+ *
+ * Not a convenience. The pass composites two effects into one buffer and the
+ * only switch that existed was uVol, which drops both — so a differenced
+ * pair taken against it measures the shafts *plus* the lamp cones at gain 30,
+ * and the cones are worth up to ninety code values. The previous pass on this
+ * file recorded being fooled exactly that way: "the shafts that earlier
+ * captures appeared to show sweeping under motion were the lamp cones moving".
+ * A term that cannot be switched off on its own cannot be measured on its own. */
+uniform float uSunOn;
 uniform float uDebug;
 uniform float uConeGain;
 uniform float uFrame;
@@ -388,9 +402,12 @@ ${gapLitGLSL(sunDir)}
  * generally brighter than shadowed air at range — without pretending to a
  * precision it does not have.
  */
-vec2 sunVisible( vec3 p ) {
+/* Returns (visibility, confidence, analytic, shadow-map lit) — the last two
+ * for the debug channel, which needs to separate "the air is lit" from "the
+ * shadow map could not see this air". */
+vec4 sunVisible( vec3 p ) {
   float analytic = gapLit( p );
-  if ( uShadowOn < 0.5 ) return vec2( analytic, 0.0 );
+  if ( uShadowOn < 0.5 ) return vec4( analytic, 0.0, analytic, 0.0 );
 
   vec4 sc = uShadowMat * vec4( p, 1.0 );
   vec3 s = sc.xyz / sc.w;
@@ -398,7 +415,7 @@ vec2 sunVisible( vec3 p ) {
   float inside = smoothstep( 0.0, 0.05, min( e.x, e.y ) );
   // Past the far plane of the shadow camera nothing is recorded, and nothing
   // recorded is lit rather than shaded.
-  if ( inside <= 0.0 || s.z > 1.0 ) return vec2( analytic, 0.0 );
+  if ( inside <= 0.0 || s.z > 1.0 ) return vec4( analytic, 0.0, analytic, 0.0 );
 
   /* Four taps on a rotated cross rather than one. A single fetch gives the
    * march a stair-stepped edge at half resolution that survives the upsample;
@@ -415,7 +432,8 @@ vec2 sunVisible( vec3 p ) {
     + step( s.z - bias, texture2D( uShadow, s.xy - r ).r )
     + step( s.z - bias, texture2D( uShadow, s.xy + q ).r )
     + step( s.z - bias, texture2D( uShadow, s.xy - q ).r );
-  return vec2( mix( analytic, lit * 0.25, inside ), inside );
+  lit *= 0.25;
+  return vec4( mix( analytic, lit, inside ), inside, analytic, lit );
 }
 
 void main() {
@@ -472,6 +490,18 @@ void main() {
   vec3  cones = vec3( 0.0 );
   float trans = 1.0;
 
+  /* Unweighted census of the two occlusion sources, for the debug channel
+   * only. These are counts of *samples*, not integrals, and that is the point:
+   * a term can be zero because the air is lit, because the sample fell outside
+   * the shadow frustum, or because the transmittance had already run out, and
+   * the weighted integral cannot tell the three apart. dbgMid carries the
+   * world position of the middle sample so that no row of any report can be
+   * about a place other than the one it names. */
+  float dbgInside = 0.0;
+  float dbgLit = 0.0;
+  float dbgGap = 0.0;
+  vec3  dbgMid = vec3( 0.0 );
+
   for ( int i = 0; i < STEPS; i ++ ) {
     float t = ( float( i ) + jit ) * dt;
     vec3 p = uCamPos + dir * t;
@@ -479,10 +509,15 @@ void main() {
     float seg = sig * dt;
     float w = trans * seg;
 
-    vec2 vis = sunVisible( p );
+    vec4 vis = sunVisible( p );
     float dark = w * ( 1.0 - vis.x );
     shadeSharp += dark * vis.y;
     shadeSoft += dark * ( 1.0 - vis.y );
+
+    dbgInside += vis.y;
+    dbgLit += vis.w;
+    dbgGap += vis.z;
+    if ( i == STEPS / 2 ) dbgMid = p;
 
     /* Lantern in-scattering.
      *
@@ -547,15 +582,35 @@ void main() {
    * rather than the airlight at infinity. */
   float sub = min( shadeSharp * uSunShare + shadeSoft, 1.0 - trans );
 
-  vec3 outc = - sky * ( sub * ( 1.0 - skyPix ) )
+  vec3 outc = - sky * ( sub * ( 1.0 - skyPix ) * uSunOn )
             + uAir * cones * uConeGain;
 
-  /* Diagnostic channel. With uDebug at 1 the pass writes its own integrals
-   * instead of its output, so a tool can read shadeSharp, shadeSoft and the
-   * available airlight as three numbers rather than inferring them from a
-   * luma. It is a uniform mix rather than a define so that the program is
-   * identical either way and nothing can be attributed to a recompile. */
-  outc = mix( outc, vec3( shadeSharp, shadeSoft, 1.0 - trans ), uDebug );
+  /* Diagnostic channels. The pass writes its own internals instead of its
+   * output, so a tool can read them as numbers rather than inferring them from
+   * a luma. Uniform-selected rather than #define'd so that the program is
+   * identical whichever channel is asked for and nothing can be attributed to
+   * a recompile.
+   *
+   *   1  ( shadeSharp, shadeSoft, 1 - trans )   the two integrals and the
+   *                                             airlight available to them
+   *   2  ( inside, litByMap, gapLit )           mean over the march's samples,
+   *                                             unweighted: which occlusion
+   *                                             source answered, and what it
+   *                                             said. Separates "the air is
+   *                                             lit" from "the map cannot see
+   *                                             this air", which the weighted
+   *                                             integrals cannot.
+   *   3  the world position of the middle sample, so every row of a report
+   *      carries the place it is describing.
+   */
+  float invSteps = 1.0 / float( STEPS );
+  float d1 = step( 0.5, uDebug ) * step( uDebug, 1.5 );
+  float d2 = step( 1.5, uDebug ) * step( uDebug, 2.5 );
+  float d3 = step( 2.5, uDebug );
+  outc = outc * ( 1.0 - d1 - d2 - d3 )
+       + d1 * vec3( shadeSharp, shadeSoft, 1.0 - trans )
+       + d2 * vec3( dbgInside, dbgLit, dbgGap ) * invSteps
+       + d3 * dbgMid;
 
   /* .a carries the depth this texel marched to, so the depth-aware upsample in
    * the final pass can reject texels that belong to a different surface rather
@@ -576,13 +631,25 @@ export class Volumetric {
   lastConeCount = 0;
   lastShadow = false;
   lastAir: [number, number, number] = [0, 0, 0];
+  /* The analytic occluder's own planes, published rather than re-derived, so a
+   * tool can check a shaft against the gap that casts it without a second call
+   * to `layoutBlock` that could disagree with this one. */
+  lastGap: { nx: number; nz: number; slabs: [number, number][] } | null = null;
 
   /** The subtractive sun gain, exposed so it can be swept from a tool. */
   get gain(): number { return (this.blit?.uniforms.uSunShare.value as number) ?? SUN_SHARE; }
   set gain(v: number) { if (this.blit) this.blit.uniforms.uSunShare.value = v; }
 
-  /** 1 makes the pass write (shadeSharp, shadeSoft, 1 - trans) instead of colour. */
+  /** 1, 2 or 3 makes the pass write one of its internals instead of colour. */
   set debug(v: number) { if (this.blit) this.blit.uniforms.uDebug.value = v; }
+
+  /** The sun term alone, switchable, so it can be differenced without the cones. */
+  get sunOn(): number { return (this.blit?.uniforms.uSunOn.value as number) ?? 1; }
+  set sunOn(v: number) { if (this.blit) this.blit.uniforms.uSunOn.value = v; }
+
+  /** The cone term's gain, switchable for the same reason. */
+  get coneGain(): number { return (this.blit?.uniforms.uConeGain.value as number) ?? CONE_GAIN; }
+  set coneGain(v: number) { if (this.blit) this.blit.uniforms.uConeGain.value = v; }
 
   constructor(w: number, h: number) {
     this.target = makeColourTarget(w >> 1, h >> 1, 'volume');
@@ -605,6 +672,7 @@ export class Volumetric {
       uSigma: { value: 0.0072 },
       uKHeight: { value: 0.05556 },
       uSunShare: { value: SUN_SHARE },
+      uSunOn: { value: 1 },
       uDebug: { value: 0 },
       uConeGain: { value: CONE_GAIN },
       uFrame: { value: 0 },
@@ -614,6 +682,8 @@ export class Volumetric {
       uConeCol: { value: Array.from({ length: MAX_CONES }, () => new THREE.Vector4()) },
     };
     this.blit = new Blit(marchFragment(sunDir), u);
+    const g = gapPlanes(sunDir);
+    this.lastGap = { nx: g.nx, nz: g.nz, slabs: g.slabs.map((s) => [s[0], s[1]] as [number, number]) };
   }
 
   /** Nearest-first, capped, so a long street does not cost more than a short one. */
