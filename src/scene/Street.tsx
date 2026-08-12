@@ -26,7 +26,7 @@ import {
   makeSimpleMaterial, makeDiscMaterial, makeSkirtMaterial,
   makeApronMaterial,
 } from './materials';
-import { makeNightEnv, SUN_DIR, SUN_ELEV } from './env';
+import { makeNightEnv, SUN_DIR, SUN_ELEV, SUN_COLOR_HEX, SUN_INTENSITY } from './env';
 import { installHaze } from './haze';
 import { Dust } from './dust';
 import { installSensorFloor } from './sensor';
@@ -329,9 +329,18 @@ function SunLight() {
     // Aim a little ahead: at this elevation the interesting shadows are the
     // ones being cast toward the camera from further down the street.
     const fz = cz - 8;
-    l.target.position.set(cx, 0, fz);
+    /* The 2 m lift goes on both ends, not just the light.
+     *
+     * It used to be added to the light's Y alone, which tilts the vector from
+     * target to light away from SUN_DIR: at SUN_ELEV 12 the light sat at
+     * 13.855 degrees, and at the original 4.2 it sat at 6.099. The shadow map
+     * has therefore been raked about 1.9 degrees above the sky's own sun since
+     * the first commit, so cast shadows never quite agreed with the sky, the
+     * IBL, or the uSun every material reads. Lifting both keeps the frustum
+     * clear of the carriageway while leaving the direction exactly SUN_DIR. */
+    l.target.position.set(cx, 2, fz);
     l.target.updateMatrixWorld();
-    l.position.set(cx + SUN_DIR[0] * 60, SUN_DIR[1] * 60 + 2, fz + SUN_DIR[2] * 60);
+    l.position.set(cx + SUN_DIR[0] * 60, 2 + SUN_DIR[1] * 60, fz + SUN_DIR[2] * 60);
     l.updateMatrixWorld();
 
     /* The frustum is set here rather than through props.
@@ -356,19 +365,19 @@ function SunLight() {
   return (
     <directionalLight
       ref={ref}
-      /* Deep gold. At four degrees the beam has crossed something like thirty
-       * air masses and lost most of its short wavelengths; 2200 K is roughly
-       * this, and it is a long way from the pale yellow that "sunlight"
-       * usually gets authored as. */
-      color="#ff9a4e"
+      /* Deep gold, and imported rather than spelled, so the key light and the
+       * sky cannot disagree about what colour the sun is. A beam crossing this
+       * much air has lost most of its short wavelengths; 2200 K is roughly it,
+       * a long way from the pale yellow "sunlight" usually gets authored as. */
+      color={SUN_COLOR_HEX}
       /* Set against the sky rather than picked in isolation.
         *
-        * The ground only collects a tenth of this because of the grazing
+        * The ground only collects a fraction of this because of the grazing
         * angle, so the number that matters is not the sun's own brightness but
-        * what a tenth of it comes to next to the skylight. At the first
+        * what that fraction comes to next to the skylight. At the first
         * balance the sky was winning on the road surface and cast shadows were
         * invisible — not missing, just swamped. */
-      intensity={115}
+      intensity={SUN_INTENSITY}
       castShadow
       shadow-mapSize-width={SHADOW_RES}
       shadow-mapSize-height={SHADOW_RES}

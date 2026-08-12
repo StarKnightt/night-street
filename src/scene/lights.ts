@@ -50,6 +50,7 @@
 import * as THREE from 'three';
 import { LAMPS } from '@/world/dims';
 import { atDisplay, forDisplay } from './tone';
+import { SUN_ELEV, SUN_INTENSITY } from './sun';
 import {
   lampFixtures, LAMP_CROSS, LAMP_PEAK, LAMP_CUT, LAMP_OUTREACH,
 } from './lampFixtures';
@@ -73,8 +74,14 @@ import {
  */
 export { forDisplay };
 
-/** Horizontal irradiance from the sun, for every ratio quoted in this file. */
-export const SUN_HORIZ = 115 * Math.sin(4.2 * Math.PI / 180);   // 8.42
+/** Horizontal irradiance from the sun, for every ratio quoted in this file.
+ *
+ * Derived, never transcribed. This line previously read
+ * `115 * Math.sin(4.2 * Math.PI / 180)` and was the fourth place in the tree
+ * that spelled the sun out by hand; when the sun moved to 12 degrees it kept
+ * reporting 8.42 against a true 23.91. It happened to be unreferenced, so it
+ * was stale rather than wrong, which is the only reason it did no damage. */
+export const SUN_HORIZ = SUN_INTENSITY * Math.sin(SUN_ELEV);
 
 /* ── Street lamps ─────────────────────────────────────────────────────────
  *
