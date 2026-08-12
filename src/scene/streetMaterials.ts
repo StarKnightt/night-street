@@ -1137,11 +1137,20 @@ const SHUTTER_BODY = /* glsl */ `
 
   /* Shutters come in four finishes and no others: mill-finish aluminium,
    * galvanised steel, and the two colours somebody painted over them. */
+  /* Reflectances, not impressions. Mill-finish aluminium is a light silvery
+   * sheet — LRV 41 once it has a few years of street dust on it — and it was
+   * authored at 0.129, darker than the concrete flags it stands on. Weathered
+   * galvanised is a duller grey at 30, and the two paints are 11.
+   *
+   * The correction is larger than it looks, because the curtain's own
+   * modulation takes roughly a quarter back out again: the lath profile times
+   * the grime run averages about 0.73 of base before anything else touches it,
+   * so what these numbers set is a ceiling the surface then works down from. */
   float g = hash21(vec2(seed * 7.7, 1.3));
-  vec3 base = g < 0.34 ? vec3(0.1250, 0.1290, 0.1330)      // mill aluminium
-            : g < 0.58 ? vec3(0.0930, 0.0950, 0.0960)      // galvanised
-            : g < 0.80 ? vec3(0.0330, 0.0520, 0.0400)      // painted green
-                       : vec3(0.0620, 0.0480, 0.0360);     // painted brown
+  vec3 base = g < 0.34 ? vec3(0.4000, 0.4120, 0.4240)      // mill aluminium
+            : g < 0.58 ? vec3(0.2900, 0.2980, 0.3000)      // galvanised
+            : g < 0.80 ? vec3(0.0620, 0.1280, 0.0880)      // painted green
+                       : vec3(0.1550, 0.1050, 0.0620);     // painted brown
 
   if (kind < 0.5){
     /* ── The curtain ────────────────────────────────────────────────
@@ -1253,10 +1262,17 @@ const SHUTTER_BODY = /* glsl */ `
                      * smoothstep(0.40, 0.14, f.x + f.y) * 0.85;
           if (m < 0.004) continue;
           float hp = hash21(cid * 11.3 + 53.9);
-          vec3 paper = hp < 0.40 ? vec3(0.1420, 0.1370, 0.1250)   // newsprint
-                     : hp < 0.62 ? vec3(0.1980, 0.1900, 0.1730)   // bleached
-                     : hp < 0.80 ? vec3(0.1250, 0.0640, 0.0290)   // orange-tan
-                                 : vec3(0.1330, 0.1120, 0.0410);  // yellow
+          /* Paper reflectance, and this had to move with the curtain rather
+           * than after it. A bill is pasted on a shutter to be read from
+           * across the road, so it is lighter than the steel; at the old
+           * levels, against a mill-aluminium curtain now sitting at 0.40, a
+           * sheet of newsprint would have read as a dark rectangle and the
+           * flyposting would have inverted into soot marks. Grimy newsprint
+           * is LRV 35, bleached poster stock 50. */
+          vec3 paper = hp < 0.40 ? vec3(0.3600, 0.3480, 0.3180)   // newsprint
+                     : hp < 0.62 ? vec3(0.5200, 0.5000, 0.4550)   // bleached
+                     : hp < 0.80 ? vec3(0.3300, 0.1700, 0.0780)   // orange-tan
+                                 : vec3(0.3600, 0.3000, 0.1100);  // yellow
           paper = mix(paper, col, age * 0.55);
           vec2 pxf = px * vec2(1.55, 1.05) / sz;
           float ib = hash21(cid * 15.1 + 63.3);
@@ -1372,6 +1388,37 @@ vBaseS = aShut.z;`);
 
 const AWN_DECL = /* glsl */ `
 varying vec4 vAwnP;
+
+/* Awning cloth, at the reflectance the cloth actually has.
+ *
+ * The previous palette ran from 0.033 to 0.134 luminance, which is to say that
+ * the lightest awning on the street was darker than weathered asphalt and the
+ * other four were within half a stop of each other. Two things follow from
+ * that and both were visible. Everything below about 0.05 linear lands where
+ * the fill dominates whatever the surface does, so five distinct colours
+ * arrived as one hue — and because three of the five were cold, that hue was
+ * navy. Widening the spread is what separates them; it is not a brightness
+ * preference.
+ *
+ * Levels are acrylic awning canvas measured as LRV and converted: wine 8,
+ * forest 8, navy 5, natural 62, gold 22. The cream is the important one. It
+ * was 4.5x too dark, it is the most common awning colour on any real high
+ * street, and it is the only member of the set bright enough to break up a
+ * frontage. Navy is genuinely this blue - a navy awning is navy - so the fix
+ * for the blue mass is that there are fewer of them and the ones beside them
+ * are no longer dark, rather than a desaturation that would make it something
+ * other than navy.
+ *
+ * Shares drawn to match a high street rather than a colour wheel: natural and
+ * gold together are half of them, navy is a tenth.
+ */
+vec3 awnCloth(float g){
+  return g < 0.22 ? vec3(0.1800, 0.0520, 0.0550)    // faded wine
+       : g < 0.40 ? vec3(0.0450, 0.0950, 0.0580)    // forest green
+       : g < 0.50 ? vec3(0.0300, 0.0420, 0.0980)    // navy
+       : g < 0.76 ? vec3(0.6400, 0.6000, 0.5000)    // natural / cream
+                  : vec3(0.3300, 0.1950, 0.0700);   // gold ochre
+}
 `;
 
 const AWNING_BODY = /* glsl */ `
@@ -1396,12 +1443,12 @@ const AWNING_BODY = /* glsl */ `
      * is what makes an awning identifiable at forty metres, when nothing else
      * about it is resolvable. */
     float g = hash21(vec2(seed * 5.3, 2.1));
-    vec3 a = g < 0.24 ? vec3(0.0680, 0.0250, 0.0215)     // faded burgundy
-           : g < 0.44 ? vec3(0.0230, 0.0410, 0.0300)     // dark green
-           : g < 0.62 ? vec3(0.0250, 0.0330, 0.0560)     // navy
-           : g < 0.80 ? vec3(0.1450, 0.1330, 0.1080)     // ivory
-                      : vec3(0.0900, 0.0560, 0.0230);    // ochre
-    vec3 b = vec3(0.1620, 0.1520, 0.1330);               // the cream stripe
+    vec3 a = awnCloth(g);
+    /* The cream stripe, at natural canvas reflectance. This is what a stripe
+     * is for: it is the light half of the pair, and at the old 0.152 it was
+     * within a stop of every ground it was printed on, so a striped awning and
+     * a plain one were the same object at forty metres. */
+    vec3 b = vec3(0.6800, 0.6450, 0.5600);
     float striped = step(0.42, hash21(vec2(seed * 9.1, 4.7)));
     float sw = 0.185 + hash21(vec2(seed, 8.8)) * 0.055;
     float s = aaStep(0.5, fract(uv.x / sw), px / sw);
@@ -1426,12 +1473,11 @@ const AWNING_BODY = /* glsl */ `
      * street sees, because the camera is under them rather than above them.
      * It is the same cloth and it is in worse condition: it hangs free, it
      * flaps, and its hem has been frayed by twenty years of it. */
-    float g = hash21(vec2(seed * 5.3, 2.1));
-    vec3 a = g < 0.24 ? vec3(0.0680, 0.0250, 0.0215)
-           : g < 0.44 ? vec3(0.0230, 0.0410, 0.0300)
-           : g < 0.62 ? vec3(0.0250, 0.0330, 0.0560)
-           : g < 0.80 ? vec3(0.1450, 0.1330, 0.1080)
-                      : vec3(0.0900, 0.0560, 0.0230);
+    /* Same seed, same cloth: the valance is cut from the bolt the canopy came
+     * from, so it has to read the palette through the same function rather
+     * than carry its own copy. The two lists had already been edited apart
+     * once. */
+    vec3 a = awnCloth(hash21(vec2(seed * 5.3, 2.1)));
     col = a * (0.90 + 0.28 * unit(wfbm(vec2(uv.x * 3.0, uv.y * 9.0), 3)));
     // Scalloping and fray along the bottom edge, in tone.
     float hem = smoothstep(0.72, 1.0, t);
@@ -1441,8 +1487,11 @@ const AWNING_BODY = /* glsl */ `
     rgh = 0.90;
 
   } else {
-    /* ── Frame ──────────────────────────────────────────────────────── */
-    col = vec3(0.0880, 0.0870, 0.0850);
+    /* ── Frame ────────────────────────────────────────────────────────
+     *
+     * Painted or galvanised steel tube, LRV 22. It was 0.087, which is the
+     * reflectance of a dirty brick and not of a powder-coated arm. */
+    col = vec3(0.2250, 0.2230, 0.2180);
     col *= 0.80 + 0.36 * unit(wfbm(uv * 8.0, 3));
     rgh = 0.62;
     diffuseColor.rgb *= col;
