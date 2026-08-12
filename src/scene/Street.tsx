@@ -7,7 +7,7 @@
  * 2–4 — so everything visible here is paving, and it has to carry the frame
  * on its own.
  */
-import { useMemo, useEffect, useRef } from 'react';
+import { useMemo, useEffect, useLayoutEffect, useRef } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -58,6 +58,49 @@ export function Street() {
 
     const env = makeNightEnv(gl);
 
+    /* The sky, the environment and the fog are attached here, during render,
+     * and not in the effect below. This is a load-time fix and a correctness
+     * one, and it does not change a pixel of the finished frame.
+     *
+     * React runs effects after the commit and r3f draws at least one frame
+     * before they land. So with these assignments in an effect, the first frame
+     * compiled every material in the street with USE_ENVMAP and USE_FOG both
+     * absent, and the effect then invalidated the program cache key of every one
+     * of them, so the second frame compiled the lot again. Measured in
+     * docs/COLDSTART.md: seven of the eight large programs linked before the
+     * twenty-second mark had an exact twin later, larger by 17,363 characters
+     * and otherwise textually identical, and the discarded set cost 15.1 s of a
+     * 32 s cold start.
+     *
+     * installHaze is the reason this is more than a load-time bug. It rewrites
+     * THREE.ShaderChunk in place, globally, so every program built before it
+     * runs carries three's stock fog rather than this scene's atmosphere. The
+     * first frame a visitor could see was rendered with the wrong sky, and that
+     * is invisible today only because the loading veil is still up over it.
+     *
+     * Only the forward direction moves. The teardown stays in the effect below,
+     * because unmount ordering is exactly what an effect cleanup is for. */
+    scene.background = env.background;
+    scene.environment = env.environment;
+    scene.backgroundIntensity = 1;
+    /* The sky now IS the fill light, and it is meant to be.
+     *
+     * At night the sky was held down to a quarter strength because an IBL at
+     * the brightness the sky appears to have would have flooded a street lit
+     * by one dim lamp. That reasoning is inverted at golden hour: everything
+     * not in direct sun is lit by the sky and by nothing else, so the ratio
+     * between the two is what decides whether shade reads as cool blue shadow
+     * or as black. Holding the environment down here is exactly what would
+     * produce the dead shadows this scene has to avoid. */
+    scene.environmentIntensity = 0.50;
+    /* Haze, thinner than the night fog in absolute terms but far more visible,
+     * because it is now being lit rather than merely tinted. The directional
+     * part of it — milky toward the sun, clear away from it — is in haze.ts.
+     * Idempotent: it guards on THREE.ShaderChunk.__hazeInstalled, so a double
+     * invocation under StrictMode installs once. */
+    installHaze(new THREE.Vector3(...SUN_DIR), env.fogColor, env.fogSunColor);
+    scene.fog = new THREE.FogExp2(env.fogColor.getHex(), 0.0072);
+
     const materials = {
       road: makeRoadMaterial(asphalt),
       walk: makeWalkMaterial(concrete),
@@ -82,32 +125,33 @@ export function Street() {
     };
 
     return { sets, env, materials, geometries };
-  }, [gl]);
+  }, [gl, scene]);
 
-  useEffect(() => {
+  /* Re-assert, and tear down.
+   *
+   * The assignments that matter for load time are in the useMemo above, because
+   * only those run before the first draw. This repeats them, which sounds
+   * redundant and is not: React Fast Refresh can preserve a useMemo across an
+   * edit while still running an effect cleanup, and the profiler caught exactly
+   * that — after a hot reload the scene had been stripped of its environment and
+   * fog and every program recompiled without them. That is invisible in
+   * production, where there is one mount, and very visible to anyone walking the
+   * street on a dev server while somebody edits the tree, which is the situation
+   * this project is actually in.
+   *
+   * Costs nothing when it is already right: three keys the program cache on
+   * whether an environment and a fog exist, not on their identity, so assigning
+   * the same objects again dirties no material.
+   *
+   * A layout effect rather than a passive one, so that if it ever is doing real
+   * work it happens before the browser paints rather than after. */
+  useLayoutEffect(() => {
     const { env } = built;
     scene.background = env.background;
     scene.environment = env.environment;
     scene.backgroundIntensity = 1;
-    /* The sky now IS the fill light, and it is meant to be.
-     *
-     * At night the sky was held down to a quarter strength because an IBL at
-     * the brightness the sky appears to have would have flooded a street lit
-     * by one dim lamp. That reasoning is inverted at golden hour: everything
-     * not in direct sun is lit by the sky and by nothing else, so the ratio
-     * between the two is what decides whether shade reads as cool blue shadow
-     * or as black. Holding the environment down here is exactly what would
-     * produce the dead shadows this scene has to avoid. */
     scene.environmentIntensity = 0.50;
-    /* Depth cue. City air at night is never clear — there is exhaust, there is
-     * dust, and there is the sodium glow scattering in all of it, so distance
-     * lifts towards the horizon colour rather than falling to black. The
-     * volumetric version of this is System 6. */
-    /* Haze, thinner than the night fog in absolute terms but far more visible,
-     * because it is now being lit rather than merely tinted. The directional
-     * part of it — milky toward the sun, clear away from it — is in haze.ts. */
-    installHaze(new THREE.Vector3(...SUN_DIR), env.fogColor, env.fogSunColor);
-    scene.fog = new THREE.FogExp2(env.fogColor.getHex(), 0.0072);
+    if (!scene.fog) scene.fog = new THREE.FogExp2(env.fogColor.getHex(), 0.0072);
     return () => {
       scene.background = null;
       scene.environment = null;
