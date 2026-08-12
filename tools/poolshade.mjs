@@ -38,7 +38,16 @@ const OUT = flag('out', 'tmp/poolshade.json');
  * out: the peaks it calls the pools, and the minima between them. Passed in
  * rather than rediscovered so the two reports describe the same points. */
 const LANES = { walkL: -3.2, centre: 0, walkR: 3.2 };
-const ZS = [13, 2, -7, -19, -24, -32, -35, -45, -53, -56, -65, -72, -75, -83, -91, -98];
+/* Extended down the street past z -83.
+ *
+ * The original list stopped sampling densely where the lamps are and took
+ * three widely spaced points beyond them. That is where the shadow frustum
+ * runs out, so the interesting region was covered by three samples and the
+ * boundary could not be located to better than eight metres. Everything from
+ * -60 on is now on a four-metre pitch, which puts the edge of coverage inside
+ * one sample. */
+const ZS = [13, 2, -7, -19, -24, -32, -35, -45, -53, -56, -60, -64, -68, -72,
+  -75, -79, -83, -87, -91, -95, -98, -101];
 
 let out = null;
 
@@ -99,6 +108,30 @@ await run({ width: 640, height: 360 }, async ({ page, readShaderErrors }) => {
         const blk = rc.intersectObjects(targets, false);
 
         const lit = shoot(x, z);
+
+        /* Where the receiver and its blocker land in the shadow camera's own
+         * clip space, read after the render that produced `lit` so it is the
+         * frustum that frame was actually drawn through.
+         *
+         * This is the check the photometric comparison cannot make. A point
+         * outside the frustum is reported *lit* by three's shadow lookup and a
+         * caster outside it is simply absent from the depth pass, and both
+         * produce the same picture as "there is nothing there to cast" — so
+         * "geometrically shadowed, rendered sunlit" has two possible causes
+         * and only the frustum test separates them. Nothing here transcribes
+         * an extent: it reads the live shadow camera. */
+        const sc = sun.shadow.camera;
+        sc.updateMatrixWorld();
+        const ndc = (v) => {
+          const q = v.clone().project(sc);
+          return {
+            u: +q.x.toFixed(3), v: +q.y.toFixed(3), d: +q.z.toFixed(3),
+            in: Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1 && Math.abs(q.z) <= 1,
+          };
+        };
+        const recvNdc = ndc(p);
+        const blkNdc = blk.length ? ndc(blk[0].point) : null;
+
         sun.intensity = 0;
         const dark = shoot(x, z);
         sun.intensity = sunI;
@@ -111,8 +144,29 @@ await run({ width: 640, height: 360 }, async ({ page, readShaderErrors }) => {
           material: g[0].object.material.name || g[0].object.material.type,
           sunReaches: !blk.length,
           blocker: blk.length
-            ? { dist: +blk[0].distance.toFixed(2), at: blk[0].point.toArray().map((v) => +v.toFixed(1)) }
+            ? {
+              dist: +blk[0].distance.toFixed(2),
+              at: blk[0].point.toArray().map((v) => +v.toFixed(1)),
+              /* Which object, and whether it is in the depth pass at all.
+               *
+               * Without this the tool asserts "geometrically shaded" against a
+               * renderer that was never asked to shade it, and reports a
+               * frustum bug for a mesh with `castShadow` false. That is the
+               * mislabelled-region failure NOTES.md records three of: the
+               * statistic was right and it was about a different object. */
+              obj: blk[0].object.name || blk[0].object.type,
+              parent: (blk[0].object.parent && (blk[0].object.parent.name || blk[0].object.parent.type)) || null,
+              casts: !!blk[0].object.castShadow,
+              material: blk[0].object.material && (blk[0].object.material.name || blk[0].object.material.type),
+            }
             : null,
+          recvNdc, blkNdc,
+          shadowCam: {
+            extents: [sc.left, sc.right, sc.bottom, sc.top, sc.near, sc.far],
+            target: [+sun.target.position.x.toFixed(2), +sun.target.position.y.toFixed(2),
+              +sun.target.position.z.toFixed(2)],
+            res: sun.shadow.mapSize.x,
+          },
           rgbLit: lit, rgbNoSun: dark,
         });
       }
@@ -135,18 +189,60 @@ fs.writeFileSync(OUT, JSON.stringify(out, null, 1));
 
 const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 console.log(`\n  sun direction ${out.sunDir.join(', ')}`);
-console.log('  lane     z    ground world           range  sun?    lit   noSun   sun share   L(lit)');
+const ex = out.rows.find((r) => r.shadowCam);
+if (ex) {
+  const [l, rr, b, t, n, f] = ex.shadowCam.extents;
+  const res = ex.shadowCam.res;
+  console.log(`  shadow box  u ${l}..${rr}  v ${b}..${t}  depth ${n}..${f}  at ${res}²` +
+    `   →  ${((1000 * (rr - l)) / res).toFixed(2)} mm/texel across,` +
+    ` ${((1000 * (t - b)) / res).toFixed(2)} mm/texel up`);
+}
+
+/* The disagreement this tool exists to find. `sunReaches` is geometry and
+ * `share` is pixels; where they disagree the frame is wrong, and the two NDC
+ * columns say which of the two ways it is wrong. */
+const DISAGREE = 20;   // per cent of sun share on a point geometry says is shaded
+
+console.log('\n  lane     z    ground world           range  sun?    lit   noSun   sun share   L(lit)' +
+  '   recv  cast   worst ndc');
 let reach = 0, tot = 0;
+const bad = [];
 for (const r of out.rows) {
   if (!r.ground) { console.log(`  ${r.lane.padEnd(7)} ${String(r.z).padStart(4)}   NO GROUND UNDER THE METER`); continue; }
   tot++; if (r.sunReaches) reach++;
   const a = lum(r.rgbLit), b = lum(r.rgbNoSun);
   const L = invert(a, { sensor: true });
+  const share = (100 * (a - b)) / Math.max(a, 1);
+  const wrong = !r.sunReaches && share > DISAGREE;
+  if (wrong) bad.push({ ...r, share });
+  const worst = (q) => (q ? Math.max(Math.abs(q.u), Math.abs(q.v), Math.abs(q.d)).toFixed(2) : '  — ');
   console.log(`  ${r.lane.padEnd(7)} ${String(r.z).padStart(4)}   ` +
     `${r.ground.join(',').padEnd(20)} ${String(r.range).padStart(5)}  ` +
     `${r.sunReaches ? 'LIT ' : 'sh  '}  ${a.toFixed(0).padStart(4)}  ${b.toFixed(0).padStart(4)}   ` +
-    `${(100 * (a - b) / Math.max(a, 1)).toFixed(0).padStart(4)}%   ${L.toFixed(3)}`);
+    `${share.toFixed(0).padStart(4)}%   ${L.toFixed(3)}   ` +
+    `${r.recvNdc ? (r.recvNdc.in ? ' in ' : 'OUT!') : '  — '}  ` +
+    `${r.blkNdc ? (r.blkNdc.in ? ' in ' : 'OUT!') : '  — '}   ` +
+    `${worst(r.recvNdc)}/${worst(r.blkNdc)}${wrong ? '   ← DISAGREES' : ''}`);
 }
 console.log(`\n  the sun reaches ${reach} of ${tot} probe points on the footways and crown.`);
-console.log(`  shaderErrors=${out.shaderErrors}  → ${OUT}`);
+
+if (bad.length) {
+  console.log(`\n  ✗ ${bad.length} point(s) are geometrically shaded and render more than ${DISAGREE}% sunlit:`);
+  for (const r of bad) {
+    const why = r.blocker && !r.blocker.casts ? 'the blocker has castShadow false — it is not a caster'
+      : r.blkNdc && !r.blkNdc.in ? 'the caster is outside the shadow frustum'
+        : r.recvNdc && !r.recvNdc.in ? 'the receiver is outside the shadow frustum'
+          : 'both are inside the frustum and it casts — this is not a coverage failure';
+    console.log(`     ${r.lane.padEnd(7)} z ${String(r.z).padStart(4)}  ${r.share.toFixed(0)}% sun` +
+      `   blocker ${r.blocker ? r.blocker.obj + '/' + r.blocker.material : '?'}` +
+      ` at ${r.blocker ? r.blocker.at.join(', ') : '?'}` +
+      ` ${r.blocker && r.blocker.dist.toFixed(0)} m up-sun   ${why}`);
+  }
+} else {
+  console.log('\n  ✓ every geometrically shaded point renders shaded.');
+}
+console.log(`\n  shaderErrors=${out.shaderErrors}  → ${OUT}`);
+/* Exit zero either way. This is a report, and the run it is diagnosing has
+ * its own gates — the shader ledger and the liveness assertion — which are the
+ * ones allowed to fail a build. */
 await finish(0);

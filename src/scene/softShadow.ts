@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 
+import {
+  SHADOW_U, SHADOW_V_BOTTOM, SHADOW_V_TOP, SHADOW_NEAR, SHADOW_FAR,
+} from './sunShadow';
+
 /* Contact-hardening sun shadows, and why the stock filters cannot give them.
  *
  * The picket railing was printing on the carriageway as a perfectly even comb —
@@ -82,12 +86,28 @@ export interface SoftShadowConfig {
   filterTaps: number;
 }
 
+/* The frustum half of this config is imported, not restated.
+ *
+ * These five numbers used to be typed out here as well as in `Street.tsx`, and
+ * they are worse than an ordinary duplicate because `installSoftSunShadows`
+ * interpolates them into GLSL as literals: `SUN_FRUSTUM_W`, `SUN_FRUSTUM_H`
+ * and `SUN_DEPTH_RANGE` below are what convert the world-unit radii into
+ * shadow-map UV and a depth difference back into metres. A disagreement
+ * between the two files does not look like a broken frustum. It looks like a
+ * penumbra of the wrong width, which nobody can judge by eye — and it is
+ * invisible to `tsc` and to grep, because by then it is a number inside a
+ * string. See `src/scene/sunShadow.ts`.
+ *
+ * The radii below are genuinely this file's: they are properties of the source
+ * and of the sampling budget, not of the box, and they are in world units so
+ * they do not change when the box does.
+ */
 export const SUN_SHADOW: SoftShadowConfig = {
-  halfWidth: 22,
-  top: 22,
-  bottom: -4,
-  near: 1,
-  far: 150,
+  halfWidth: SHADOW_U,
+  top: SHADOW_V_TOP,
+  bottom: SHADOW_V_BOTTOM,
+  near: SHADOW_NEAR,
+  far: SHADOW_FAR,
   /* Slightly over the sun's true 0.0093 rad. The disc is never seen naked
    * through twenty kilometres of horizon air — at four degrees elevation the
    * path length is long enough that the effective source is visibly larger than

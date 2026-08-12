@@ -27,6 +27,11 @@ import {
   makeApronMaterial,
 } from './materials';
 import { makeNightEnv, SUN_DIR, SUN_ELEV, SUN_COLOR_HEX, SUN_INTENSITY } from './env';
+import {
+  SHADOW_U, SHADOW_V_BOTTOM, SHADOW_V_TOP, SHADOW_RES_U, SHADOW_RES_V,
+  SHADOW_NEAR, SHADOW_FAR, SHADOW_TEXEL, SHADOW_UP, SHADOW_BIAS,
+  SHADOW_NORMAL_BIAS, shadowTarget, shadowLight,
+} from './sunShadow';
 import { installHaze } from './haze';
 import { Dust } from './dust';
 import { installSensorFloor } from './sensor';
@@ -286,20 +291,21 @@ export function Street() {
  * is wider than a fire-escape picket, wider than a parapet notch, and wider
  * than most of the detail the critique wanted to see printed on the tarmac.
  *
- * A street is 22 m wide and 16 m tall, not 60 by 60. Fitting the box to that —
- * and letting the ortho depth range, which costs no resolution at all, take
- * the 150 m the low sun needs along its own axis — buys 2.7x vertically and
- * 1.4x across for nothing.
+ * That reasoning was right about density and wrong about *shape*, and the
+ * shape is what the box was then cut down to: 44 m by 26 m about a target
+ * eight metres ahead of the walker. Fitting the box to the street's
+ * cross-section only works if the box's axes are the cross-section's axes, and
+ * at this elevation they are not — both of them carry street length, so
+ * walking spends both. Probed through the live shadow camera from a walker at
+ * z -49.9, the road was inside the box at z -60 and off the bottom of it by
+ * z -75: about ten metres ahead of the walker, on a street readable for
+ * eighty. Everything past that had no cast shadow at all.
+ *
+ * `sunShadow.ts` now owns the frustum, rolled so that one axis runs along the
+ * street, and it is the only statement of it: `softShadow.ts` reads the same
+ * extents rather than typing them out a second time into GLSL. Nothing about
+ * the box can now be changed here and not there.
  */
-const SHADOW_HALF_W = 22;    // across the light, horizontally
-/* Tall enough to hold the highest parapet with room to spare. A caster whose
- * top falls outside the box is clipped out of the depth pass entirely and
- * stops casting, which on a five-storey building means losing exactly the
- * parapet shadow this is being sharpened for. */
-const SHADOW_TOP = 22;       // world height covered above the target
-const SHADOW_BOTTOM = -4;
-const SHADOW_RES = 4096;
-
 function SunLight() {
   const ref = useRef<THREE.DirectionalLight>(null);
   const camera = useThree((s) => s.camera);
@@ -309,6 +315,14 @@ function SunLight() {
     const l = ref.current;
     if (!l) return;
     scene.add(l.target);
+    /* The roll of the box.
+     *
+     * `LightShadow.updateMatrices` re-aims the shadow camera every frame with
+     * `shadowCamera.lookAt(target)`, and `Object3D.lookAt` reads `this.up`, so
+     * this one vector sets the orientation of the whole frustum and survives
+     * every re-aim without further help. It is perpendicular to the sun by
+     * construction, so the basis can never degenerate. */
+    l.shadow.camera.up.copy(SHADOW_UP);
     /* The orthographic extents arrive as props, but nothing downstream
      * recomputes the projection from them: LightShadow.updateMatrices only
      * repositions the shadow camera and updates its world matrix. Without this
@@ -323,24 +337,35 @@ function SunLight() {
     /* Follow the camera, snapped to the shadow map's own texel grid. Without
      * the snap the sampling lattice slides continuously under the geometry and
      * every shadow edge boils. */
-    const texel = (SHADOW_HALF_W * 2) / SHADOW_RES;
-    const cx = Math.round(camera.position.x / texel) * texel;
-    const cz = Math.round(camera.position.z / texel) * texel;
-    // Aim a little ahead: at this elevation the interesting shadows are the
-    // ones being cast toward the camera from further down the street.
-    const fz = cz - 8;
-    /* The 2 m lift goes on both ends, not just the light.
+    /* The snap grid is `sunShadow.ts`'s, and it is the same expression
+     * `sunFollow.ts` recovers off the live shadow camera as
+     * `(right - left) / mapSize.x`. The two followers have to quantise the
+     * camera identically or they disagree by up to a texel and the sampling
+     * lattice slides under the geometry — which is the boiling the snap exists
+     * to prevent, and which the capture-time liveness assertion measures. */
+    const cx = Math.round(camera.position.x / SHADOW_TEXEL) * SHADOW_TEXEL;
+    const cz = Math.round(camera.position.z / SHADOW_TEXEL) * SHADOW_TEXEL;
+    /* The lead, the 2 m lift and the stand-off all come from `sunShadow.ts`.
      *
-     * It used to be added to the light's Y alone, which tilts the vector from
-     * target to light away from SUN_DIR: at SUN_ELEV 12 the light sat at
-     * 13.855 degrees, and at the original 4.2 it sat at 6.099. The shadow map
-     * has therefore been raked about 1.9 degrees above the sky's own sun since
-     * the first commit, so cast shadows never quite agreed with the sky, the
-     * IBL, or the uSun every material reads. Lifting both keeps the frustum
-     * clear of the carriageway while leaving the direction exactly SUN_DIR. */
-    l.target.position.set(cx, 2, fz);
+     * The lift goes on both ends, not just the light. It used to be added to
+     * the light's Y alone, which tilts the vector from target to light away
+     * from SUN_DIR: at SUN_ELEV 12 the light sat at 13.855 degrees, and at the
+     * original 4.2 it sat at 6.099. The shadow map was therefore raked about
+     * 1.9 degrees above the sky's own sun since the first commit. Both ends
+     * lifted keeps the frustum clear of the carriageway while leaving the
+     * direction exactly SUN_DIR — which is what `tools/sunalign.mjs` measures
+     * and reports at 0.0000 degrees.
+     *
+     * Both placements stay a pure translation of the snapped camera position,
+     * which is not incidental: `sunFollow.ts` re-asserts them on renders no
+     * animation frame preceded by *learning* the two residuals rather than
+     * transcribing anything, and a placement that were not a pure translation
+     * would break that model silently. */
+    const t = shadowTarget(cx, cz);
+    const p = shadowLight(cx, cz);
+    l.target.position.set(t[0], t[1], t[2]);
     l.target.updateMatrixWorld();
-    l.position.set(cx + SUN_DIR[0] * 60, 2 + SUN_DIR[1] * 60, fz + SUN_DIR[2] * 60);
+    l.position.set(p[0], p[1], p[2]);
     l.updateMatrixWorld();
 
     /* The frustum is set here rather than through props.
@@ -354,10 +379,13 @@ function SunLight() {
      * shadows were being rendered, into a volume containing nothing.
      */
     const cam = l.shadow.camera;
-    if (cam.right !== SHADOW_HALF_W) {
-      cam.left = -SHADOW_HALF_W; cam.right = SHADOW_HALF_W;
-      cam.top = SHADOW_TOP; cam.bottom = SHADOW_BOTTOM;
-      cam.near = 1; cam.far = 150;
+    if (cam.right !== SHADOW_U) {
+      cam.left = -SHADOW_U; cam.right = SHADOW_U;
+      cam.top = SHADOW_V_TOP; cam.bottom = SHADOW_V_BOTTOM;
+      cam.near = SHADOW_NEAR; cam.far = SHADOW_FAR;
+      /* Re-asserted here as well as in the effect above, because Fast Refresh
+       * can hand back a light object whose shadow camera has been rebuilt. */
+      cam.up.copy(SHADOW_UP);
     }
     cam.updateProjectionMatrix();
   });
@@ -379,14 +407,23 @@ function SunLight() {
         * invisible — not missing, just swamped. */
       intensity={SUN_INTENSITY}
       castShadow
-      shadow-mapSize-width={SHADOW_RES}
-      shadow-mapSize-height={SHADOW_RES}
-      shadow-camera-left={-SHADOW_HALF_W}
-      shadow-camera-right={SHADOW_HALF_W}
-      shadow-camera-top={SHADOW_TOP}
-      shadow-camera-bottom={SHADOW_BOTTOM}
-      shadow-camera-near={1}
-      shadow-camera-far={150}
+      /* Not square, and that is the point of rolling the box.
+       *
+       * The street axis has to span 90 m and the canyon's cross-section 32 m,
+       * so a square map would be paying for 90 m of resolution on an axis that
+       * needs 32. Measured on the road rather than on the frustum's own axes,
+       * which is the only figure that means anything once the box is rolled:
+       * 413 mm² of road per texel against the shipped box's 328, for eight
+       * times the length of street and twice the map. `sunShadow.ts` has the
+       * reasoning and `tools/edgewidth.mjs` has what it does to an edge. */
+      shadow-mapSize-width={SHADOW_RES_U}
+      shadow-mapSize-height={SHADOW_RES_V}
+      shadow-camera-left={-SHADOW_U}
+      shadow-camera-right={SHADOW_U}
+      shadow-camera-top={SHADOW_V_TOP}
+      shadow-camera-bottom={SHADOW_V_BOTTOM}
+      shadow-camera-near={SHADOW_NEAR}
+      shadow-camera-far={SHADOW_FAR}
       /* Both terms have to be small, and normalBias especially so.
         *
         * normalBias offsets the lookup along the surface normal, and on ground
@@ -396,8 +433,12 @@ function SunLight() {
         * midday sun slides the shadow half a metre sideways, which is most of
         * the width of a kerb shadow, and the shadow simply vanishes. It was
         * not missing — it was being pushed out from under its own object. */
-      shadow-bias={-0.00022}
-      shadow-normalBias={0.006}
+      /* Both derived rather than typed. `shadow-bias` is in normalised depth,
+       * so its world meaning changes with the depth range; `sunShadow.ts`
+       * holds the 32.8 mm along the beam that was actually tuned and divides
+       * by the range, so raising the far plane cannot silently change it. */
+      shadow-bias={SHADOW_BIAS}
+      shadow-normalBias={SHADOW_NORMAL_BIAS}
     />
   );
 }
