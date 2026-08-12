@@ -92,8 +92,8 @@ was the compilation of the twenty-one bake programs, not the baking. The
 external tool separates the two because it buckets `getProgramInfoLog` and
 `getProgramParameter` away from `drawElements`.
 
-The bake *programs* cost 4.4 s to compile, which is real and is addressed by
-§4.3.
+The bake *programs* cost 4.4 s to compile, which is real, and is addressed by
+§4.2 rather than by anything done to the bakes themselves.
 
 ---
 
@@ -335,10 +335,12 @@ What is worth passing on:
 - **Do not turn off `renderer.debug.checkShaderErrors`.** Measured; see §5. It
   saves nothing.
 - **Do not optimise the bakes.** 244 ms.
-- **Do not chase the JavaScript.** Total non-GL CPU across the whole load is
-  under a second: geometry construction is about 500 ms
-  (`buildCars` 86 ms, `buildCity` 65 ms, `buildStreetLevel` 18 ms), the
-  equirect sky loop is 57 ms, and PMREM is 367 ms.
+- **Do not chase the JavaScript.** Summing the part of each long task that is
+  not accounted for by program linking or by draws gives **859 ms** for the
+  entire load, and 547 ms of that is inside task 1, which is where the geometry
+  is built. Under a second, against forty-six. A CPU profile of the load will
+  show you the geometry builders at the top and it will still be the wrong
+  thing to work on.
 
 ---
 
