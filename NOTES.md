@@ -532,20 +532,115 @@ that the machinery is sound and no evidence at all that the inputs are.**
 
 ### What still carries a level authored against the old curve
 
-Every emissive in `scene/lights.ts`, and they all land high:
+**`scene/lights.ts` no longer does, and the table that stood here is
+withdrawn.** It listed six emissives as landing twenty counts high; 442fbe5
+re-authored all of them through `atDisplay` and deleted the fitted 0.325 patch
+on `BOWL_WARMING`, and `lampFixtures.ts` now inverts each fixture's bowl at its
+own point on the run-up. Nothing in that file is a transcribed radiance any
+more. The section is kept, with the table gone, because "lights.ts is still
+wrong" was quoted twice after it had been fixed.
 
-| source | authored for | arrives at |
-|---|---|---|
-| bowl, warm | 214 | 234 |
-| bowl, warming (as shipped) | 132 | 160 |
-| BAR letters | 225 | 245 |
-| pharmacy cross | 215 | 231 |
-| OPEN | 232 | 244 |
-| signal, green aspect | 228 | 233 |
+A sweep of the rest of the tree, looking specifically for constants inverted
+through the fit, is in "The curve sweep" below.
 
-The 0.325 correction on `BOWL_WARMING` was measured, and was in the right
-direction, but it was read against curve A and is the wrong size. Redo it
-against `agx.mjs` rather than keeping it.
+## The curve sweep — every remaining constant that could have come through the fit
+
+Three constants had been found and fixed one at a time (`litWall`, the car
+body's street probe, and every constant in `streetProbe`), which is enough
+instances to stop treating them as incidents. This is the sweep for the rest.
+It is mostly a negative result, which is the useful part: the fit's damage is
+confined to two commits and one shader block, and the places that look most
+like it — the sky, the bounce terms, the dust, the lamps — are clean.
+
+### Confirmed and fixed
+
+**The sunlit footway in the shopfront reflection**, `streetMaterials.ts`. Its
+own comment gave the provenance away: "the sunlit flags in these frames measure
+display 170 to 186, which is a scene radiance near seven". Seven is the fit
+inverted at 183; the real transform puts the middle of that band at 1.95
+neutral. The value was `(9.50, 6.80, 4.00)` and is now `(1.93, 1.38, 0.81)`,
+the same target re-inverted at the same chromaticity — a factor of 4.9.
+
+It is the same commit and the same paragraph as `litWall`: 5ffb90d ended "and
+everything bright in this reflection is set by that inversion from here on".
+442fbe5 corrected `litWall` and stopped, so the sentence stayed true of the
+other three constants in the block.
+
+What it looked like: the reflected footway band was pinned near white, which in
+a pane at 0.17 Fresnel is the one place a reflection can still clip. Measured
+on a deterministic pair through `tools/paneab.mjs`, the change is 56 counts
+over the band and 0.3 per cent of the frame, all of it inside `y 657..684` on a
+2.9 m shot of one store front — a hard white streak becomes a warm grey one.
+Nothing else in the frame moves by more than the one-count floor.
+
+### Correct, and worth recording as such
+
+- **`shadeWall` and the shaded carriageway** in the same reflection block, which
+  had no stated derivation and could easily have been assumed guilty by
+  association. Measured against the surfaces they depict they are within 25 per
+  cent, and the fit would have put them four to five times high at those
+  levels. They were not inverted through anything; they were simply set, and
+  set about right.
+- **`scene/lights.ts` and `lampFixtures.ts`**, entirely. Every level is
+  `atDisplay(target, chroma)`.
+- **`LIT_ROOM` and `TV_COLOUR`** in `buildingMaterials.ts` are built by
+  `forDisplay`, so the inversion is right. The *bracket* that chose the target
+  is still in the fit's display space — see the note now in that file.
+- **`dust.tsx`**'s mote level, which was re-derived through `agx.mjs` when the
+  linear target landed and says so.
+- **The sky in `env.ts`.** It is not derived from a display value at all; it is
+  the thing the transform was validated against.
+- **The cross-canyon bounce** `vec3(0.190, 0.104, 0.043)`, shared by
+  `MASONRY_END`, `streetEnd` and the prop kit. It came out of `shadesplit.mjs`'s
+  radiance decomposition, not out of an inverted display value, and it is an
+  irradiance rather than a radiance.
+
+### Reported, not applied
+
+- **`litWall` is still 1.5x above its own stated target.** 442fbe5 scaled the
+  old triple by the *neutral* ratio at display 191, 2.50/8.44, rather than
+  re-inverting at the wall's chromaticity; the old triple was itself 1.54x above
+  what the fit gave for 191, and the rescale preserved that. It arrives at 205
+  where the comment says 191. Against the surface it depicts it is worse: the
+  sunlit frontage measures L = (0.96, 0.47, 0.30) with the haze off, so the
+  reflection is 4x its subject. Left alone because the current look is signed
+  off and because the 170-186 and 191 targets were both read off hazed, graded
+  frames while the measurement is of the bare surface — the shader adds its own
+  aerial perspective further down, so strictly both constants should be the
+  bare-surface radiance and both are above it.
+- **`winC` (3.60, 2.40, 1.25) and `glassC` (2.60, 1.75, 1.05)**, the lit windows
+  and the glazing opposite in the same block. Same commit, same sentence, no
+  stated target, so there is nothing to re-invert against — but they arrive at
+  202 and 190, which is to say a window across the road is being painted as
+  bright as a sunlit stucco wall, and the glazing is nominally a sixth of the
+  wall it mirrors. Both want a derivation rather than a correction.
+- **`LAMP_CD_FULL = 78` rests on a stale anchor**, and this is a different bug
+  class worth naming because the sweep found it. Its derivation is scale-free by
+  design — the lantern against the skylight it has to beat — and the skylight
+  comes from "shaded carriageway, radiance L = 0.038 (NOTES, measured)". That
+  was measured with the sun at 4.2 degrees. Since 0384f31 the sun is at 12 and
+  the shaded carriageway measures 0.125, so the skylight irradiance in that
+  derivation is 3.3x low and the ratio the lamps were set to hit, 1.5, is being
+  delivered at about 0.45. Raising the lamps threefold is not a change to make
+  on the strength of a sweep; it is a lighting decision.
+
+### The instrument that had to be fixed first
+
+`tools/shadesplit.mjs` sets `NoToneMapping` and then sets an exposure "so that
+sunlit paving does not clip", and three compiles the exposure out:
+`WebGLProgram.js:771` omits `#define TONE_MAPPING` and the tone mapping function
+entirely when the mode is None, so `toneMappingExposure` is never read. The knob
+is inert. The tool then divides by it, so every absolute radiance it prints is
+16.7x high — its "street, sunlit 8.43" is a surface at about 0.51, and those
+inflated figures are quoted in `propMaterials.ts`'s header. Its percentages and
+ratios are unaffected, which is why nobody noticed and why the conclusions drawn
+from it stand.
+
+`tools/reflsurf.mjs` uses `LinearToneMapping` instead, which is
+`saturate(exposure * colour)` and is live, and asserts it by halving the
+exposure and requiring the same pixels to halve. It also removes `sensor.ts`'s
+pedestal before reporting, which `shadesplit` does not, and which in the
+shadows is most of what is there.
 
 ## A value that is only ever a divisor, and was eleven times wrong
 

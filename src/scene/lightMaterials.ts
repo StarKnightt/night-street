@@ -4,9 +4,17 @@
  * additive near-field glow — plus the two shader fragments the rest of the
  * street imports to receive analytic light.
  *
- * Everything emissive in here is authored by inverting the measured display
- * response, `display = 0.284 * L^0.4545`, in scene/lights.ts. Nothing in this
- * file contains a constant that was arrived at by looking at a frame.
+ * Everything emissive in here is authored by inverting the display response in
+ * scene/lights.ts, which calls `atDisplay` in scene/tone.ts — the renderer's
+ * own AgX transform, ported term for term and inverted numerically. Nothing in
+ * this file contains a constant that was arrived at by looking at a frame.
+ *
+ * This paragraph used to name `display = 0.284 * L^0.4545` as that response. It
+ * was withdrawn in 442fbe5 and lights.ts moved off it in the same commit; the
+ * line here was left behind and is the last thing in the tree outside the car
+ * materials that still called the fit authoritative. Nothing depended on it —
+ * no constant in this file is derived here — but a stale pointer to a
+ * withdrawn curve is how the next author re-derives a level through it.
  */
 import * as THREE from 'three';
 import { NOISE, CANYON } from '@/world/glsl';

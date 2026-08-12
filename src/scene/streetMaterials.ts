@@ -913,11 +913,28 @@ const SHOP_GLASS_BODY = /* glsl */ `
   float kerb = abs(abs(xHit) - (uBuildLine - 2.30));
   vec3 road = mix(vec3(0.088, 0.086, 0.101), vec3(0.135, 0.132, 0.150),
                   smoothstep(uBuildLine - 2.30, uBuildLine - 2.05, abs(xHit)));
-  /* Sunlit footway where the sun reaches it, which it does in bands. Set from
-   * the same inversion: the sunlit flags in these frames measure display 170
-   * to 186, which is a scene radiance near seven, and at street level this is
-   * the brightest thing a downward reflected ray can find by a long way. */
-  road = mix(road, vec3(9.50, 6.80, 4.00),
+  /* Sunlit footway where the sun reaches it, which it does in bands. At street
+   * level this is the brightest thing a downward reflected ray can find by a
+   * long way.
+   *
+   * The target is unchanged and was never the problem: the sunlit flags in
+   * these frames measure display 170 to 186. What produced the old value was
+   * the same withdrawn fit that put litWall at 13.0 forty lines above — this
+   * paragraph used to end "which is a scene radiance near seven", and seven is
+   * display = 0.284 * L^0.4545 inverted at 183. The real transform puts the
+   * middle of that band at 1.95 neutral, so at this chromaticity the peak
+   * channel is 1.93 and the triple arrives at (178, 162, 143) against the old
+   * value's (229, 219, 207), which is a hair off white. Five times, and
+   * it is the same error and the same commit as litWall's; only litWall was
+   * corrected at the time.
+   *
+   * Measured against the surface it is supposed to be a picture of, rather than
+   * against a display value: tools/reflsurf.mjs finds the sunlit footway at
+   * L = (1.04, 0.48, 0.42) with the haze off, which is another factor of two
+   * below this. The gap is real and is not corrected here, because the 170-186
+   * was read off a hazed and graded frame while the measurement is of the bare
+   * surface, and the two are not the same quantity. See NOTES.md. */
+  road = mix(road, vec3(1.93, 1.38, 0.81),
              step(uBuildLine - 2.25, abs(xHit))
              * smoothstep(0.42, 0.58, hash21(vec2(floor(zHit / 3.4), 3.7))));
   road = mix(road, road * 0.34, 1.0 - smoothstep(0.0, 0.09 + dHit * 0.004, kerb));

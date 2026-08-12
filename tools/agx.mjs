@@ -75,10 +75,22 @@ export function agx(rgb, exposure = EXPOSURE) {
 
 const encode = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
 
-/** The sensor pedestal and gain, which act on tone-mapped linear. Noise omitted. */
-const pedestal = (c) => [
+/** The sensor pedestal and gain, which act on tone-mapped linear. Noise omitted.
+ *
+ * Exported because a tool that reads a rendered pixel back has to remove it
+ * before the number means anything: sensor.ts prepends itself to
+ * colorspace_fragment, so every fragment the renderer draws carries it, and in
+ * the shadows it is most of what is there. Removing it by hand is how a
+ * transcribed constant gets into a measurement. */
+export const pedestal = (c) => [
   c[0] * 0.955 + 0.0040, c[1] * 0.955 + 0.0046, c[2] * 0.955 + 0.0070,
 ];
+
+/** Undo `pedestal`. The inverse is exact; the noise it omits is zero-mean. */
+export const unpedestal = (c) => {
+  const p0 = pedestal([0, 0, 0]), p1 = pedestal([1, 1, 1]);
+  return c.map((v, i) => (v - p0[i]) / (p1[i] - p0[i]));
+};
 
 /** Linear scene radiance -> 8-bit code values. */
 export function display(rgb, { sensor = false, exposure = EXPOSURE } = {}) {

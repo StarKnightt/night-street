@@ -1050,14 +1050,23 @@ vGrid = aGrid; vWinP = aWin; vBldgP = aBldg; vRoleF = aRole;`);
  * and that System 5 owns the real thing.
  *
  * The real thing is bracketed by two things already in the scene rather than
- * by taste. A sunlit brick wall in this frame measures about 195, which
- * inverts to L = 8.8. A lit shop interior — System 3's emissive ceiling at
- * LIT_STORE * 1.55 * 1.35 = 1.674 — lands at 92. A first-floor room behind a
- * dirty net-curtained sash must sit under the shop, which is a fluorescent
- * ceiling seen directly through plate glass, and well under the sunlit wall.
- * 58 counts is 63 per cent of the shop and 30 per cent of the wall, and it
- * inverts to 0.614. Twenty-one times the old value, and it should be: the old
- * one was a placeholder that said so.
+ * by taste. A first-floor room behind a dirty net-curtained sash must sit under
+ * a lit shop interior, which is a fluorescent ceiling seen directly through
+ * plate glass, and well under a sunlit wall. 58 counts is where that puts it,
+ * and `forDisplay` turns 58 into L = 0.118 — four times the old placeholder.
+ *
+ * THE BRACKET ITSELF IS STILL IN THE WITHDRAWN CURVE'S DISPLAY SPACE, and this
+ * is a caveat rather than a correction. The paragraph that chose 58 read "a
+ * sunlit brick wall measures about 195, which inverts to L = 8.8; the shop
+ * ceiling at LIT_STORE * 1.55 * 1.35 = 1.674 lands at 92; 58 is 63 per cent of
+ * the shop and 30 per cent of the wall". Every one of those three numbers is
+ * `display = 0.284 * L^0.4545`: the real transform sends 195 to L = 3.0, not
+ * 8.8, and sends the shop's 1.674 to 172, not 92. So the shop is not at 92 and
+ * 58 is not 63 per cent of it — it is a third of it. The *target* may still be
+ * the right target, since a room behind a net curtain at dusk is meant to be
+ * modest, and the inversion under it is now the real one either way; but the
+ * argument that picked 58 does not survive, and if this room is ever revisited
+ * it should be re-bracketed rather than nudged. See NOTES.md.
  *
  * Chromaticity is unchanged from System 2's (1.00, 0.583, 0.251) — tungsten,
  * and warm enough that it lands on screen at (58, 43, 27).
