@@ -51,6 +51,8 @@ import { makeRng } from './noise';
 import { layoutBlock } from './block';
 import { groundOpenings, pierCentres } from './facade';
 import { walkHeight } from './geometry';
+import { tradeOf } from './frontage';
+import type { Kerbside } from './trades';
 
 /** Kerb-side x on each footway, and the building line. Derived, never typed. */
 export const WALK_KERB = DIMS.roadHalf + DIMS.kerbDepth;      // 3.35
@@ -267,6 +269,28 @@ function hasWall(spans: Span[], side: number, z: number, margin = 0.3): boolean 
  * plate glass window is a thing you never see, because the shopkeeper moves
  * it.
  */
+/* What a particular trade puts outside its own door.
+ *
+ * The generic kits below still run the street; this only intervenes on the
+ * frontages `frontage.ts` has dealt a business to, and only for the first
+ * cluster on each. That is enough to be legible and not so much that the
+ * pavement turns into a diagram: the deli has its crates and the chicken shop
+ * has its sacks, and everything between them is still the ordinary refuse and
+ * utility clutter of a back street.
+ *
+ * Keyed off `Trade.kerbside`, which is the field on the trade table that
+ * exists for this and nothing else, so the correlation is a lookup rather than
+ * two lists that have to be kept in step by hand.
+ */
+const KERBSIDE_KITS: Record<Kerbside, PropKind[] | null> = {
+  crates: ['crates', 'crates', 'boxes', 'pallet'],
+  sacks: ['bags', 'bags', 'bags', 'drum'],
+  aboard: ['aboard', 'planter'],
+  bins: ['wheelie', 'wheelie', 'bags'],
+  cycle: ['cycle', 'boxes'],
+  none: null,
+};
+
 const CLUSTER_KITS: { kinds: PropKind[]; weight: number }[] = [
   // Refuse out for collection. The commonest thing on any back street at dusk.
   { kinds: ['bags', 'bags', 'boxes'], weight: 1.0 },
@@ -478,6 +502,17 @@ export function props(): Prop[] {
       const total = CLUSTER_KITS.reduce((s, k) => s + k.weight, 0);
       const target = r * total;
       for (const k of CLUSTER_KITS) { acc += k.weight; if (target <= acc) { pick = k; break; } }
+
+      /* The trade's own kit wins on the first pier of a frontage that has one.
+       * First rather than all of them so that a wide building still shows the
+       * generic clutter at its other end — a shop's own delivery is at its own
+       * door, and the rest of the pavement in front of it belongs to the
+       * street. */
+      if (i === 0) {
+        const t = tradeOf(b);
+        const own = t ? KERBSIDE_KITS[t.kerbside] : null;
+        if (own) pick = { kinds: own, weight: 1 };
+      }
 
       /* The pile goes against the wall and works outward. 450 mm off the
        * building line for the first object, which is where a sack actually

@@ -123,15 +123,77 @@ const F: Record<string, Glyph> = {
  * opening hours. No real marks; these are the generic trade words that a
  * hundred streets carry.
  */
-const FASCIA_WORDS = [
-  'MINICABS', 'BARBERS', 'LAUNDERETTE', 'NEWSAGENT', 'TO LET',
-  'OPEN 24 HRS', 'OFF LICENCE', 'FISH BAR', 'KEBAB HOUSE', 'DRY CLEANERS',
+/* The hashable range.
+ *
+ * `streetMaterials.ts` letters the fascia board by hashing the unit seed into
+ * `[SGN_FASCIA0, SGN_FASCIA0 + SGN_FASCIAN)`, and that file is locked, so
+ * the row it lands on cannot be chosen from outside it. What *can* be chosen
+ * is which words are inside the range, because this file emits both the atlas
+ * and the two constants.
+ *
+ * So the list is split. Everything above is reachable by the fascia hash and
+ * everything in TRADE_ONLY below is not, and the split is drawn along one
+ * line: a word goes in the hashable range only if the street can carry two of
+ * it without the duplication being the point. Two newsagents on a mile of road
+ * is a street; two of the same named bar is a bug — which is the report this
+ * is answering. Every word `world/trades.ts` deals as unique lives below the
+ * line and can only be placed by a caller that asked for it by name.
+ */
+const FASCIA_GENERIC = [
+  'MINICABS', 'BARBERS', 'LAUNDERETTE', 'NEWSAGENT',
+  'OFF LICENCE', 'KEBAB HOUSE', 'DRY CLEANERS',
   'HARDWARE', 'CAFE', 'PHONE REPAIR', 'NAILS', 'TAKEAWAY',
   'FRIED CHICKEN', 'GROCERS', 'PHARMACY', 'BOOKMAKER', 'TATTOO',
-  'CARPETS', 'SANDWICH BAR', 'KEYS CUT', 'DISCOUNT STORE',
+  'CARPETS', 'KEYS CUT', 'DISCOUNT STORE',
+  'DELI', 'BUTCHERS', 'FLORIST', 'PAWNBROKER', 'BAKERY', 'CAR WASH',
+];
+
+/* Placed by name or not at all.
+ *
+ * The two drinking trades are here because the critique is about them: with
+ * both in the hashable range a street of sixty fascias carried several bars,
+ * and the eye reads that as the one neon sign having been repeated. The
+ * proprietors' names are here because a named premises is by definition one
+ * premises — two shops both called ROSE & SON is a stronger tell than two
+ * shops both called BAKERY. TO LET and OPEN 24 HRS are here because
+ * `trades.ts` deals them as uniques.
+ */
+const FASCIA_TRADE_ONLY = [
+  'FISH BAR', 'SANDWICH BAR', 'TO LET', 'OPEN 24 HRS',
   "AL'S GRILL", 'PARK CAFE', 'STAR KEBAB', 'ROSE & SON',
   'UNIT 4', 'NO 27',
 ];
+
+const FASCIA_WORDS = [...FASCIA_GENERIC, ...FASCIA_TRADE_ONLY];
+
+/**
+ * The atlas row for a named fascia word.
+ *
+ * The point of this existing at all is that it is the inverse of a hash: a
+ * caller that wants a particular trade on a particular frontage says so, and
+ * gets a number, rather than searching seed space until the dice agree. -1 for
+ * a word not in the list, which callers should treat as a build error rather
+ * than falling back, because a silent fallback here is a street that quietly
+ * goes back to advertising the same shop six times.
+ */
+export function fasciaRow(word: string): number {
+  return FASCIA_WORDS.indexOf(word);
+}
+
+/** Every fascia word, in atlas order. For tools that audit the street. */
+export const FASCIA_LIST: readonly string[] = FASCIA_WORDS;
+
+/* Rows suitable for a ghost sign.
+ *
+ * A painted sign on the brick above a fascia is not the current tenant — it is
+ * the business that was there before the war, and what was there before the
+ * war was a named proprietor rather than a trade. Lettering the ghost with the
+ * same word as the blade under it says the shop has been a phone repair since
+ * 1890, which is the one thing a ghost sign never means.
+ */
+export const PROPRIETOR_ROWS: readonly number[] =
+  ["AL'S GRILL", 'PARK CAFE', 'STAR KEBAB', 'ROSE & SON', 'UNIT 4', 'NO 27']
+    .map((w) => FASCIA_WORDS.indexOf(w));
 
 /** Street name blades. */
 const STREET_NAMES = ['PARK ROAD', 'MILL LANE', 'HIGH STREET', 'QUEEN ST'];
@@ -301,7 +363,10 @@ export function signAtlas(): SignAtlas {
 
   cached = {
     texture, meta, height: H,
-    fascia0: 0, fasciaN: FASCIA_WORDS.length,
+    /* fasciaN is the *generic* count, not the list length: it is the range the
+     * locked fascia shader hashes into, and the words after it are placeable
+     * only by name. See FASCIA_TRADE_ONLY. */
+    fascia0: 0, fasciaN: FASCIA_GENERIC.length,
     name0: FASCIA_WORDS.length, nameN: STREET_NAMES.length,
     plate0: FASCIA_WORDS.length + STREET_NAMES.length, plateN: PLATE_LINES.length,
     neon0: FASCIA_WORDS.length + STREET_NAMES.length + PLATE_LINES.length,

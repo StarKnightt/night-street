@@ -36,8 +36,9 @@ import { Emit, Face } from './emit';
 import { layoutBlock, type Bldg } from './block';
 import { groundLevels, groundOpenings, pierCentres } from './facade';
 import { walkHeight } from './geometry';
-import { signAtlas } from '@/scene/signs';
+import { signAtlas, fasciaRow, PROPRIETOR_ROWS } from '@/scene/signs';
 import { PMAT } from './propKinds';
+import { tradeOf } from './frontage';
 
 /** Branches in the signage material. */
 export const SIGN_KIND = {
@@ -155,13 +156,29 @@ type Kit = { S: Emit; P: Emit; sf: Face; pf: Face; b: Bldg; d: number };
 
 /* Word choice by trade rather than by dice.
  *
- * A blade over a barber says BARBERS. Pulling the row at random from the whole
- * fascia list gives a street where the blade and the fascia under it advertise
- * two different businesses, which is a thing the eye notices without being
- * able to say why. Hashing both off the same building seed at least keeps one
- * building consistent with itself.
+ * This used to hash the building seed into the whole fascia list, once per
+ * sign, which gave a street where the blade over a shop and the hanging board
+ * beside it advertised two different businesses and where any word could turn
+ * up as often as the dice liked. `frontage.ts` deals a trade to each building
+ * without replacement; every sign on that building now names it.
+ *
+ * The fallback is the old hash, and it is only reachable on a building the
+ * deal did not cover — which is to say never, since the deal is made over
+ * exactly the set of street-facing buildings this file is called for. It is
+ * kept so that a future non-street sign has something to say rather than
+ * a build error, and it draws from the generic range only.
  */
-function rowFor(atlas: ReturnType<typeof signAtlas>, seed: number, salt: number): number {
+function rowFor(atlas: ReturnType<typeof signAtlas>, b: Bldg, seed: number, salt: number): number {
+  const t = tradeOf(b);
+  if (t) {
+    const r = fasciaRow(t.word);
+    /* A trade naming a word that is not in the atlas is a build error, not a
+     * thing to paper over: the sign would silently letter itself with whatever
+     * row -1 lands on, which is the failure mode this whole file exists to
+     * remove. */
+    if (r < 0) throw new Error(`trade "${t.word}" is not a fascia word`);
+    return atlas.fascia0 + r;
+  }
   return atlas.fascia0 + Math.floor(h2(seed * 41.3, salt) * atlas.fasciaN) % atlas.fasciaN;
 }
 
@@ -198,7 +215,7 @@ function signsOn(k: Kit, atlas: ReturnType<typeof signAtlas>): void {
     if (yTop - h < b.base + 2.35) continue;      // headroom over the footway
     bracket(P, pf, u, yTop, out + 0.10, h + 0.10, s + i);
     board(S, sf, u, yTop - h, yTop, d + 0.16, d + 0.16 + out, 0.014,
-      rowFor(atlas, s, i * 1.7), SIGN_KIND.BLADE, h2(s, i * 4.4), h2(s * 3, i));
+      rowFor(atlas, b, s, i * 1.7), SIGN_KIND.BLADE, h2(s, i * 4.4), h2(s * 3, i));
   }
 
   /* ── A hanging board ───────────────────────────────────────────────────
@@ -219,7 +236,7 @@ function signsOn(k: Kit, atlas: ReturnType<typeof signAtlas>): void {
       pf.box(u - 0.010, u + 0.010, yArm - 0.10, yArm, dd - 0.010, dd + 0.010);
     }
     board(S, sf, u, yArm - 0.72, yArm - 0.11, d + 0.24, d + 0.24 + out * 0.86, 0.016,
-      rowFor(atlas, s, 6.6), SIGN_KIND.HANGING, h2(s, 8.8), h2(s * 7, 1.1));
+      rowFor(atlas, b, s, 6.6), SIGN_KIND.HANGING, h2(s, 8.8), h2(s * 7, 1.1));
   }
 
   /* ── The painted band above the fascia ─────────────────────────────────
@@ -243,7 +260,8 @@ function signsOn(k: Kit, atlas: ReturnType<typeof signAtlas>): void {
     const inset = 0.18 + h2(s, 5.5) * 0.30;
     const hh = Math.min(bandY1 - bandY0, 0.42 + h2(s, 7.7) * 0.55);
     const y0 = bandY0 + (bandY1 - bandY0 - hh) * 0.5;
-    S.attr('aSign', rowFor(atlas, s, 13.3), SIGN_KIND.GHOST, h2(s, 17.7), h2(s * 11, 2.2));
+    const gr = PROPRIETOR_ROWS[Math.floor(h2(s, 13.3) * PROPRIETOR_ROWS.length) % PROPRIETOR_ROWS.length];
+    S.attr('aSign', atlas.fascia0 + gr, SIGN_KIND.GHOST, h2(s, 17.7), h2(s * 11, 2.2));
     S.attr('aSign2', (b.L - inset * 2) / Math.max(hh, 1e-3), 0, 0, 0);
     sf.quadFree(
       [inset, y0, d + 0.008], [inset, y0 + hh, d + 0.008],
@@ -266,7 +284,7 @@ function signsOn(k: Kit, atlas: ReturnType<typeof signAtlas>): void {
     const uc = (o.u0 + o.u1) * 0.5;
     const y = b.base + 1.62 + h2(s + i, 2.2) * 0.34;
     const hh = 0.13 + h2(s + i, 4.4) * 0.06;
-    S.attr('aSign', rowFor(atlas, s, i * 2.9), SIGN_KIND.PLATE, h2(s + i, 1.1), 0.5);
+    S.attr('aSign', rowFor(atlas, b, s, i * 2.9), SIGN_KIND.PLATE, h2(s + i, 1.1), 0.5);
     S.attr('aSign2', w / hh, 0, 0, 0);
     /* 35 mm in front of the glazing plane. The shopfront glass sits at
      * `d0 - rec` and the shutter curtain hangs just in front of it, so this
