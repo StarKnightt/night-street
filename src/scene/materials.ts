@@ -82,6 +82,37 @@ export function specAAFromUrl(): THREE.Vector2 {
   return m ? new THREE.Vector2(+m[1], +m[2]) : d;
 }
 
+/* cot of the sun's elevation: how many metres of shadow one metre of height
+ * throws along the ground. Derived from SUN_DIR rather than written down,
+ * because a literal here would silently stop agreeing with the light the scene
+ * is actually lit by the first time the sun moves, and every millimetre-scale
+ * relief term on the paving is this number multiplied by a height. */
+export const SUN_COT =
+  Math.hypot(SUN_DIR[0], SUN_DIR[2]) / Math.max(1e-4, SUN_DIR[1]);
+
+/* Chamfer width (m), per-flag seating range (m), arris gain, dish depth (m).
+ *
+ * A uniform for the same reason uSpecAA is one: these four trade against each
+ * other — a wider chamfer wants a lower gain, more seating range wants less
+ * dish — so they have to be measured together in one browser session rather
+ * than recompiled one at a time. ?flag=c,l,g,d overrides.
+ *
+ * Defaults: 6 mm is a normal cast chamfer on a concrete flag, 3 mm of seating
+ * range is what a hand-laid course on sand actually holds, and 3 mm of dish is
+ * a flag that has been walked on for twenty years. The gain is the one number
+ * that is not a measurement of the world: a 35-degree chamfer against a
+ * 4.2-degree sun has a naive N·L ratio of 1 + 9.5·cos, and the arris of a real
+ * flag is rounded rather than cut and is partly shadowed by the flag across the
+ * gap, so it does not reach that. 5.5 is the derated figure. */
+export function flagTuneFromUrl(): THREE.Vector4 {
+  const d = new THREE.Vector4(0.006, 0.003, 5.5, 0.003);
+  if (typeof location === 'undefined') return d;
+  const m = /[?&]flag=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)/.exec(
+    location.search
+  );
+  return m ? new THREE.Vector4(+m[1], +m[2], +m[3], +m[4]) : d;
+}
+
 function applySet(m: THREE.MeshStandardMaterial, set: SurfaceSet) {
   m.map = set.map;
   m.normalMap = set.normalMap;
@@ -2151,48 +2182,207 @@ Screed screed(vec2 p, float px){
 `;
 
 const WALK_FRAG_HEAD = /* glsl */ `
+/* Carried from the surface evaluation to the lighting hook. The two are
+ * injected as separate braced blocks, so anything shared has to live at file
+ * scope.
+ *
+ *   gGraze   micro-scale self-shadowing of the direct term, 0..1, subtractive
+ *   gDirect  the flag course's own multiplier on the direct term. Not 0..1:
+ *            a pixel sitting on a chamfer that faces a four-degree sun
+ *            genuinely receives several times what the flat top of the same
+ *            flag receives, and this is the number that says so.
+ *   gSky     how much of the dome this fragment can see, for the indirect term
+ */
 vec2 gScreedN = vec2(0.0);
 float gGraze = 0.0;
+float gDirect = 1.0;
+float gSky = 1.0;
 uniform float uBuildLine;
 uniform float uKerbEdge;
 uniform vec2 uSunXZ;
+/* cot(sun elevation). At 4.2 degrees this is 13.6, which is the exchange rate
+ * between a height in this scene and the length of the shadow it throws: one
+ * millimetre of differential settlement between two flags is fourteen
+ * millimetres of shadow on the low one. Almost everything below is that
+ * number applied to something. */
+uniform float uSunCot;
+/* Chamfer width in metres, per-flag lift range in metres, the arris gain, and
+ * the dish depth. A uniform rather than four literals so a walk can be
+ * measured at several settings inside one browser session, which is how the
+ * road's uSpecAA is already handled. ?flag=c,l,g,d overrides it. */
+uniform vec4 uFlag;
 ${WORLD_VARYINGS}
 
-/* Joint layout.
+/* ── The flag course, filtered rather than sampled ────────────────────────
  *
- * Two different things are cut into a sidewalk and they do not look alike. A
- * control joint is tooled into the wet concrete: a shallow rounded groove,
- * same material either side. An expansion joint is a real gap filled with
- * black bitumen felt, and it goes across the full width every few flags. Both
- * collect grit and neither is a black line. */
-vec3 walkJoints(vec2 p, out vec2 slabId){
-  /* One square module in both directions.
+ * INPUT world XZ in metres and the pixel footprint in metres, per axis.
+ * OUTPUT unitless coverages: the fraction of this pixel each feature occupies.
+ *
+ * The previous version of this asked "is the point at the centre of this pixel
+ * inside a joint", which is the wrong question and produced the defect a
+ * reviewer named: across the sunlit footway a joint sixteen millimetres wide,
+ * seen at a range where a pixel covers ninety, resolved into an evenly spaced
+ * row of dots. That is not aliasing in the sense of a missing mip — there is
+ * nothing to prefilter, because the joint is not in a texture. It is a point
+ * sample of a feature narrower than the sample spacing, and the only fix is to
+ * stop point sampling it. A thin joint in a photograph is a continuous soft
+ * grey line at exactly the contrast its width divided by the pixel's width
+ * gives, and that ratio is what bandCov returns.
+ *
+ * The same machinery then pays for itself three more times, because every
+ * feature at this scale has the same problem: the chamfer is six millimetres,
+ * the shadow a proud flag throws is thirty, and the arris highlight is the
+ * brightest thing on the surface and therefore the worst possible thing to
+ * point sample.
+ */
+struct Flag {
+  vec2  cell;
+  float edge;    // 0 at the flag centre, 1 at a joint. Point sampled; masks only.
+  float gap;     // coverage of the open joint
+  float lit;     // coverage of the chamfer turned toward the sun, times cos
+  float dark;    // coverage of the chamfer turned away from it
+  float shad;    // coverage of the shadow a proud neighbour throws over this one
+  float nearJ;   // softly, how near a joint — for spall, dirt and growth
+  float lift;    // this flag's own seating height, metres about the course mean
+  float tilt;    // N.L of this flag's own plane, relative to a level one
+};
+
+/* The fraction of a box footprint of half-width h centred at d that lies
+ * inside the band [a, b]. */
+float bandCov(float d, float a, float b, float h){
+  h = max(h, 5.0e-5);
+  return clamp((min(d + h, b) - max(d - h, a)) / (2.0 * h), 0.0, 1.0);
+}
+
+/* Per-flag seating. Flags are bedded on sand by hand and no two of them end up
+ * level; a millimetre or two of step at a joint is normal on any footway that
+ * has been walked on, and at this sun elevation a millimetre is fourteen
+ * millimetres of shadow. This is a shading step rather than a geometric one on
+ * purpose: the walk mesh samples at 210 mm along the street and 168 mm across,
+ * which cannot carry a 16 mm joint, and geometry.ts's slabSettle deliberately
+ * tapers to zero at every joint so that adjacent flags meet — which is exactly
+ * why the course reads as one undulating sheet rather than as separate stones.
+ * The discontinuity has to be stated here or it does not exist anywhere. */
+float slabLift(vec2 cell){
+  return (hash21(cell + 19.31) - 0.5) * uFlag.y;
+}
+
+Flag flagAt(vec2 p, vec2 fw){
+  Flag o;
+  float S = uSlab;
+  float jh = uJoint * 0.5;
+  float cham = uFlag.x;
+
+  vec2 g = p / S;
+  o.cell = floor(g);
+  vec2 fr = fract(g) - 0.5;
+  o.edge = max(abs(fr.x), abs(fr.y)) * 2.0;
+  o.lift = slabLift(o.cell);
+
+  /* The course is laid by hand and the lines are not ruled. Deliberately
+   * small: a joint that wanders further than about its own width stops reading
+   * as a joint and starts reading as a crack. */
+  float wob = wfbm(p * 1.35, 2) * 0.0030;
+
+  o.gap = 0.0; o.lit = 0.0; o.dark = 0.0; o.shad = 0.0; o.nearJ = 0.0;
+
+  for (int a = 0; a < 2; a++){
+    float u   = a == 0 ? g.x : g.y;
+    float sdu = a == 0 ? uSunXZ.x : uSunXZ.y;
+    /* The footprint per axis, not the sum of the two.
+     *
+     * Looking down the street a ground pixel is a couple of centimetres across
+     * and most of a metre deep. One isotropic figure gets both joint families
+     * wrong at once — it smears the joints running with the street, which are
+     * genuinely resolved, and under-filters the ones crossing it, which are
+     * not. Clamped to half a module because once a pixel holds more than one
+     * joint the honest answer is the area fraction and not a coverage. */
+    float h = min((a == 0 ? fw.x : fw.y) * 0.5, S * 0.5);
+
+    float k = floor(u + 0.5);
+    float d = (u - k) * S + wob;
+
+    o.gap   = max(o.gap,   bandCov(d, -jh, jh, h));
+    o.nearJ = max(o.nearJ, bandCov(d, -jh - 0.055, jh + 0.055, h));
+
+    /* The two chamfers, and which of them is lit is the whole point.
+     *
+     * At a joint the eye sees five things in a row: the flat top of the up-sun
+     * flag, that flag's chamfer turning away from the sun and going black, the
+     * gap, the down-sun flag's chamfer turning into the sun and going very
+     * bright, and its flat top. Dark then bright, always in that order, on
+     * every joint in the frame. A symmetric grey line either side of a groove
+     * — which is what was here — cannot produce it at any contrast.
+     *
+     * The band outside the gap on the +axis side belongs to the flag on that
+     * side and its face turns back toward -axis, hence the crossed signs. The
+     * cosine weight falls out of the same expression: a joint running nearly
+     * along the sun's azimuth has chamfers the light grazes edge-on and gets
+     * no highlight, which is correct and which the old code had no way to say. */
+    float cP = bandCov(d,  jh, jh + cham, h);
+    float cM = bandCov(d, -jh - cham, -jh, h);
+    o.lit  = max(o.lit,  cP * max(-sdu, 0.0) + cM * max(sdu, 0.0));
+    o.dark = max(o.dark, cP * max(sdu, 0.0) + cM * max(-sdu, 0.0));
+
+    /* The shadow the up-sun neighbour throws when it stands proud.
+     *
+     * Note what this replaces and why. The old code sampled the joint mask
+     * four times up-sun at 22, 46, 70 and 98 mm and took the maximum, which
+     * asserts that every joint casts a shadow of a fixed length onto the flag
+     * behind it. A flush joint does not: a ray that grazes the up-sun lip
+     * arrives at the down-sun lip a millimetre low, so it has already met the
+     * side of the gap and the down-sun flag's top is fully lit. What actually
+     * throws a shadow onto a footway is the step between two flags that have
+     * settled differently, and that has a length — reach — rather than a fixed
+     * one, so it varies joint by joint the way a real course does. It also
+     * inherited the dashing, four more times over, because each of those four
+     * samples was a point sample of the same sub-pixel groove. */
+    float fu = u - floor(u);
+    float toLip = (sdu > 0.0 ? 1.0 - fu : fu) * S + jh;
+    vec2 nb = o.cell + (a == 0 ? vec2(sign(sdu), 0.0) : vec2(0.0, sign(sdu)));
+    float reach = max(slabLift(nb) - o.lift, 0.0) * uSunCot;
+    float t = toLip / max(abs(sdu), 1.0e-3);
+    float soft = max(h / max(abs(sdu), 1.0e-3), 0.0015);
+    o.shad = max(o.shad, 1.0 - sstep(reach - soft, reach + soft, t));
+  }
+
+  /* The flag's own plane, which is the other half of differential settlement.
    *
-   * The previous version used a 1.52 m grid and put expansion joints across
-   * the footway every fourth flag but never along it, so the joints that
-   * actually showed were four times further apart in one axis than the other
-   * and the flags read as planks. Flags are square, the joints are the same
-   * joint in both directions, and the module is small enough that several of
-   * them are in the near field at once. */
+   * An old flag is not flat. It is dished in the middle where it has been
+   * walked hollow and it leans, because whatever was under one corner has
+   * consolidated further than whatever was under the other. Both are
+   * millimetre-scale and both are invisible under an overhead light, and at
+   * 4.2 degrees they are not: a three-millimetre dish across 920 mm is a slope
+   * of 0.4 of a degree, which against a key 4.2 degrees up is a tenth of the
+   * whole incidence angle and swings the direct term by a fifth across one
+   * flag. That gradient across each stone, cut hard at the joints, is most of
+   * what separates a laid course from a printed grid — and unlike the geometry
+   * term in slabSettle it is allowed to be discontinuous, which is the part
+   * that matters. */
+  float dish = uFlag.w * (0.45 + 0.55 * hash21(o.cell + 5.93));
+  vec2  lean = (vec2(hash21(o.cell + 61.7), hash21(o.cell + 103.3)) - 0.5) * uFlag.y * 2.2;
+  // d(height)/d(world x, z) of  -dish*(1-4fx^2)*(1-4fz^2) + lean.fx + lean.fz
+  vec2 f2 = fr * fr * 4.0;
+  vec2 slope = (vec2(dish * 8.0 * fr.x * (1.0 - f2.y),
+                     dish * 8.0 * fr.y * (1.0 - f2.x)) + lean) / S;
+  o.tilt = max(1.0 + dot(slope, uSunXZ) * uSunCot, 0.0);
+  return o;
+}
+
+/* The point-sampled joint this replaces, still here because WALK_FRAG_BODY has
+ * not been converted yet and a half-converted material does not link. It is
+ * scheduled for deletion in the same commit that moves the body over to flagAt,
+ * and nothing new should call it. */
+vec3 walkJoints(vec2 p, out vec2 slabId){
   vec2 g = p / uSlab;
   vec2 cell = floor(g);
-  vec2 f = abs(fract(g) - 0.5) * 2.0;      // 0 at flag centre, 1 at the joint
+  vec2 f = abs(fract(g) - 0.5) * 2.0;
   slabId = cell;
-
-  /* A joint with an inside.
-   *
-   * A hairline of darker colour is a scored line in a poured slab. A laid flag
-   * has a real gap between it and the next one, 12–18 mm of it, with a dark
-   * interior, a lip that has rounded off, and half a decade of grit in the
-   * bottom. The two edges of the gap are what catch the light and they are the
-   * only reason a pavement reads as separate stones at night. */
   float half_ = 1.0 - (uJoint / uSlab);
   float wobble = wfbm(p * 1.4, 2) * 0.010;
   float d = max(f.x, f.y);
   float joint = sstep(half_ - 0.02, half_ + 0.012, d + wobble);
-  // The lip: a narrow band just inside the gap, worn round and slightly proud.
   float lip = sstep(half_ - 0.075, half_ - 0.012, d + wobble) * (1.0 - joint);
-
   return vec3(joint, lip, d);
 }
 
@@ -2622,6 +2812,8 @@ export function makeWalkMaterial(set: SurfaceSet): THREE.MeshStandardMaterial {
     shader.uniforms.uSunXZ = {
       value: new THREE.Vector2(SUN_DIR[0], SUN_DIR[2]).normalize(),
     };
+    shader.uniforms.uSunCot = { value: SUN_COT };
+    shader.uniforms.uFlag = { value: flagTuneFromUrl() };
     shader.vertexShader = shader.vertexShader
       .replace('void main() {', `${WORLD_VARYINGS}\nvoid main() {`)
       .replace('#include <begin_vertex>', VERTEX_HOOK);
