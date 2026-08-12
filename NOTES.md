@@ -49,6 +49,47 @@ through a `MediaStreamDestination` instead of summing the generators itself. The
 second defence is to read what the assembly says about itself: a non-empty
 `errors` array in `reel.json` is a finding, not noise.
 
+## The transcribed constant — three instances this session, and the rule that came out of it
+
+A variant of the shape above, with a different failure mode: not a copy that
+drifted, but a copy that *cannot* drift until the day it does, silently, while
+still reading correct and still typechecking.
+
+Three found in one session. `scene/collide.ts` held a furniture table hand-copied
+from `world/cars.ts`. `world/signs.ts` held a trade word list copied from the
+generator that names the shops. And `scene/clouds.ts` transcribed the sun three
+separate times — the key light as `(115.0, 37.17, 8.76)`, the path amplification
+as `Math.sin(4.2 * Math.PI / 180)`, and a per-deck transmittance triple worked
+out by hand for 4.2 degrees — directly under a comment claiming "the clouds
+cannot end up lit by a different sun from the street". Nothing enforced that.
+It held because two numbers happened to agree. Raising the street's sun to 12
+degrees would have left the sky lighting its clouds from 4.2, and all three
+transcriptions would still have looked right in review.
+
+What makes this class expensive is that the duplicate is *derived*, so it looks
+like a computed value rather than a copy, and the arithmetic is usually trivial
+enough that computing it feels like ceremony. `sin(4.2°) = 0.07324` is correct
+arithmetic. It is still a hand-copy of a constant that lives somewhere else.
+
+The rule:
+
+- **A value derived from another constant is computed, however trivial the
+  arithmetic.** `Math.sin(SUN_ELEV)`, not `0.07324`. If the derivation is
+  physical, write the model — `scene/clouds.ts` now runs Kasten-Young and an
+  exponential atmosphere to get its per-deck transmittances, which is more code
+  than the table it replaced and is the only version that survives the sun
+  moving.
+- **A constant that must reach GLSL as a compile-time literal is generated into
+  the source, not typed into it.** `${PATH_MUL.toFixed(4)}` inside the template
+  string. A number typed into a shader string is invisible to every tool that
+  would otherwise catch this, including `tsc` and grep for the symbol.
+- **If it cannot be imported, say so where it is duplicated.** `Street.tsx` still
+  spells `#ff9a4e` and `115` into JSX; `scene/sun.ts` carries a note naming it,
+  because a documented duplicate is findable and an undocumented one is not.
+- **Prove the coupling by moving the source.** Changing `SUN_ELEV` and confirming
+  the cloud self-shadowing and beam colour move with it is a two-minute check
+  that distinguishes a real dependency from a comment claiming one.
+
 ## `Walker` stopped translating in one frame when forward input went to zero — fixed
 
 Fixed at 05:25 on delivery day, in the take that ships. The diagnosis below

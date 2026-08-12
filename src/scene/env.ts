@@ -29,37 +29,16 @@ import { bakeSkyCube } from './clouds';
  */
 const W = 512, H = 256;
 
-/* The sun.
- *
- * Elevation trades two things against each other and 6 degrees is where they
- * balance. Shadow length is height over the tangent of the elevation, so lower
- * is better for the signature effect: at 6 degrees a 145 mm kerb throws a
- * 1.4 m shadow clear across a lane.
- *
- * But the ground is a horizontal surface, and a horizontal surface facing a
- * 6 degree sun receives sin(6) — about a tenth — of the beam. Go much below
- * this and direct sun on the carriageway falls under the skylight filling it
- * from above, at which point shadows stop being visible at all: there is
- * nothing for them to subtract. That is a real constraint rather than a
- * preference, and it is why the sun's intensity has to be set against the sky
- * rather than picked in isolation.
- *
- * Azimuth is measured from the far end of the street and offset 28 degrees to
- * the +X side. Dead down the centreline would throw every shadow straight at
- * the camera, where it is foreshortened into nothing and the length is
- * invisible; 28 degrees is enough that shadows cross the road diagonally and
- * that one footway is lit while the other sits in shade, but not so much that
- * the sun leaves the end of the street and the glow stops closing the view.
- */
-export const SUN_ELEV = 4.2 * Math.PI / 180;
-export const SUN_AZIM = 35.0 * Math.PI / 180;
-
-/** Unit vector pointing from the scene toward the sun. */
-export const SUN_DIR: [number, number, number] = [
-  Math.sin(SUN_AZIM) * Math.cos(SUN_ELEV),
-  Math.sin(SUN_ELEV),
-  -Math.cos(SUN_AZIM) * Math.cos(SUN_ELEV),
-];
+/* The sun moved to ./sun.ts, and re-exports here so that the dozen files
+ * already importing SUN_DIR from this one did not have to be touched — several
+ * are locked to other agents this week. The move was forced rather than
+ * cosmetic: clouds.ts needs SUN_ELEV, this file imports clouds.ts, and a leaf
+ * module is the only shape of that which is not a cycle. The reasoning is
+ * written out at the top of sun.ts. */
+export { SUN_ELEV, SUN_AZIM, SUN_DIR, SUN_INTENSITY, SUN_COLOR_HEX, SUN_BEAM_GROUND } from './sun';
+// `export ... from` re-exports without binding locally, and this file reads
+// SUN_DIR a dozen times below.
+import { SUN_DIR } from './sun';
 
 export type NightEnv = {
   background: THREE.Texture;
@@ -346,6 +325,13 @@ export function makeNightEnv(renderer: THREE.WebGLRenderer): NightEnv {
    * the same Float32Array, produced by the same code path, and cannot have
    * moved. See tools/skycloud.mjs for the measurement that says so anyway.
    */
+  /* `bakeSkyCube` returns null rather than throwing when it cannot finish —
+   * lost context, a renderer mid-teardown, a Fast Refresh landing in the middle
+   * of the six face draws — and `background` below falls back to the equirect
+   * on its own. That fallback is the reason this call is not wrapped in
+   * anything here: the failure is handled where the resources are, and this
+   * file only has to cope with not getting a cube. It has cost a shared dev
+   * server once already; see the note above bakeSkyCube. */
   const mode = skyMode();
   const cube = mode === 'flat'
     ? null

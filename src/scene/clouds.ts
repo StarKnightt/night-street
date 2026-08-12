@@ -100,6 +100,7 @@
  *                      falls out rather than being painted.
  */
 import * as THREE from 'three';
+import { SUN_ELEV, SUN_BEAM_GROUND } from './sun';
 
 /* ── The atmosphere the numbers come from ────────────────────────────────────
  *
@@ -113,38 +114,65 @@ import * as THREE from 'three';
  * Aerosol: 0.10 at 550 nm with an Angstrom exponent of 1.3, giving
  * 0.0879 / 0.1000 / 0.1246. Scale heights 8.0 km and 1.2 km.
  *
- * Air mass at 4.2 degrees by Kasten-Young is 11.85. Working the transmittance
- * out at four altitudes:
- *
- *   altitude   T(red)   T(green)  T(blue)    normalised to red
- *   0 km       0.246    0.165     0.0567     1 / 0.671 / 0.230
- *   1.5 km     0.459    0.344     0.154      1 / 0.749 / 0.335
- *   4.2 km     0.705    0.591     0.356      1 / 0.839 / 0.505
- *   8.0 km     0.883    0.808     0.617      1 / 0.915 / 0.699
- *
  * That table is the whole colour design. The user asked for "warm orange on the
  * bottom, cooler purple-pink on top" and it is not a preference — it is what
  * Rayleigh does to a beam skimming the planet. Low cloud sees the reddest
  * possible sun; cirrus at 8 km is above two thirds of the scattering and sees a
- * beam that is still nearly white.
+ * beam that is still much closer to white.
  *
- * The absolute level is anchored to the light the scene already has rather than
- * to this model, so the clouds cannot end up lit by a different sun from the
- * street. `<directionalLight color="#ff9a4e" intensity={115} />` is
- * (115.0, 37.17, 8.76) in linear renderer units at the ground; each deck's beam
- * is that, divided by the ground transmittance above and multiplied by its own.
+ * The absolute level is anchored to the light the scene already has, so the
+ * clouds cannot end up lit by a different sun from the street: each deck's beam
+ * is the key light's own linear colour, divided by the transmittance to the
+ * ground and multiplied by the transmittance to that deck.
+ *
+ * ── Every number below is derived, and that is the point ────────────────────
+ *
+ * This file used to transcribe the sun three separate times — (115.0, 37.17,
+ * 8.76) for the beam, sin(4.2 deg) for the path amplification, and a hand-typed
+ * transmittance triple per deck — while the comment above claimed the clouds
+ * could not be lit by a different sun from the street. Nothing enforced that.
+ * It was true only because both numbers happened to say 4.2, and it stopped
+ * being true the moment the sun moved: the street went to 12 degrees and the
+ * sky would have stayed at 4.2, silently, with all three transcriptions still
+ * reading correct and still typechecking.
+ *
+ * So SUN_ELEV is now the only input. Air mass comes from Kasten-Young, the
+ * transmittances from the same exponential atmosphere the GLSL below uses, and
+ * the beam from env.ts's SUN_BEAM_GROUND. The derivation reproduces the table
+ * that used to be typed here to within a percent at 4.2 degrees, which is how
+ * it was checked before the elevation was changed.
  */
-const BEAM_GROUND: [number, number, number] = [115.0, 37.17, 8.76];
-const T_GROUND: [number, number, number] = [0.246, 0.165, 0.0567];
-const beamAt = (T: [number, number, number]): [number, number, number] => [
-  BEAM_GROUND[0] * T[0] / T_GROUND[0],
-  BEAM_GROUND[1] * T[1] / T_GROUND[1],
-  BEAM_GROUND[2] * T[2] / T_GROUND[2],
-];
+const SIN_ELEV = Math.sin(SUN_ELEV);
+const ELEV_DEG = SUN_ELEV * 180 / Math.PI;
 
 /** Volume extinction coefficients per km at sea level, per channel. */
 const SIGMA_R: [number, number, number] = [0.0303 / 8.0, 0.0521 / 8.0, 0.1177 / 8.0];
 const SIGMA_A: [number, number, number] = [0.0879 / 1.2, 0.1000 / 1.2, 0.1246 / 1.2];
+const H_RAY_KM = 8.0;
+const H_AER_KM = 1.2;
+
+/* Kasten-Young relative air mass. Plain 1/sin diverges at the horizon and is
+ * already 8% wrong at four degrees, which at these optical depths is a visible
+ * amount of red. */
+const AIR_MASS = 1 / (SIN_ELEV + 0.50572 * Math.pow(ELEV_DEG + 6.07995, -1.6364));
+
+/** Transmittance of the whole slant path from altitude `km` out to space. */
+function sunTransmittance(km: number): [number, number, number] {
+  const colR = H_RAY_KM * Math.exp(-km / H_RAY_KM) * AIR_MASS;
+  const colA = H_AER_KM * Math.exp(-km / H_AER_KM) * AIR_MASS;
+  return [0, 1, 2].map((i) =>
+    Math.exp(-(SIGMA_R[i] * colR + SIGMA_A[i] * colA))) as [number, number, number];
+}
+
+const T_GROUND = sunTransmittance(0);
+const beamAt = (km: number): [number, number, number] => {
+  const T = sunTransmittance(km);
+  return [
+    SUN_BEAM_GROUND[0] * T[0] / T_GROUND[0],
+    SUN_BEAM_GROUND[1] * T[1] / T_GROUND[1],
+    SUN_BEAM_GROUND[2] * T[2] / T_GROUND[2],
+  ];
+};
 
 const v3 = (c: readonly number[]) =>
   `vec3(${c[0].toFixed(6)}, ${c[1].toFixed(6)}, ${c[2].toFixed(6)})`;
@@ -155,28 +183,57 @@ const v3 = (c: readonly number[]) =>
  * depths are the textbook ones: cirrus is nearly transparent, altocumulus is a
  * few, a cumulus turret is tens.
  *
- * `sunKm` is the horizontal distance the beam covers inside the deck, which is
- * thickness / sin(4.2 deg) = thickness x 13.66. It is the length of the column
- * integral and it is why the three decks look so different from each other:
- * cirrus shadows itself over 4 km against 26 km cells and so glows almost
- * everywhere; the cumulus deck shadows itself over 11 km against 2.6 km cells
- * and so is mostly a dark silhouette with a lit rim.
+ * `sunKm` is the horizontal distance the beam covers inside the deck: the
+ * thickness divided by sin(elevation). It is the length of the column integral
+ * and it is why the three decks look so different from each other — and it is
+ * also the single number that suffered most from raising the sun.
+ *
+ * At 4.2 degrees the amplification was 13.65x, so a 600 m altocumulus sheet
+ * shadowed itself over 8.2 km — against 2.1 km cells, so the beam crossed four
+ * of them and the sunward flank of each was lit while its far side was not.
+ * That cross-cell shadowing is the entire reason the decks read as volumes and
+ * not as a stencil. At 12 degrees the amplification is 4.81x, 2.8 times
+ * shorter: the beam now crosses roughly one cell and the flanks flatten out.
+ *
+ * The compensation is depth, and it is the honest lever rather than a fudge.
+ * These thicknesses were never measured off anything — 300 / 600 / 800 m are
+ * plausible numbers I picked — and the higher sun is a reason to pick different
+ * plausible numbers. Deepening a deck lengthens the beam's path through it,
+ * which is the quantity that actually got shorter, and 850 m of cirrus, a 1.6 km
+ * altocumulus castellanus and a 2.2 km cumulus congestus are all ordinary. The
+ * new paths are 4.09 / 7.70 / 10.58 km against the old 4.10 / 8.19 / 10.92, so
+ * the shadowing structure comes back almost exactly.
+ *
+ * The optical depths go up with them, but by less than the depth does. Holding
+ * density fixed would have doubled tau, and tau also sets how opaque the deck
+ * is on screen: alto at tau 9 has almost no gaps left, and the gaps are what
+ * make it read as cloud in front of sky rather than as an overcast lid. So the
+ * depths take back some of the lost self-shadowing magnitude and deliberately
+ * not all of it — the structure matters more than the contrast, and the decks
+ * are less dense per metre at 12 degrees than they were at 4.2, which is a
+ * thing clouds are allowed to be.
  */
 type Deck = {
   name: string;
   km: number;        // altitude
+  thickKm: number;   // geometric thickness
   tau: number;       // peak vertical optical depth
   sunKm: number;     // horizontal light path inside the deck
   beam: [number, number, number];
 };
 
-const SIN_ELEV = Math.sin(4.2 * Math.PI / 180);   // 0.07324
-const sunPath = (thicknessKm: number) => thicknessKm / SIN_ELEV;
+/** Horizontal distance per unit of vertical depth, along the beam. */
+const PATH_MUL = 1 / SIN_ELEV;
+
+const deck = (name: string, km: number, thickKm: number, tau: number): Deck => ({
+  name, km, thickKm, tau, sunKm: thickKm * PATH_MUL, beam: beamAt(km),
+});
 
 const DECKS: Deck[] = [
-  { name: 'cirrus', km: 8.0, tau: 0.45, sunKm: sunPath(0.30), beam: beamAt([0.883, 0.808, 0.617]) },
-  { name: 'alto', km: 4.2, tau: 4.5, sunKm: sunPath(0.60), beam: beamAt([0.705, 0.591, 0.356]) },
-  { name: 'cumulus', km: 1.5, tau: 10.0, sunKm: sunPath(0.80), beam: beamAt([0.459, 0.344, 0.154]) },
+  //             altitude  thickness  tau     (was 0.30 / 0.60 / 0.80 at 4.2 deg)
+  deck('cirrus', 8.0, 0.85, 0.55),
+  deck('alto', 4.2, 1.60, 6.0),
+  deck('cumulus', 1.5, 2.20, 13.0),
 ];
 
 /* Ambient — what lights the parts of a cloud the sun cannot reach.
@@ -529,16 +586,19 @@ vec3 shadeDeck(int deck, vec2 p, float cov, float tauMax, float sunKm,
    * because the cells are 2.1 km against an 8.2 km path, so four taps alias the
    * gaps that are the whole reason any of this deck is lit. The mean coverage
    * times tauMax times (sunKm / thickness) is the optical depth the beam sees;
-   * since sunKm is *defined* as thickness / sin(4.2 deg), that factor is just
-   * 1 / sin(4.2 deg) = 13.66, and it is written as sunKm/thickness nowhere
-   * because thickness never has to appear. */
+   * since sunKm is *defined* as thickness / sin(elevation), that factor is just
+   * 1 / sin(elevation), and it is written as sunKm/thickness nowhere because
+   * thickness never has to appear. It is generated from SUN_ELEV rather than
+   * typed: it read 13.66 as a literal in this string, and a literal here is a
+   * sky that goes on shadowing itself at four degrees after the street has
+   * moved to twelve. */
   vec2 step = uSunFlat * (sunKm / 12.0);
   float acc = 0.0;
   for (int i = 1; i <= 12; i++){
     acc += coverage(deck, p + step * float(i));
   }
   float meanCov = (cov * 0.5 + acc) / 12.5;
-  float tauSun = tauMax * meanCov * 13.66;
+  float tauSun = tauMax * meanCov * ${PATH_MUL.toFixed(4)};
 
   /* Multiple scattering, four octaves — gated on the cloud actually being thick
    * enough to scatter more than once.
@@ -694,11 +754,37 @@ export function bakeSkyCube(
   renderer: THREE.WebGLRenderer,
   sun: readonly number[],
   opts: { size?: number; clouds?: boolean } = {},
-): SkyCube {
+): SkyCube | null {
   const size = opts.size ?? 1024;
   const clouds = opts.clouds ?? true;
 
-  const rt = new THREE.WebGLCubeRenderTarget(size, {
+  /* Nothing below this line may throw out of this function.
+   *
+   * This is not defensive programming for its own sake, it is a bill that has
+   * already been paid. An earlier revision timed the bake by reading one texel
+   * back, and `readRenderTargetPixels` against a cube target without a face
+   * index binds an invalid framebuffer and throws. `makeNightEnv` is called
+   * from `Street`'s `useMemo`, which runs during render, so the throw came out
+   * through React and took the whole app down — on the shared dev server, which
+   * every agent and the user is looking at. One agent lost a session to it and
+   * had to stand up a second server on another port.
+   *
+   * The specific bug is gone. The shape of it is not: four people are editing
+   * this tree at once and Fast Refresh will re-enter this function at moments
+   * nobody chose — mid-teardown, with a lost context, with a renderer whose
+   * target stack is not where this code left it. So the contract is that a bake
+   * which cannot be completed returns null and env.ts falls back to the
+   * equirect. A sky that is flat for one reload is a cosmetic problem. A sky
+   * that throws is everybody's problem.
+   */
+  const gl = renderer.getContext();
+  if (gl.isContextLost()) return null;
+
+  let rt: THREE.WebGLCubeRenderTarget | null = null;
+  let material: THREE.ShaderMaterial | null = null;
+  let mesh: THREE.Mesh | null = null;
+  try {
+  rt = new THREE.WebGLCubeRenderTarget(size, {
     type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
     colorSpace: THREE.NoColorSpace,
@@ -714,7 +800,7 @@ export function bakeSkyCube(
   rt.texture.magFilter = THREE.LinearFilter;
   rt.texture.generateMipmaps = false;
 
-  const material = new THREE.ShaderMaterial({
+  material = new THREE.ShaderMaterial({
     name: 'ProceduralSkyCube',
     vertexShader: VERTEX,
     fragmentShader: fragment(sun, clouds),
@@ -729,7 +815,7 @@ export function bakeSkyCube(
     fog: false,
   });
 
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(5, 5, 5), material);
+  mesh = new THREE.Mesh(new THREE.BoxGeometry(5, 5, 5), material);
   const camera = new THREE.CubeCamera(1, 10, rt);
   const prev = renderer.getRenderTarget();
   const t0 = performance.now();
@@ -737,23 +823,62 @@ export function bakeSkyCube(
   renderer.setRenderTarget(prev);
   /* Drain the queue before reading the clock. The six face draws are submitted,
    * not finished, when update() returns, and timing a command buffer being
-   * filled is worse than not timing at all — the first attempt at this used a
-   * one-texel readback for the same purpose and threw, because a cube target
-   * needs its face index and three's readRenderTargetPixels was handed none. */
-  renderer.getContext().finish();
+   * filled is worse than not timing at all. Skipped rather than risked if the
+   * context went away underneath the draws. */
+  if (!gl.isContextLost()) gl.finish();
   /* Left on a global rather than logged, so that tools/skycloud.mjs can report
    * it beside the fps it measures. The harness collects page errors and
    * warnings; an info line would not have reached it, which is how the first
    * version of this measurement came back empty. */
   (globalThis as { __skyBakeMs?: number }).__skyBakeMs = performance.now() - t0;
 
+  /* The derived sun, published so the coupling can be *read* rather than
+   * believed. Everything here was a hand-typed literal until the sun moved, and
+   * the way a reader checks that it is no longer a literal is to change SUN_ELEV
+   * and watch these numbers follow. tools/frontage.mjs asks the light for its
+   * own elevation for the same reason. Three numbers, once per bake. */
+  (globalThis as { __skyDeckSun?: unknown }).__skyDeckSun = {
+    elevDeg: (SUN_ELEV * 180) / Math.PI,
+    pathMul: PATH_MUL,
+    airMass: AIR_MASS,
+    beamGround: SUN_BEAM_GROUND,
+    decks: DECKS.map((d) => ({
+      name: d.name, km: d.km, thickKm: d.thickKm, tau: d.tau,
+      sunKm: d.sunKm, beam: d.beam,
+    })),
+  };
+
   mesh.geometry.dispose();
   material.dispose();
+  mesh = null;
+  material = null;
 
+  const target = rt;
+  let disposed = false;
   return {
-    texture: rt.texture,
-    dispose() { rt.dispose(); },
+    texture: target.texture,
+    /* Idempotent, because COLDSTART.md §4.1 records this project losing its
+     * environment to exactly the opposite ordering: Fast Refresh preserved a
+     * `useMemo` while still running the effect cleanup, so teardown ran against
+     * a value the next render then reused. A second dispose() must be a no-op
+     * rather than a second `rt.dispose()` on a target three has already
+     * forgotten. */
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      target.dispose();
+    },
   };
+  } catch (err) {
+    /* Warn rather than swallow. A silent fallback is how this codebase loses a
+     * week to a term that is present and inert; the sky going flat with no
+     * explanation in the console would be precisely that. */
+    console.warn('[sky] cube bake failed, falling back to the equirect:', err);
+    try { mesh?.geometry.dispose(); } catch { /* teardown must not throw */ }
+    try { material?.dispose(); } catch { /* teardown must not throw */ }
+    try { rt?.dispose(); } catch { /* teardown must not throw */ }
+    return null;
+  }
 }
 
 /** For tools: the deck table, so a report does not have to transcribe it. */
