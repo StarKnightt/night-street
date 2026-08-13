@@ -882,3 +882,119 @@ contradictory set of numbers into an obvious one in a single run. Note that the
 car shader *reassigns* `part` locally for the end caps, so the attribute says
 `capR` where the shader is drawing a lamp; a gate written against the attribute
 and a gate written against the local value are different gates.
+
+## A term calibrated to a frame rate is calibrated to a machine — fixed
+
+Someone reported light flickering, "consistently on Windows always", with no
+repro and no GPU. `tools/park.mjs` was written to answer the narrow version of
+the question — parked camera, successive frames differenced — and the budget
+closes: sensor grain 0.044 code values of the mean over about 13 per cent of
+pixels, the volumetric march's jitter 0.042 over 9.1 per cent, dust 0.0008, and
+with those three off **18 of 20 consecutive pairs bit-identical over all 921,600
+pixels**. Production measures the same, term for term. So nothing was broken.
+
+One thing was, though, and it is a class worth naming. Both noise terms were
+seeded from the *frame counter*, so the grain — whose amplitude was tuned by eye
+on this machine — advanced once per frame. Its appearance was therefore a
+function of the display it was tuned on: 2.4x faster on a 144 Hz panel than
+anything anyone here has looked at, and on a machine whose frame rate moves, the
+noise changes character as it moves. That is the only mechanism found that gets
+*worse* on a weaker machine rather than staying the same, which is exactly the
+shape of a report you cannot reproduce.
+
+`GRAIN_HZ` in `grade.tsx` now quantises the seed to a rate in seconds. Grain
+isolated with the march and the dust off, measured as redraws per second and as
+mean change integrated over a second rather than over a frame:
+
+| | 60 Hz display | 120 Hz display |
+| --- | --- | --- |
+| seeded per frame, as it was | 60 redraws/s, 3.53 change/s | 120 redraws/s, **7.07** |
+| `GRAIN_HZ = 60` | 60 redraws/s, 3.53 change/s | 60 redraws/s, **3.54** |
+
+Three things about it that generalise:
+
+- **Quantise, do not scale.** `uSeed` feeds a hash, so a seed of `elapsed * 60`
+  unfloored reseeds every frame exactly as the counter did. The fix would have
+  been inert while reading as correct — the failure this file spends most of its
+  length on. The `floor` *is* the fix.
+- **Measure per second, not per frame.** "Mean change between consecutive
+  frames" is invariant under the bug and cannot see it: both endpoints are
+  independent draws either way. Divide by `dt` and the defect is a factor of two
+  in plain sight. Choosing the wrong denominator hid this for the whole life of
+  the term.
+- **The physical argument lost to the signed-off one.** 30 Hz is what the model
+  implies — a phone captures video at 30 fps and redraws its read noise per
+  captured frame — and it halves the grain's rate on the display the amplitude
+  was judged on, which is a look change and not this fix's business. 60 leaves a
+  60 Hz display byte-identical and still pins a 144 Hz one. `window.__grade
+  .grainHz` is writable so the 30 Hz question can be asked with eyes on frames.
+
+The march's jitter deliberately stays on the frame counter: it is a sampling
+dither meant to be averaged across frames, so holding it would hold the banding
+it hides, and a 144 Hz display currently converges *better* precisely because it
+integrates more independent samples per second. Same-looking code, opposite
+correct answer, for a reason that is about what the term is for.
+
+## X3595: the shadow filter samples with an undefined derivative on D3D11
+
+**Reported, not fixed.** It touches the material path on a deployed build.
+
+Every capture in this project prints, and every tool filters out, an ANGLE
+warning: `X3595: gradient instruction used in a loop with varying iteration;
+partial derivatives may have undefined value`. It has been treated as noise
+because the programs link and `window.__shaderErrors` stays empty. It is not
+noise. It is the D3D11 compiler saying a texture fetch is choosing its mip level
+from a number the specification does not define.
+
+Located, rather than guessed at. `renderer.info.programs` lets the *program*
+info log be read per program, which is where ANGLE puts an HLSL compile warning
+and which the console cannot attribute; 22 of 31 linked programs carry it, and
+one of them is `lambert`, which narrows it to a chunk three includes in every lit
+material. Then, because three calls `gl.deleteShader` as soon as a program links
+and `getTranslatedShaderSource` needs the shader, a real material was cloned with
+one unused `#define` — a cache key three has never seen, so it compiles fresh —
+with `deleteShader` neutered. The translated HLSL has exactly four surviving
+loops, and both distinct ones are `softShadow.ts`:
+
+```
+{LOOP for(int _i3411 = {0}; (_i3411 < 12); (_i3411++))     // blocker search, line 250
+  float _d3413 = gl_texture2D(_shadowMap, (_uv3397 + _o3412)).x;
+{LOOP for(int _i3423 = {0}; (_i3423 < 20); (_i3423++))     // penumbra filter, line 313
+  float _d3425 = gl_texture2D(_shadowMap, (_uv3397 + _o3424)).x;
+```
+
+12 and 20 are `blockerTaps` and `filterTaps`. The mechanism is the `[loop]`
+attribute: ANGLE emits it to stop FXC unrolling, so a trip count that is a
+literal in our GLSL is a *dynamic* loop to the D3D compiler, and
+`gl_texture2D` — which translates to `Texture2D.Sample`, the form that derives
+its own gradients — is then a gradient instruction inside it. `getSunShadow`
+also returns early twice, at the frustum test and at `cnt < 0.5`, so a quad
+whose four pixels straddle either boundary has lanes computing derivatives from
+lanes that have left.
+
+Why it is probably harmless *here*: the shadow map has no mip chain, so an
+undefined LOD clamps to level 0 whatever it computes. Why it is worth fixing
+anyway: that is a property of this driver's texture setup, not of the contract,
+every edge in this scene is antialiased from `fwidth` so derivatives are on the
+main path rather than in a corner, and a driver that resolved it differently
+would produce crawl on shadow edges — which is a better explanation of a
+flickering report we cannot reproduce than anything else found.
+
+A fix, when someone looks at it:
+
+- **`textureLod(shadowMap, uv + o, 0.0)`** in both loops. The map has no mips, so
+  level 0 is what is wanted; the gradient instruction disappears, the behaviour
+  becomes defined, and `SampleLevel` computes no derivatives so it should cost
+  the same or less. Check three's GLSL3 shim first — `texture2D` is `#define`d to
+  `texture`, and the LOD spelling has to match the version actually emitted.
+- **Or `textureGrad`** with the base UV derivatives, which `getSunShadow` already
+  computes at lines 217-218 for the depth gradient, hoisted above the loop. More
+  faithful if the map ever gains mips, more code, and the derivatives are then
+  loop-invariant and defined.
+
+There is a ready experiment attached. `tmp/determ.mjs` finds four or five pixels
+that flip by exactly one code value with the camera parked, the clock stopped and
+grain and volumetric off — fixed screen positions, recurring. If those disappear
+when the fetch becomes explicit-LOD, the correlation between X3595 and observed
+nondeterminism becomes a demonstration. If they do not, the warning is cosmetic
+here and the note can be closed with an answer instead of a suspicion.
