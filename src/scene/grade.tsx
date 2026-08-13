@@ -156,6 +156,62 @@ export const GRADE: Grade = {
   grain: [0.0007, 0.00105, 0.0006],
 };
 
+/* How often the grain field is redrawn, in hertz — and it is a rate in seconds
+ * rather than "every frame" for a reason that took a flicker report to find.
+ *
+ * The seed used to be the frame counter, so the noise advanced once per frame.
+ * That makes the *appearance* of a term that was tuned by eye a function of the
+ * display it was tuned on: at 144 Hz the field is redrawn 2.4 times faster than
+ * anything anyone here has looked at, and on a machine whose frame rate moves
+ * the noise changes character as it moves — which is a good description of
+ * "flickering, and always on Windows". It is also the only mechanism in this
+ * file that gets *worse* on a weaker machine rather than staying the same, so
+ * it is the one worth fixing on a report we cannot reproduce.
+ *
+ * Sixty, and the first draft of this said thirty. The measurement is why, and it
+ * is worth keeping because the reasoning that produced 30 was sound and wrong.
+ *
+ * The physical argument is for 30: the referent is a phone, this is a moving
+ * image, a phone captures video at 30 fps, and its read noise is redrawn once
+ * per captured frame. Twenty-four is cinema film and nothing here is film — the
+ * model is CMOS read noise, demosaic blotch and a black pedestal, not emulsion.
+ * So 30 is the rate the model implies.
+ *
+ * But measured at 60 Hz, on grain isolated with the march and the dust off
+ * (`tools/park.mjs`, grain redraws per second and mean change per second):
+ *
+ *   per frame, the old behaviour   60 redraws/s   3.53 change/s   16.8% of pixels
+ *   this constant at 30            30 redraws/s   1.78 change/s    8.4%
+ *   this constant at 60            60 redraws/s   3.53 change/s   16.8%
+ *
+ * 30 halves the grain's temporal rate on the display the amplitude was tuned
+ * on. That is a change to a signed-off look, and it is not the change this
+ * constant exists to make — the defect is that the appearance depended on the
+ * frame rate at all, not that 60 was the wrong number. At 60 the row is
+ * identical to the old behaviour to three figures, so a 60 Hz display sees
+ * exactly the frame it saw before and a 144 Hz display stops seeing a term
+ * running 2.4x faster than anyone has looked at.
+ *
+ * Moving to 30 remains available and the physical argument for it still stands,
+ * but it is a look decision that wants someone watching frames rather than
+ * reading a table, so it is not smuggled in with a frame-rate fix.
+ * `window.__grade.grainHz` is writable for exactly that comparison.
+ *
+ * What this does *not* do: manufacture redraws on a machine that has no frames
+ * for them. The floor means at most one redraw per frame, so below 60 fps the
+ * rate degrades to the frame rate. The win is at and above it, and for the case
+ * that prompted this — a frame rate that moves — the field now advances at a
+ * fixed 60 instead of tracking whatever the machine is managing.
+ *
+ * It is *quantised* rather than scaled, and that is the part that would be easy
+ * to get wrong. `uSeed` feeds a hash, so any change to it at all — a
+ * thousandth — produces a completely uncorrelated field. Seeding with
+ * `elapsed * 60` unfloored would therefore reseed every single frame exactly as
+ * the frame counter did, and the fix would be inert while looking correct,
+ * which is this project's signature failure. The floor is the mechanism.
+ */
+export const GRAIN_HZ = 60;
+
 /** The identity, for ?nograde and for differenced measurement. */
 export const NO_GRADE: Grade = {
   slope: [1, 1, 1], offset: [0, 0, 0], power: [1, 1, 1],
@@ -446,10 +502,14 @@ void main() {
    * the reason is that the hash was keyed to gl_FragCoord with no time in it.
    * A sensor's read noise is fixed to the sensor and redrawn every frame; a
    * pattern fixed to the sensor and never redrawn is dirt on the glass, which
-   * is what it read as over a moving image. uSeed is the frame count, so it is
-   * still anchored to the sensor rather than to the world — that part was
-   * right and is deliberately kept — and it is now a different draw every
-   * frame.
+   * is what it read as over a moving image. uSeed keeps the anchoring to
+   * gl_FragCoord rather than to the world — that part was right and is
+   * deliberately kept — and adds a redraw.
+   *
+   * The seed was the frame count, and is now a clock quantised to GRAIN_HZ. The
+   * distinction did not matter until a flicker report arrived from a machine we
+   * do not have; see GRAIN_HZ for why "every frame" was calibrating a look to a
+   * display rather than to time.
    *
    * The model is unchanged otherwise, because §5.6 is emphatic that it is
    * already the right one: three independent channels rather than a shared
@@ -611,6 +671,13 @@ export function Grade() {
   useEffect(() => { post.add(quad); return () => { post.remove(quad); }; }, [post, quad]);
 
   const frames = useRef(0);
+  /* Seconds of scene time, accumulated from the frame delta rather than read
+   * off a clock. dust.tsx does the same and for the same reason: `setDriven`
+   * switches r3f to `frameloop: 'never'` and resets its clock, so a tool that
+   * steps the simulation would otherwise see the grain advance by wall time
+   * while everything else advanced by the step. */
+  const grainClock = useRef(0);
+  const grainHz = useRef<number>(GRAIN_HZ);
 
   /* Every PNG this project has ever produced comes out of `renderOnce`.
    *
@@ -637,7 +704,17 @@ export function Grade() {
      * which is mount order and not something either file controls. The result
      * was a debug surface that existed on most loads and was absent on some,
      * and a tool that reported "is Grade mounted?" about a mounted Grade. */
-    (window as unknown as { __grade?: unknown }).__grade = { grade: g, uniforms };
+    (window as unknown as { __grade?: unknown }).__grade = {
+      grade: g, uniforms,
+      /* Writable, so the reseed rate can be swept — and set to Infinity for the
+       * pre-fix per-frame behaviour — without a reload. A rate that could only
+       * be changed by editing the source could not be held against its own
+       * previous value in one build, which is the only comparison this project
+       * trusts. */
+      get grainHz() { return grainHz.current; },
+      set grainHz(v: number) { grainHz.current = v; },
+      get grainClock() { return grainClock.current; },
+    };
     /* The veil's own controls, switchable on a mounted scene. `uBloom` is a
      * uniform and was already reachable; the firefly guard was a literal
      * inside the pyramid, so whether it was suppressing the one source in this
@@ -849,7 +926,17 @@ export function Grade() {
      * points. */
     const e = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
     uniforms.uCoc.value.set(g.coc, Math.max(camera.position.y, 0.2), Math.tan(-e.x));
-    uniforms.uSeed.value = (frames.current++ % 1024) * 7.13;
+
+    const frame = frames.current++;
+    /* GRAIN_HZ explains the rate; this is the one line that spends it. An
+     * infinite or zero rate falls back to the frame counter, which is not a
+     * defensive default — it is how the fix gets held against the behaviour it
+     * replaced inside a single build, from `window.__grade.grainHz`. */
+    const hz = grainHz.current;
+    const tick = Number.isFinite(hz) && hz > 0
+      ? Math.floor(grainClock.current * hz)
+      : frame;
+    uniforms.uSeed.value = (tick % 1024) * 7.13;
 
     if (rig) {
       const pc = camera as THREE.PerspectiveCamera;
@@ -858,6 +945,28 @@ export function Grade() {
       uniforms.uRevDepth!.value =
         (gl as unknown as { reversedDepthBuffer?: boolean }).reversedDepthBuffer ? 1 : 0;
 
+      /* The march's jitter stays on the frame counter, deliberately, and the
+       * asymmetry with the grain above is the point rather than an oversight.
+       *
+       * The two terms are doing different jobs. The grain is a *look*: an
+       * amplitude tuned by eye, meant to be seen, and therefore calibrated to
+       * something — which had better be time rather than a frame rate. The
+       * march's interleaved-gradient jitter is a *sampling* term: it exists to
+       * decorrelate the banding a 48-step march leaves across a shaft edge, and
+       * it is meant to be averaged away by the eye across frames rather than
+       * noticed in any one of them.
+       *
+       * That inverts the argument. Holding the jitter for two frames at 60 Hz
+       * would hold the banding it is hiding for two frames as well, so the
+       * artifact becomes more visible, not less — and a 144 Hz display, which
+       * currently converges better because it integrates more independent
+       * samples per second, would be made to look the same as a 30 Hz one. A
+       * sampling dither should reseed as often as it is drawn.
+       *
+       * If it is ever judged too loud, the remedies are its amplitude or a
+       * temporal accumulation buffer, not its rate. Measured contribution at a
+       * parked camera: 0.042 code values mean over 9.1 per cent of pixels,
+       * peak 8 — see tools/park.mjs. */
       if (uniforms.uVol!.value > 0) {
         rig.vol.render(gl, scene as THREE.Scene, pc,
           rig.scene.depthTexture as THREE.Texture, frames.current);
@@ -877,7 +986,13 @@ export function Grade() {
     gl.render(post, cam);
   };
 
-  useFrame(() => {
+  useFrame((_, dt) => {
+    /* Clamped the way Rig and Lighting clamp theirs: a backgrounded tab hands
+     * back a delta of several seconds, which would jump the grain field through
+     * a hundred draws in one step. Harmless for noise, but it would put a
+     * visible discontinuity in the first frame after a tab is refocused. */
+    grainClock.current += Math.min(dt, 0.1);
+
     /* Draw-call accounting, first, and this is not housekeeping.
      *
      * three resets `renderer.info` at the top of every render, so with several

@@ -10,17 +10,26 @@
  * There are three deliberate ones, and they are why a naive "park and diff"
  * would report instability that is a feature:
  *
- *   - the sensor grain in grade.tsx, reseeded from a frame counter (uSeed);
+ *   - the sensor grain in grade.tsx, reseeded from a clock quantised to
+ *     GRAIN_HZ (uSeed) — it was the frame counter until this tool found that
+ *     out, see the GRAIN_HZ comment;
  *   - the volumetric march's interleaved-gradient jitter and its shadow-map
- *     rotation, both reseeded from the same counter (volumetric.ts, uFrame);
+ *     rotation, both reseeded from the frame counter (volumetric.ts, uFrame),
+ *     deliberately and for a documented reason;
  *   - the clock-driven animation: dust, the traffic signal, the cars.
  *
- * The first two advance on the frame counter and the third on the clock, which
- * gives the decomposition this tool is built around. `s.step(0)` advances the
- * frame counter and not the clock, so:
+ * One term advances on the frame counter and the other two on the clock, and
+ * `s.step(0)` advances the counter without the clock — which gives the
+ * decomposition this tool is built around:
  *
- *   dt=0, stock            frame-counter terms only  (grain + volumetric)
- *   dt=0, nograin          volumetric jitter alone
+ *   dt=0, stock            the march's jitter alone: the grain is on the clock,
+ *                          so a stopped clock freezes it
+ *   dt=0, nograin          the march's jitter alone, again — and the fact that
+ *                          these two rows now *agree* is a positive test that
+ *                          the grain really is clock-driven. Before the fix they
+ *                          differed by exactly the grain, so a regression to a
+ *                          frame-counter seed shows up here as the two rows
+ *                          separating, without anyone having to look for it.
  *   dt=0, nograin+novol    NOTHING should vary. This is the control, and if it
  *                          is not bit-identical the finding is real.
  *   dt=1/60, nograin+novol clock-driven animation alone
@@ -29,6 +38,12 @@
  * Every case is a run in the same browser against the same build, so the
  * comparison is within one build and an absent term reads as exactly zero
  * rather than as a small number that has to be argued about.
+ *
+ * `change/s` in the summary, rather than a per-pair mean, is the column that
+ * catches a term calibrated to a frame rate instead of to time. A per-pair mean
+ * cannot see that bug at all: both endpoints are independent draws whether the
+ * seed advanced once or four times between them. Dividing by dt makes it a
+ * factor of two in plain sight.
  *
  * Frames are read off the default framebuffer with readPixels after `s.step()`,
  * which is the only pixel path that includes the post chain: `renderOnce()` —
@@ -54,7 +69,13 @@ const PITCH = +flag('pitch', -0.25);
 const FRAMES = +flag('frames', 21);
 const W = +flag('w', 1280), H = +flag('h', 720);
 
-/* Cases as "query|dt". The default set is the decomposition above. */
+/* Cases as "query|dt" or "query|dt|grainHz".
+ *
+ * The third field writes `window.__grade.grainHz` before the run, which is what
+ * makes the grain's reseed rate testable: `inf` restores the pre-fix behaviour
+ * of one reseed per frame, in the same build, so the two can be differenced
+ * against each other rather than against a memory of a previous build.
+ */
 const CASES = all('case').length ? all('case') : [
   '|0',
   'nograin|0',
@@ -69,17 +90,29 @@ fs.mkdirSync(outDir, { recursive: true });
 const results = [];
 
 for (const spec of CASES) {
-  const [q, dtStr] = spec.split('|');
+  const [q, dtStr, hzStr] = spec.split('|');
   const dt = +dtStr;
+  const hz = hzStr === undefined ? null : (/inf/i.test(hzStr) ? Infinity : +hzStr);
   const url = DEV_URL + (q ? `?${q}` : '');
-  console.log(`\n══ q="${q || 'stock'}"  dt=${dt} ══  ${url}`);
+  console.log(`\n══ q="${q || 'stock'}"  dt=${dt}${hz === null ? '' : `  grainHz=${hz}`} ══  ${url}`);
 
   await run({ width: W, height: H, url }, async ({ page, errs, readShaderErrors }) => {
-    await page.evaluate(([t, yaw, pitch]) => {
+    const set = await page.evaluate(([t, yaw, pitch, hz]) => {
       const s = window.__scene;
       s.goTo(t); s.setYaw(yaw); s.setPitch(pitch); s.warp(2.0);
       s.setDriven(true);
-    }, [T, YAW, PITCH]);
+      /* Written and read back. A uniform or a ref set on an object the page does
+       * not actually expose reads as undefined and sweeps nothing, while the
+       * table above it still prints — so the value that was reached is reported
+       * rather than the value that was sent. */
+      if (hz !== null && window.__grade) window.__grade.grainHz = hz;
+      return window.__grade ? { grainHz: window.__grade.grainHz } : null;
+    }, [T, YAW, PITCH, hz]);
+    if (hz !== null) {
+      const got = set && set.grainHz;
+      console.log(`   grainHz requested ${hz}, page reports ${got}`);
+      if (got !== hz) { console.error(`  ✗ grainHz did not take — measuring the wrong thing`); process.exitCode = 1; }
+    }
     await page.waitForTimeout(300);
 
     const data = await page.evaluate(async ([frames, dt]) => {
@@ -157,6 +190,23 @@ for (const spec of CASES) {
         }
       }
 
+      /* Clipped pixels, off the first frame.
+       *
+       * Reported for every case because the grain and the blotch both end in a
+       * `max(x, 0.0)` and the frame ends in a dither: a change that quietly
+       * moved the black floor or pushed highlights into the ceiling would show
+       * up as a *smaller* frame difference, which reads as an improvement. Any
+       * comparison of stability has to carry these two numbers next to it. */
+      let black = 0, blown = 0;
+      {
+        const f = buf[0];
+        for (let p = 0; p < w * h; p++) {
+          const i = p * 4;
+          if (f[i] === 0 && f[i + 1] === 0 && f[i + 2] === 0) black++;
+          if (f[i] === 255 || f[i + 1] === 255 || f[i + 2] === 255) blown++;
+        }
+      }
+
       /* Drift: frame 0 against the last frame. A term that oscillates and a
        * term that ramps look the same in a consecutive-pair mean. */
       const a = buf[0], b = buf[frames - 1];
@@ -174,13 +224,19 @@ for (const spec of CASES) {
         camMoved: cam0 && cam1 ? Math.max(...cam0.map((v, i) => Math.abs(v - cam1[i]))) : null,
         series, tiles, globalMax, globalMaxAt, identicalPairs: anyIdentical, pairs,
         drift: { mean: driftSum / (a.length / 4), max: driftMax },
+        blackPct: (100 * black) / (w * h), blownPct: (100 * blown) / (w * h),
+        grainClock: window.__grade ? window.__grade.grainClock : null,
       };
     }, [FRAMES, dt]);
 
     const shaderErrors = await readShaderErrors();
     if (shaderErrors.length) console.error(`  ✗ ${shaderErrors.length} shader error(s)`);
     results.push({
-      q: q || 'stock', dt, ...data, shaderErrors,
+      /* As a string when it is not finite: JSON.stringify turns Infinity into
+       * null, so the report on disk would say "no rate was set" about a run
+       * whose whole purpose was to set one. */
+      q: q || 'stock', dt, hz: Number.isFinite(hz) ? hz : (hz === null ? null : String(hz)),
+      ...data, shaderErrors,
       errs: [...new Set(errs)].filter((e) => !e.includes('X3595')),
     });
   });
@@ -189,15 +245,38 @@ for (const spec of CASES) {
 /* ── Report ───────────────────────────────────────────────────────────── */
 console.log(`\n\n  ${FRAMES} frames at ${W}x${H}, camera parked at t=${T} yaw=${YAW} pitch=${PITCH}`);
 console.log('  Differences are 8-bit code values on the canvas, after the full post chain.\n');
-console.log('  case                          dt        mean     p99.9      max    %px    identical  drift(mean/max)');
+/* The threshold that separates a redraw from the noise floor, as a percentage
+ * of pixels changed in a pair.
+ *
+ * A grain redraw moves about 17 per cent of the frame; the residual — four or
+ * five pixels of driver nondeterminism at one code value, see tmp/determ.mjs —
+ * moves 0.0005 per cent. The two are four orders of magnitude apart, so any
+ * threshold between them gives the same answer and the choice is not a tuning
+ * parameter. Counting "pairs that differ at all" is what does not work: the
+ * residual then reads as a redraw and inflates the rate. */
+const REDRAW_PCT = 1.0;
+
+console.log('  case                            dt      grainHz     mean    max    %px   redraws/s   change/s   black%  blown%');
 for (const r of results) {
   const mean = r.series.reduce((a, s) => a + s.mean, 0) / r.series.length;
-  const p999 = r.series.reduce((a, s) => a + s.p999, 0) / r.series.length;
   const max = Math.max(...r.series.map((s) => s.max));
   const pct = r.series.reduce((a, s) => a + s.pct, 0) / r.series.length;
-  console.log(`  ${r.q.padEnd(26)}  ${String(r.dt).padEnd(9)} ${mean.toFixed(4).padStart(7)} `
-    + `${p999.toFixed(2).padStart(8)} ${String(max).padStart(8)} ${pct.toFixed(1).padStart(6)} `
-    + `${(r.identicalPairs + '/' + r.pairs).padStart(11)}   ${r.drift.mean.toFixed(4)}/${r.drift.max}`);
+  /* Two statements of the same invariance, one thresholded and one not.
+   *
+   * redraws/s is how often the noise field is actually redrawn, and it is the
+   * number the fix is specified in. change/s is the mean difference integrated
+   * over a second rather than over a frame, and it needs no threshold at all —
+   * which makes it the one to quote, because it cannot be argued with. A term
+   * driven by the frame counter scales both with the frame rate; a term driven
+   * by the clock leaves both alone. */
+  const redraws = r.series.filter((s) => s.pct > REDRAW_PCT).length;
+  const rate = r.dt > 0 ? redraws / (r.pairs * r.dt) : null;
+  const perSec = r.dt > 0 ? mean / r.dt : null;
+  console.log(`  ${r.q.padEnd(28)} ${String(r.dt).padEnd(10)} ${String(r.hz ?? '—').padEnd(8)}`
+    + `${mean.toFixed(4).padStart(7)} ${String(max).padStart(6)} ${pct.toFixed(1).padStart(6)} `
+    + `${(rate === null ? '—' : rate.toFixed(1)).padStart(11)} `
+    + `${(perSec === null ? '—' : perSec.toFixed(2)).padStart(10)} `
+    + `${r.blackPct.toFixed(2).padStart(8)} ${r.blownPct.toFixed(2).padStart(7)}`);
   if (r.camMoved !== null && r.camMoved > 0) {
     console.log(`     ⚠ camera moved during the run by ${r.camMoved.toExponential(2)} — not a parked measurement`);
   }

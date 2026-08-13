@@ -55,9 +55,11 @@ const SENSOR = /* glsl */ `
  * noise belongs to the sensor and not to the world, which is why anchoring it
  * to anything in the scene would have been the wrong fix — but a pattern that
  * is never redrawn is not noise, it is a dirty lens, and that is what it read
- * as over a moving image. In the new home there is a frame counter to seed it
- * with, which there was never going to be here: this chunk is compiled into
- * every material in the scene and there is no uniform that all of them share.
+ * as over a moving image. In the new home there is something to redraw it from,
+ * which there was never going to be here: this chunk is compiled into every
+ * material in the scene and there is no uniform that all of them share. (That
+ * seed started as the frame count and is now a clock quantised to GRAIN_HZ —
+ * see grade.tsx. Per-frame was calibrating the look to a display.)
  *
  * The pedestal stays. It is a black point, not noise; it is a property of the
  * signal the sensor hands over rather than of the image made from it, so it
